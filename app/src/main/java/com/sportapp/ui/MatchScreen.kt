@@ -110,7 +110,7 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                             MatchItemCard(match) { url ->
                                 selectedVideoUrl = url
                             }
-                            HorizontalDivider(color = Color(0xFF222222), thickness = 1.dp)
+                            Divider(color = Color(0xFF222222), thickness = 1.dp)
                         }
                     }
                 }
