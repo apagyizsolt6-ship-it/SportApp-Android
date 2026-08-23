@@ -21,17 +21,24 @@ def get_matches():
         }]
 
     try:
-        # 1. StatPal ÉLŐ Meccsek lekérése
-        url = f"https://statpal.io/api/v2/soccer/matches/live?access_key={STATPAL_KEY}"
+        # A kizárólagos élő meccsek helyett a MAI NAP ÖSSZES mérkőzését kérjük le!
+        # Ezzel azonnal megjelenik a több tucat/száz meccs a listában
+        url = f"https://statpal.io/api/v2/soccer/matches/today?access_key={STATPAL_KEY}"
         headers = {"Accept": "application/json"}
         response = requests.get(url, headers=headers, timeout=10)
+        
+        # Ha a today végpont nem adna választ, visszaugrunk a live-ra
+        if response.status_code != 200:
+            url = f"https://statpal.io/api/v2/soccer/matches/live?access_key={STATPAL_KEY}"
+            response = requests.get(url, headers=headers, timeout=10)
+
         data = response.json()
-
         matches_list = []
-        live_matches_data = data.get("live_matches", {})
-        leagues = live_matches_data.get("league", [])
+        
+        live_matches_data = data.get("live_matches") or data.get("matches") or {}
+        leagues = live_matches_data.get("league") or []
 
-        # 2. Highlightly API videók lekérése a megadott struktúra alapján
+        # Highlightly videók lekérése
         highlights_data = []
         if HIGHLIGHTLY_KEY:
             try:
@@ -39,36 +46,31 @@ def get_matches():
                 hl_res = requests.get(hl_url, timeout=5)
                 if hl_res.status_code == 200:
                     hl_json = hl_res.json()
-                    # A megadott JSON alapján a "data" tömbben vannak a videók
-                    highlights_data = hl_json.get("data", [])
+                    highlights_data = hl_json.get("data") or []
             except:
                 pass
 
-        # 3. Összepárosítás és adatok kinyerése
         for league in leagues:
-            matches = league.get("match", [])
+            matches = league.get("match") or []
             for m in matches:
-                home_data = m.get("home", {})
-                away_data = m.get("away", {})
+                home_data = m.get("home") or {}
+                away_data = m.get("away") or {}
                 home_name = home_data.get("name", "Hazai")
                 away_name = away_data.get("name", "Vendég")
 
-                # Videó URL keresése a "data" elemeiből
                 highlight_url = None
                 if isinstance(highlights_data, list):
                     for hl in highlights_data:
-                        match_obj = hl.get("match", {})
-                        hl_home = match_obj.get("homeTeam", {}).get("name", "").lower()
-                        hl_away = match_obj.get("awayTeam", {}).get("name", "").lower()
+                        match_obj = hl.get("match") or {}
+                        hl_home = (match_obj.get("homeTeam") or {}).get("name", "").lower()
+                        hl_away = (match_obj.get("awayTeam") or {}).get("name", "").lower()
                         title = str(hl.get("title", "")).lower()
 
-                        # Csapatnév egyezés ellenőrzése
                         if (home_name.lower() in title or away_name.lower() in title or 
-                            home_name.lower() in hl_home or away_name.lower() in hl_away):
+                            (hl_home and home_name.lower() in hl_home) or (hl_away and away_name.lower() in hl_away)):
                             highlight_url = hl.get("embedUrl") or hl.get("url")
                             break
 
-                # Gólok feldolgozása
                 try:
                     home_score = int(home_data.get("goals", 0))
                 except:
@@ -79,10 +81,9 @@ def get_matches():
                 except:
                     away_score = 0
 
-                # Perc kiolvasása
                 minute_val = 0
-                events = m.get("events", {}).get("event", [])
-                if events and isinstance(events, list):
+                events = (m.get("events") or {}).get("event") or []
+                if isinstance(events, list) and len(events) > 0:
                     try:
                         minute_val = int(events[-1].get("minute", 0))
                     except:
@@ -100,21 +101,24 @@ def get_matches():
                     "value_bet": True if m.get("inplay_odds_running") == "True" else False
                 })
 
-        return matches_list if matches_list else [{
-            "id": "0", 
-            "home_team": "Jelenleg nincs", 
-            "away_team": "élő meccs", 
-            "home_score": None, 
-            "away_score": None, 
-            "status": "info", 
-            "minute": 0
-        }]
+        if not matches_list:
+            return [{
+                "id": "0", 
+                "home_team": "Mára nincs több", 
+                "away_team": "kiírt mérkőzés", 
+                "home_score": None, 
+                "away_score": None, 
+                "status": "info", 
+                "minute": 0
+            }]
+
+        return matches_list
 
     except Exception as e:
         return [{
             "id": "err", 
             "home_team": "API Hiba", 
-            "away_team": str(e)[:25], 
+            "away_team": str(e)[:20], 
             "home_score": None, 
             "away_score": None, 
             "status": "error", 
