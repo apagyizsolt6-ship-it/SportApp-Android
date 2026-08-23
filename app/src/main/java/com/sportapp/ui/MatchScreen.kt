@@ -194,7 +194,7 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                         fontWeight = FontWeight.Bold
                     )
                 }
-
+            }
             if (isLoading) {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     CircularProgressIndicator(color = primaryGreen)
