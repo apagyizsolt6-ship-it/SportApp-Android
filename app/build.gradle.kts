@@ -51,6 +51,8 @@ dependencies {
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.7.0")
+    // StatPal csapat- és ligaképek megjelenítése
+    implementation("io.coil-kt:coil-compose:2.4.0")
 
     // Retrofit 2
     implementation("com.squareup.retrofit2:retrofit:2.9.0")
