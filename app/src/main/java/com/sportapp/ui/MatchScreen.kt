@@ -28,15 +28,17 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import com.sportapp.models.MatchResponse
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
     val matches by viewModel.matches.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
     var isDarkMode by remember { mutableStateOf(true) }
-    var selectedTab by remember { mutableIntStateOf(0) }
+    var selectedTab by remember { mutableIntStateOf(0) } // 0: ÖSSZES, 1: ÉLŐ, 2: ÉRTÉKES, 3: KEDVENCEK
+    var searchQuery by remember { mutableStateOf("") }
+    var favoriteIds by remember { mutableStateOf(setOf<String>()) }
     var selectedVideoUrl by remember { mutableStateOf<String?>(null) }
 
-    // Prémium Színpaletta (Sötét / Világos)
     val bgColor by animateColorAsState(if (isDarkMode) Color(0xFF101214) else Color(0xFFF4F6F8), label = "bg")
     val cardBgColor by animateColorAsState(if (isDarkMode) Color(0xFF1A1D21) else Color(0xFFFFFFFF), label = "card")
     val headerBgColor by animateColorAsState(if (isDarkMode) Color(0xFF16181C) else Color(0xFFFFFFFF), label = "header")
@@ -45,11 +47,21 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
     val subTextColor by animateColorAsState(if (isDarkMode) Color(0xFF8C939D) else Color(0xFF6C757D), label = "subtext")
     val primaryGreen = Color(0xFF00E676)
 
-    val filteredMatches = remember(matches, selectedTab) {
-        when (selectedTab) {
-            1 -> matches.filter { it.status != "FT" && (it.minute ?: 0) > 0 }
-            2 -> matches.filter { it.isValueBet == true }
-            else -> matches
+    val filteredMatches = remember(matches, selectedTab, searchQuery, favoriteIds) {
+        matches.filter { match ->
+            val matchesSearch = searchQuery.isEmpty() ||
+                    match.homeTeam.contains(searchQuery, ignoreCase = true) ||
+                    match.awayTeam.contains(searchQuery, ignoreCase = true) ||
+                    (match.league ?: "").contains(searchQuery, ignoreCase = true)
+
+            val matchesTab = when (selectedTab) {
+                1 -> match.status != "FT" && (match.minute ?: 0) > 0
+                2 -> match.isValueBet == true
+                3 -> favoriteIds.contains(match.matchId)
+                else -> true
+            }
+
+            matchesSearch && matchesTab
         }
     }
 
@@ -62,12 +74,12 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
         color = bgColor
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
-            // Címsor & Témaváltó Gomb
+            // Fejléc
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(headerBgColor)
-                    .padding(horizontal = 20.dp, vertical = 16.dp)
+                    .padding(horizontal = 20.dp, vertical = 14.dp)
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -93,7 +105,25 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                 }
             }
 
-            // Szűrő Fülek (Tabs)
+            // Keresősáv
+            TextField(
+                value = searchQuery,
+                onValueChange = { searchQuery = it },
+                placeholder = { Text("Keresés csapatra vagy bajnokságra...", color = subTextColor, fontSize = 12.sp) },
+                singleLine = true,
+                colors = TextFieldDefaults.textFieldColors(
+                    containerColor = headerBgColor,
+                    focusedIndicatorColor = primaryGreen,
+                    unfocusedIndicatorColor = Color.Transparent,
+                    textColor = textColor
+                ),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 4.dp)
+                    .clip(RoundedCornerShape(8.dp))
+            )
+
+            // Szűrő Fülek
             TabRow(
                 selectedTabIndex = selectedTab,
                 containerColor = headerBgColor,
@@ -101,13 +131,16 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                 divider = { Divider(color = leagueBgColor, thickness = 1.dp) }
             ) {
                 Tab(selected = selectedTab == 0, onClick = { selectedTab = 0 }) {
-                    Text("ÖSSZES (${matches.size})", modifier = Modifier.padding(vertical = 12.dp), color = if(selectedTab == 0) primaryGreen else subTextColor, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    Text("ÖSSZES", modifier = Modifier.padding(vertical = 10.dp), color = if(selectedTab == 0) primaryGreen else subTextColor, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                 }
                 Tab(selected = selectedTab == 1, onClick = { selectedTab = 1 }) {
-                    Text("🔴 ÉLŐ", modifier = Modifier.padding(vertical = 12.dp), color = if(selectedTab == 1) primaryGreen else subTextColor, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    Text("🔴 ÉLŐ", modifier = Modifier.padding(vertical = 10.dp), color = if(selectedTab == 1) primaryGreen else subTextColor, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                 }
                 Tab(selected = selectedTab == 2, onClick = { selectedTab = 2 }) {
-                    Text("🔥 ÉRTÉKES", modifier = Modifier.padding(vertical = 12.dp), color = if(selectedTab == 2) Color(0xFFFFD600) else subTextColor, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    Text("🔥 ÉRTÉKES", modifier = Modifier.padding(vertical = 10.dp), color = if(selectedTab == 2) Color(0xFFFFD600) else subTextColor, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                }
+                Tab(selected = selectedTab == 3, onClick = { selectedTab = 3 }) {
+                    Text("⭐ KEDVENC", modifier = Modifier.padding(vertical = 10.dp), color = if(selectedTab == 3) Color(0xFFFF9100) else subTextColor, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                 }
             }
 
@@ -136,12 +169,17 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                         }
 
                         items(leagueMatches) { match ->
+                            val isFav = favoriteIds.contains(match.matchId)
                             PremiumMatchRow(
                                 match = match,
+                                isFavorite = isFav,
                                 cardBgColor = cardBgColor,
                                 textColor = textColor,
                                 subTextColor = subTextColor,
                                 primaryGreen = primaryGreen,
+                                onFavoriteToggle = {
+                                    favoriteIds = if (isFav) favoriteIds - match.matchId else favoriteIds + match.matchId
+                                },
                                 onVideoClick = { url -> selectedVideoUrl = url }
                             )
                             Divider(color = leagueBgColor, thickness = 1.dp)
@@ -160,22 +198,34 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
 @Composable
 fun PremiumMatchRow(
     match: MatchResponse,
+    isFavorite: Boolean,
     cardBgColor: Color,
     textColor: Color,
     subTextColor: Color,
     primaryGreen: Color,
+    onFavoriteToggle: () -> Unit,
     onVideoClick: (String) -> Unit
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .background(cardBgColor)
-            .padding(horizontal = 16.dp, vertical = 12.dp),
+            .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // Perc & Státusz oszlop magyarítva
+        // Kedvencek csillag
+        Text(
+            text = if (isFavorite) "★" else "☆",
+            color = if (isFavorite) Color(0xFFFF9100) else subTextColor,
+            fontSize = 18.sp,
+            modifier = Modifier
+                .clickable { onFavoriteToggle() }
+                .padding(end = 8.dp)
+        )
+
+        // Perc & Státusz
         Column(
-            modifier = Modifier.width(65.dp),
+            modifier = Modifier.width(55.dp),
             horizontalAlignment = Alignment.Start
         ) {
             val isLive = match.status != "FT" && (match.minute ?: 0) > 0
@@ -184,7 +234,7 @@ fun PremiumMatchRow(
                 "HT" -> "Félidő"
                 "1H" -> "1. Félidő"
                 "2H" -> "2. Félidő"
-                "NS" -> "Hamarosan"
+                "NS" -> "Kezdés"
                 else -> match.status
             }
 
@@ -197,22 +247,21 @@ fun PremiumMatchRow(
                             .background(primaryGreen)
                     )
                     Spacer(modifier = Modifier.width(4.dp))
-                    Text(text = "${match.minute}'", color = primaryGreen, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    Text(text = "${match.minute}'", color = primaryGreen, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                 }
             } else {
-                Text(text = statusText, color = subTextColor, fontSize = 11.sp, fontWeight = FontWeight.Medium)
+                Text(text = statusText, color = subTextColor, fontSize = 10.sp, fontWeight = FontWeight.Medium)
             }
 
             if (match.isValueBet == true) {
-                Spacer(modifier = Modifier.height(2.dp))
-                Text(text = "🔥 ÉRTÉKES", color = Color(0xFFFFD600), fontSize = 8.sp, fontWeight = FontWeight.Black)
+                Text(text = "🔥 ÉRTÉKES", color = Color(0xFFFFD600), fontSize = 7.sp, fontWeight = FontWeight.Black)
             }
         }
 
         // Csapatnevek
         Column(modifier = Modifier.weight(1f)) {
             Text(text = match.homeTeam, color = textColor, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-            Spacer(modifier = Modifier.height(3.dp))
+            Spacer(modifier = Modifier.height(2.dp))
             Text(text = match.awayTeam, color = textColor, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
         }
 
@@ -224,7 +273,7 @@ fun PremiumMatchRow(
                 fontSize = 13.sp,
                 fontWeight = FontWeight.Bold
             )
-            Spacer(modifier = Modifier.height(3.dp))
+            Spacer(modifier = Modifier.height(2.dp))
             Text(
                 text = "${match.awayScore ?: 0}",
                 color = if (match.awayScore != null) primaryGreen else subTextColor,
@@ -235,15 +284,15 @@ fun PremiumMatchRow(
 
         // Videó gomb
         match.highlightUrl?.let { url ->
-            Spacer(modifier = Modifier.width(12.dp))
+            Spacer(modifier = Modifier.width(8.dp))
             Box(
                 modifier = Modifier
-                    .clip(RoundedCornerShape(8.dp))
+                    .clip(RoundedCornerShape(6.dp))
                     .background(Color(0xFF2979FF))
                     .clickable { onVideoClick(url) }
-                    .padding(horizontal = 8.dp, vertical = 6.dp)
+                    .padding(horizontal = 6.dp, vertical = 4.dp)
             ) {
-                Text(text = "🎥 Videó", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                Text(text = "🎥", color = Color.White, fontSize = 11.sp)
             }
         }
     }
@@ -266,7 +315,9 @@ fun VideoPlayerDialog(url: String, onDismiss: () -> Unit) {
 
     Dialog(onDismissRequest = onDismiss) {
         Card(
-            modifier = Modifier.fillMaxWidth().height(260.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(260.dp),
             shape = RoundedCornerShape(16.dp)
         ) {
             AndroidView(
