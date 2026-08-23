@@ -10,8 +10,7 @@ HIGHLIGHTLY_KEY = os.getenv("HIGHLIGHTLY_KEY")
 
 def ensure_list(value):
     """A StatPal API (XML->JSON konverzió miatt) egy elem esetén nem listát,
-    hanem egyetlen dict-et ad vissza. Ez a helper mindig listává alakítja,
-    hogy a 'for x in ...: x.get(...)' soha ne fusson stringeken/kulcsokon."""
+    hanem egyetlen dict-et ad vissza. Ez a helper mindig listává alakítja."""
     if value is None:
         return []
     if isinstance(value, list):
@@ -25,6 +24,7 @@ def get_matches():
     if not STATPAL_KEY:
         return [{
             "id": "0", 
+            "league": "Hiba",
             "home_team": "StatPal Kulcs Hiányzik", 
             "away_team": "Render Environment-ben", 
             "home_score": 0, 
@@ -34,13 +34,10 @@ def get_matches():
         }]
 
     try:
-        # A kizárólagos élő meccsek helyett a MAI NAP ÖSSZES mérkőzését kérjük le!
-        # Ezzel azonnal megjelenik a több tucat/száz meccs a listában
         url = f"https://statpal.io/api/v2/soccer/matches/today?access_key={STATPAL_KEY}"
         headers = {"Accept": "application/json"}
         response = requests.get(url, headers=headers, timeout=10)
         
-        # Ha a today végpont nem adna választ, visszaugrunk a live-ra
         if response.status_code != 200:
             url = f"https://statpal.io/api/v2/soccer/matches/live?access_key={STATPAL_KEY}"
             response = requests.get(url, headers=headers, timeout=10)
@@ -53,7 +50,6 @@ def get_matches():
             live_matches_data = {}
         leagues = ensure_list(live_matches_data.get("league"))
 
-        # Highlightly videók lekérése
         highlights_data = []
         if HIGHLIGHTLY_KEY:
             try:
@@ -68,6 +64,11 @@ def get_matches():
         for league in leagues:
             if not isinstance(league, dict):
                 continue
+            
+            league_name = league.get("name", "Egyéb Bajnokság")
+            country_name = league.get("country", "")
+            full_league_title = f"{country_name.upper()} - {league_name}" if country_name else league_name
+
             matches = ensure_list(league.get("match"))
             for m in matches:
                 if not isinstance(m, dict):
@@ -118,6 +119,7 @@ def get_matches():
 
                 matches_list.append({
                     "id": str(m.get("main_id", "")),
+                    "league": full_league_title,
                     "home_team": home_name,
                     "away_team": away_name,
                     "home_score": home_score,
@@ -131,6 +133,7 @@ def get_matches():
         if not matches_list:
             return [{
                 "id": "0", 
+                "league": "Információ",
                 "home_team": "Mára nincs több", 
                 "away_team": "kiírt mérkőzés", 
                 "home_score": None, 
@@ -144,6 +147,7 @@ def get_matches():
     except Exception as e:
         return [{
             "id": "err", 
+            "league": "Szerver hiba",
             "home_team": "API Hiba", 
             "away_team": str(e)[:20], 
             "home_score": None, 
