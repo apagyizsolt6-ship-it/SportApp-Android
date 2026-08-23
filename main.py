@@ -1,4 +1,5 @@
 from fastapi import FastAPI
+from fastapi.responses import Response
 import requests
 import os
 import time
@@ -11,9 +12,12 @@ HIGHLIGHTLY_KEY = os.getenv("HIGHLIGHTLY_KEY")
 
 STATPAL_CACHE_TTL = 20
 HIGHLIGHTLY_CACHE_TTL = 90
+TEAM_IMAGE_CACHE_TTL = 21600
+IMAGE_PROXY_BASE_URL = os.getenv("IMAGE_PROXY_BASE_URL", "https://sportapp-android.onrender.com")
 
 _statpal_cache = {"data": None, "ts": 0.0}
 _highlightly_cache = {"data": None, "ts": 0.0}
+_team_image_cache = {}
 
 TOP_LEAGUES_ORDER = [
     "ANGLIA: Premier League",
@@ -185,6 +189,100 @@ def ensure_list(value):
         return [value]
     return []
 
+def _find_image_url(value):
+    """
+    Kinyeri a StatPal válaszából a csapat/league kép URL-jét, ha az API
+    az adott válaszban biztosít ilyen mezőt. Nem gyártunk saját URL-t.
+    """
+    if isinstance(value, dict):
+        preferred_keys = (
+            "logo_url", "logo", "image_url", "image", "crest_url",
+            "crest", "team_logo_url", "team_logo", "icon_url", "icon",
+            "badge_url", "badge"
+        )
+        for key in preferred_keys:
+            candidate = value.get(key)
+            if isinstance(candidate, str) and candidate.strip().startswith(("http://", "https://")):
+                return candidate.strip()
+
+        for nested_key in ("team", "club", "data", "info"):
+            found = _find_image_url(value.get(nested_key))
+            if found:
+                return found
+
+    elif isinstance(value, list):
+        for item in value:
+            found = _find_image_url(item)
+            if found:
+                return found
+
+    return None
+
+
+def _country_code(raw_country):
+    if not raw_country:
+        return ""
+
+    key = " ".join(str(raw_country).replace("_", " ").strip().lower().split())
+
+    aliases = {
+        "england": "gb", "scotland": "gb", "wales": "gb", "northern ireland": "gb",
+        "spain": "es", "italy": "it", "germany": "de", "france": "fr",
+        "hungary": "hu", "canada": "ca", "chile": "cl", "china": "cn",
+        "colombia": "co", "costa rica": "cr", "kosovo": "xk", "iceland": "is",
+        "india": "in", "iran": "ir", "israel": "il", "japan": "jp",
+        "kazakhstan": "kz", "kenya": "ke", "kyrgyzstan": "kg",
+        "south korea": "kr", "korea republic": "kr", "republic of korea": "kr",
+        "south africa": "za", "bosnia and herzegovina": "ba", "bosnia & herzegovina": "ba",
+        "united arab emirates": "ae", "uae": "ae", "romania": "ro", "slovenia": "si",
+        "poland": "pl", "finland": "fi", "gibraltar": "gi", "guatemala": "gt",
+        "brazil": "br", "brazilia": "br", "mexico": "mx", "nicaragua": "ni",
+        "uruguay": "uy", "argentina": "ar", "bolivia": "bo", "peru": "pe",
+        "ecuador": "ec", "fiji": "fj", "australia": "au", "new zealand": "nz",
+        "qatar": "qa", "saudi arabia": "sa", "turkey": "tr", "jordan": "jo",
+        "kuwait": "kw", "lebanon": "lb", "uzbekistan": "uz", "venezuela": "ve",
+        "malta": "mt", "luxembourg": "lu", "cyprus": "cy", "estonia": "ee",
+        "latvia": "lv", "lithuania": "lt", "croatia": "hr", "serbia": "rs",
+        "slovakia": "sk", "czechia": "cz", "czech republic": "cz", "greece": "gr",
+        "switzerland": "ch", "denmark": "dk", "sweden": "se", "norway": "no",
+        "ukraine": "ua", "russia": "ru", "nigeria": "ng", "ghana": "gh",
+        "tunisia": "tn", "egypt": "eg", "morocco": "ma", "algeria": "dz",
+        "angola": "ao", "zambia": "zm", "zimbabwe": "zw", "mauritius": "mu",
+        "dominican republic": "do", "el salvador": "sv", "georgia": "ge",
+        "netherlands": "nl", "portugal": "pt", "belgium": "be", "austria": "at",
+        "world": "", "europe": ""
+    }
+
+    return aliases.get(key, "")
+
+
+def _get_team_id(team_data):
+    """StatPal csapat azonosító kinyerése több lehetséges mezőből."""
+    if not isinstance(team_data, dict):
+        return ""
+
+    for key in ("id", "team_id", "teamId", "main_id"):
+        value = team_data.get(key)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+
+    for nested_key in ("team", "data"):
+        nested = team_data.get(nested_key)
+        if isinstance(nested, dict):
+            value = _get_team_id(nested)
+            if value:
+                return value
+
+    return ""
+
+
+def _team_image_url(team_id):
+    """A saját backend proxy URL-je, amely a StatPal képendpointját használja."""
+    if not team_id:
+        return None
+    return f"{IMAGE_PROXY_BASE_URL.rstrip('/')}/api/team-image/{team_id}"
+
+
 def fetch_statpal_matches():
     now = time.time()
     if _statpal_cache["data"] is not None and (now - _statpal_cache["ts"]) < STATPAL_CACHE_TTL:
@@ -240,6 +338,60 @@ def fetch_highlightly_highlights():
     _highlightly_cache["ts"] = now
     return all_highlights
 
+@app.get("/api/team-image/{team_id}")
+def get_team_image(team_id: str):
+    """
+    StatPal csapatkép proxy.
+
+    A StatPal dokumentáció szerint az images endpoint PNG-t ad vissza,
+    és a kérés egy 5 percig érvényes képlinkre redirectel. A backend
+    követi a redirectet, majd a PNG-t saját rövid idejű cache-ből szolgálja ki,
+    így az access_key nem kerül az Android alkalmazásba.
+    """
+    if not STATPAL_KEY or not team_id or not str(team_id).isdigit():
+        return Response(status_code=404)
+
+    cache_key = str(team_id)
+    now = time.time()
+    cached = _team_image_cache.get(cache_key)
+    if cached and (now - cached["ts"]) < TEAM_IMAGE_CACHE_TTL:
+        return Response(
+            content=cached["content"],
+            media_type="image/png",
+            headers={"Cache-Control": "public, max-age=21600"}
+        )
+
+    try:
+        url = "https://statpal.io/api/v2/soccer/images"
+        response = requests.get(
+            url,
+            params={"type": "team", "id": team_id, "access_key": STATPAL_KEY},
+            headers={"Accept": "image/png, application/json"},
+            timeout=10,
+            allow_redirects=True
+        )
+
+        if response.status_code != 200 or not response.content:
+            return Response(status_code=response.status_code or 404)
+
+        content_type = response.headers.get("content-type", "image/png").split(";")[0].strip()
+        if content_type != "image/png":
+            content_type = "image/png"
+
+        _team_image_cache[cache_key] = {
+            "content": response.content,
+            "ts": now
+        }
+
+        return Response(
+            content=response.content,
+            media_type=content_type,
+            headers={"Cache-Control": "public, max-age=21600"}
+        )
+    except Exception:
+        return Response(status_code=404)
+
+
 @app.get("/api/matches")
 def get_matches():
     if not STATPAL_KEY:
@@ -279,6 +431,15 @@ def get_matches():
                 
                 home_name = translate_text(home_data.get("name", "Hazai"))
                 away_name = translate_text(away_data.get("name", "Vendég"))
+
+                # A StatPal /soccer/images endpointje team ID alapján ad PNG képet.
+                # A kulcsot nem küldjük ki az Android kliensnek: a saját backend
+                # /api/team-image/{id} végpontja tölti le és cache-eli a képet.
+                home_team_id = _get_team_id(home_data)
+                away_team_id = _get_team_id(away_data)
+                home_logo_url = _team_image_url(home_team_id)
+                away_logo_url = _team_image_url(away_team_id)
+                league_logo_url = None
 
                 highlight_url = None
                 if isinstance(highlights_data, list):
@@ -322,8 +483,13 @@ def get_matches():
                     "id": str(m.get("main_id", "")),
                     "league_id": league_id,
                     "league": full_league_title,
+                    "country": translate_text(raw_country),
+                    "country_code": _country_code(raw_country),
+                    "league_logo_url": league_logo_url,
                     "home_team": home_name,
                     "away_team": away_name,
+                    "home_logo_url": home_logo_url,
+                    "away_logo_url": away_logo_url,
                     "home_score": home_score,
                     "away_score": away_score,
                     "status": adjusted_status,
