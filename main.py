@@ -18,6 +18,7 @@ IMAGE_PROXY_BASE_URL = os.getenv("IMAGE_PROXY_BASE_URL", "https://sportapp-andro
 _statpal_cache = {"data": None, "ts": 0.0}
 _highlightly_cache = {"data": None, "ts": 0.0}
 _team_image_cache = {}
+_highlightly_match_cache = {}
 
 TOP_LEAGUES_ORDER = [
     "ANGLIA: Premier League",
@@ -315,7 +316,9 @@ def fetch_highlightly_highlights():
 
     all_highlights = []
     try:
-        for offset in (0, 40):
+        # Több oldalt is lekérünk, hogy a mai meccsekhez nagyobb eséllyel
+        # megtaláljuk a Highlightly saját match.id azonosítóját.
+        for offset in (0, 40, 80, 120):
             resp = requests.get(
                 base_url,
                 headers=headers,
@@ -324,19 +327,111 @@ def fetch_highlightly_highlights():
             )
             if resp.status_code != 200:
                 break
+
             payload = resp.json()
             page = payload.get("data") if isinstance(payload, dict) else None
+
             if not isinstance(page, list) or not page:
                 break
+
             all_highlights.extend(page)
+
             if len(page) < 40:
                 break
+
     except Exception:
         pass
 
     _highlightly_cache["data"] = all_highlights
     _highlightly_cache["ts"] = now
     return all_highlights
+
+
+def fetch_highlightly_match_highlights(highlight_match_id: str):
+    """Az adott Highlightly match.id összes highlightját lekéri."""
+    if not HIGHLIGHTLY_KEY or not highlight_match_id:
+        return []
+
+    cache_key = str(highlight_match_id)
+    now = time.time()
+
+    cached = _highlightly_match_cache.get(cache_key)
+    if cached and (now - cached["ts"]) < HIGHLIGHTLY_CACHE_TTL:
+        return cached["data"]
+
+    base_url = "https://soccer.highlightly.net/highlights"
+    headers = {"x-rapidapi-key": HIGHLIGHTLY_KEY}
+
+    try:
+        response = requests.get(
+            base_url,
+            headers=headers,
+            params={
+                "matchId": highlight_match_id,
+                "limit": 100,
+                "offset": 0
+            },
+            timeout=8
+        )
+
+        if response.status_code != 200:
+            return []
+
+        payload = response.json()
+        data = payload.get("data") if isinstance(payload, dict) else []
+
+        if not isinstance(data, list):
+            data = []
+
+        _highlightly_match_cache[cache_key] = {
+            "data": data,
+            "ts": now
+        }
+
+        return data
+
+    except Exception:
+        return []
+
+
+def _highlightly_video_payload(highlight: dict):
+    """Csak a mobil kliens számára szükséges, biztonságos mezőket adja vissza."""
+    return {
+        "id": str(highlight.get("id", "")),
+        "title": highlight.get("title"),
+        "description": highlight.get("description"),
+        "embedUrl": highlight.get("embedUrl"),
+        "url": highlight.get("url"),
+        "category": highlight.get("category"),
+        "source": highlight.get("source"),
+        "imgUrl": highlight.get("imgUrl")
+    }
+
+
+@app.get("/api/highlights/match/{highlight_match_id}")
+def get_match_highlights(highlight_match_id: str):
+    """
+    Egy adott Highlightly mérkőzés összes videóját adja vissza.
+
+    A Highlightly saját match.id azonosítóját várja, nem a StatPal main_id-t.
+    A válaszban a goal-clip és match-highlights elemek egyaránt megmaradnak.
+    """
+    if not HIGHLIGHTLY_KEY or not highlight_match_id:
+        return []
+
+    highlights = fetch_highlightly_match_highlights(highlight_match_id)
+
+    result = []
+    for highlight in highlights:
+        if isinstance(highlight, dict):
+            item = _highlightly_video_payload(highlight)
+
+            # Csak valódi lejátszható Highlightly elemeket adjunk vissza.
+            if item["id"] and (item["embedUrl"] or item["url"]):
+                result.append(item)
+
+    return result
+
 
 @app.get("/api/team-image/{team_id}")
 def get_team_image(team_id: str):
@@ -442,17 +537,79 @@ def get_matches():
                 league_logo_url = None
 
                 highlight_url = None
-                if isinstance(highlights_data, list):
-                    for hl in highlights_data:
-                        match_obj = hl.get("match") or {}
-                        hl_home = (match_obj.get("homeTeam") or {}).get("name", "").lower()
-                        hl_away = (match_obj.get("awayTeam") or {}).get("name", "").lower()
-                        title = str(hl.get("title", "")).lower()
+                highlight_match_id = None
 
-                        if (home_name.lower() in title or away_name.lower() in title or 
-                            (hl_home and home_name.lower() in hl_home) or (hl_away and away_name.lower() in hl_away)):
-                            highlight_url = hl.get("embedUrl") or hl.get("url")
+                if isinstance(highlights_data, list):
+                    normalized_home = " ".join(home_name.lower().split())
+                    normalized_away = " ".join(away_name.lower().split())
+
+                    # Először pontos párosítást keresünk a Highlightly saját
+                    # match.id + homeTeam/awayTeam mezői alapján.
+                    exact_match = None
+
+                    for hl in highlights_data:
+                        if not isinstance(hl, dict):
+                            continue
+
+                        match_obj = hl.get("match") or {}
+                        hl_home = " ".join(
+                            str((match_obj.get("homeTeam") or {}).get("name", "")).lower().split()
+                        )
+                        hl_away = " ".join(
+                            str((match_obj.get("awayTeam") or {}).get("name", "")).lower().split()
+                        )
+
+                        if (
+                            hl_home == normalized_home
+                            and hl_away == normalized_away
+                        ) or (
+                            hl_home == normalized_away
+                            and hl_away == normalized_home
+                        ):
+                            exact_match = hl
                             break
+
+                    # Ha nincs pontos párosítás, marad a korábbi cím-alapú
+                    # fallback, de csak akkor, ha mindkét csapat neve szerepel.
+                    if exact_match is None:
+                        for hl in highlights_data:
+                            if not isinstance(hl, dict):
+                                continue
+
+                            match_obj = hl.get("match") or {}
+                            hl_home = " ".join(
+                                str((match_obj.get("homeTeam") or {}).get("name", "")).lower().split()
+                            )
+                            hl_away = " ".join(
+                                str((match_obj.get("awayTeam") or {}).get("name", "")).lower().split()
+                            )
+                            title = " ".join(str(hl.get("title", "")).lower().split())
+
+                            if (
+                                (normalized_home in title and normalized_away in title)
+                                or (
+                                    normalized_home in hl_home
+                                    and normalized_away in hl_away
+                                )
+                                or (
+                                    normalized_home in hl_away
+                                    and normalized_away in hl_home
+                                )
+                            ):
+                                exact_match = hl
+                                break
+
+                    if exact_match is not None:
+                        match_obj = exact_match.get("match") or {}
+                        raw_hl_match_id = match_obj.get("id")
+
+                        if raw_hl_match_id is not None:
+                            highlight_match_id = str(raw_hl_match_id)
+
+                        highlight_url = (
+                            exact_match.get("embedUrl")
+                            or exact_match.get("url")
+                        )
 
                 try:
                     home_score = int(home_data.get("goals", 0))
@@ -495,6 +652,7 @@ def get_matches():
                     "status": adjusted_status,
                     "minute": minute_val,
                     "highlight_url": highlight_url,
+                    "highlight_match_id": highlight_match_id,
                     "value_bet": True if m.get("inplay_odds_running") == "True" else False
                 })
 
@@ -584,5 +742,6 @@ def get_status():
     return {
         "statpal": cache_info(_statpal_cache, STATPAL_CACHE_TTL),
         "highlightly": cache_info(_highlightly_cache, HIGHLIGHTLY_CACHE_TTL),
-        "highlightly_count": len(_highlightly_cache["data"] or []) if _highlightly_cache["data"] else 0
+        "highlightly_count": len(_highlightly_cache["data"] or []) if _highlightly_cache["data"] else 0,
+        "highlightly_match_cache_count": len(_highlightly_match_cache)
     }
