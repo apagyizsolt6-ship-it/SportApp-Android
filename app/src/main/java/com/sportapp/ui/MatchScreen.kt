@@ -52,7 +52,8 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
 
     var favoriteMatchIds by remember { mutableStateOf(setOf<String>()) }
 
-    // Korlátlan számú kedvenc liga. A kiválasztás tartósan elmentésre kerül.
+    // Korlátlan számú kedvenc liga.
+    // A kiválasztás tartósan elmentésre kerül.
     var favoriteLeagueNames by remember {
         mutableStateOf(
             favoritePrefs
@@ -72,49 +73,173 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
     var selectedVideoUrl by remember { mutableStateOf<String?>(null) }
     var selectedLeaguePair by remember { mutableStateOf<Pair<String, String>?>(null) }
 
-    val bgColor by animateColorAsState(if (isDarkMode) Color(0xFF101214) else Color(0xFFF4F6F8), label = "bg")
-    val cardBgColor by animateColorAsState(if (isDarkMode) Color(0xFF1A1D21) else Color(0xFFFFFFFF), label = "card")
-    val headerBgColor by animateColorAsState(if (isDarkMode) Color(0xFF16181C) else Color(0xFFFFFFFF), label = "header")
-    val leagueBgColor by animateColorAsState(if (isDarkMode) Color(0xFF22262C) else Color(0xFFE9ECEF), label = "league")
-    val textColor by animateColorAsState(if (isDarkMode) Color(0xFFFFFFFF) else Color(0xFF101214), label = "text")
-    val subTextColor by animateColorAsState(if (isDarkMode) Color(0xFF8C939D) else Color(0xFF6C757D), label = "subtext")
+    val bgColor by animateColorAsState(
+        if (isDarkMode) Color(0xFF101214) else Color(0xFFF4F6F8),
+        label = "bg"
+    )
+
+    val cardBgColor by animateColorAsState(
+        if (isDarkMode) Color(0xFF1A1D21) else Color(0xFFFFFFFF),
+        label = "card"
+    )
+
+    val headerBgColor by animateColorAsState(
+        if (isDarkMode) Color(0xFF16181C) else Color(0xFFFFFFFF),
+        label = "header"
+    )
+
+    val leagueBgColor by animateColorAsState(
+        if (isDarkMode) Color(0xFF22262C) else Color(0xFFE9ECEF),
+        label = "league"
+    )
+
+    val textColor by animateColorAsState(
+        if (isDarkMode) Color(0xFFFFFFFF) else Color(0xFF101214),
+        label = "text"
+    )
+
+    val subTextColor by animateColorAsState(
+        if (isDarkMode) Color(0xFF8C939D) else Color(0xFF6C757D),
+        label = "subtext"
+    )
+
     val primaryGreen = Color(0xFF00E676)
 
-    // Automatikusan kiemelt TOP 5 európai bajnokság.
-    // Ezek mindig arany fejléccel jelennek meg.
+    // ============================================================
+    // ELŐRE KIEMELT LIGÁK
+    // ============================================================
+    //
+    // KIZÁRÓLAG ez az 5 liga kap arany fejlécet és kerül előre:
+    //
+    // 1. Anglia – Premier League
+    // 2. Németország – Bundesliga
+    // 3. Olaszország – Serie A
+    // 4. Spanyolország – La Liga
+    // 5. Franciaország – Ligue 1
+    //
+    // Fontos:
+    // Nem használunk contains() alapú ellenőrzést,
+    // mert az például a "Premier League 2" ligát
+    // tévesen kiemelné.
+    //
     val topFiveLeagueNames = remember {
         setOf(
             "PREMIER LEAGUE",
-            "LA LIGA",
-            "SERIE A",
             "BUNDESLIGA",
+            "SERIE A",
+            "LA LIGA",
             "LIGUE 1"
         )
     }
 
-    val isTopFiveLeague: (String) -> Boolean = { leagueName ->
+    val isTopFiveLeague: (String, String?) -> Boolean = { leagueName, countryCode ->
+
         val normalized = leagueName
             .trim()
             .uppercase()
             .replace("Á", "A")
             .replace("É", "E")
-        topFiveLeagueNames.any { normalized.contains(it) }
+
+        // Ha a liga neve ország-előtaggal érkezik,
+        // csak a liga tényleges részét nézzük.
+        //
+        // Például:
+        // "ANGLIA: PREMIER LEAGUE"
+        // -> "PREMIER LEAGUE"
+        //
+        // "ANGLIA: PREMIER LEAGUE 2"
+        // -> "PREMIER LEAGUE 2"
+        //
+        // Így a Premier League 2 nem kerül bele.
+        val leagueOnly = normalized
+            .substringAfterLast(":")
+            .trim()
+
+        val country = countryCode
+            ?.trim()
+            ?.uppercase()
+            .orEmpty()
+
+        when (leagueOnly) {
+
+            // A Premier League esetében az országot is ellenőrizzük,
+            // hogy például az Örmény Premier League SOHA ne legyen TOP 5.
+            "PREMIER LEAGUE" -> {
+                country == "GB" ||
+                        country == "UK" ||
+                        country == "EN" ||
+                        country == "ENG" ||
+                        normalized.contains("ANGLIA") ||
+                        normalized.contains("ENGLAND")
+            }
+
+            "BUNDESLIGA" -> true
+
+            "SERIE A" -> true
+
+            "LA LIGA" -> true
+
+            "LIGUE 1" -> true
+
+            else -> false
+        }
     }
 
-    val filteredMatches = remember(matches, selectedTab, searchQuery, favoriteMatchIds, favoriteLeagueNames) {
+    // ============================================================
+    // LIGA NYITÁS / ZÁRÁS
+    // ============================================================
+    //
+    // Minden liga külön nyitható/zárható.
+    //
+    // Alapállapot:
+    // minden liga NYITVA.
+    //
+    // Ha egy liga neve bekerül ebbe a set-be,
+    // akkor az adott liga mérkőzései elrejtésre kerülnek.
+    //
+    var collapsedLeagueNames by remember {
+        mutableStateOf(setOf<String>())
+    }
+
+    val filteredMatches = remember(
+        matches,
+        selectedTab,
+        searchQuery,
+        favoriteMatchIds,
+        favoriteLeagueNames
+    ) {
         matches.filter { match ->
+
             val leagueName = match.league ?: "EGYÉB BAJNOKSÁG"
+
             val isLeagueFav = favoriteLeagueNames.contains(leagueName)
             val isMatchFav = favoriteMatchIds.contains(match.id)
 
-            val matchesSearch = searchQuery.isEmpty() ||
-                    match.homeTeam.contains(searchQuery, ignoreCase = true) ||
-                    match.awayTeam.contains(searchQuery, ignoreCase = true) ||
-                    leagueName.contains(searchQuery, ignoreCase = true)
+            val matchesSearch =
+                searchQuery.isEmpty() ||
+                        match.homeTeam.contains(
+                            searchQuery,
+                            ignoreCase = true
+                        ) ||
+                        match.awayTeam.contains(
+                            searchQuery,
+                            ignoreCase = true
+                        ) ||
+                        leagueName.contains(
+                            searchQuery,
+                            ignoreCase = true
+                        )
 
             val matchesTab = when (selectedTab) {
-                1 -> match.status != "FT" && (match.minute ?: 0) > 0
+
+                // ÉLŐ
+                1 -> match.status != "FT" &&
+                        (match.minute ?: 0) > 0
+
+                // KEDVENC
                 2 -> isMatchFav || isLeagueFav
+
+                // ÖSSZES
                 else -> true
             }
 
@@ -122,14 +247,43 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
         }
     }
 
-    val groupedMatchesList = remember(filteredMatches, favoriteLeagueNames) {
-        val groups = filteredMatches.groupBy { it.league ?: "EGYÉB BAJNOKSÁG" }
+    // ============================================================
+    // LIGÁK CSOPORTOSÍTÁSA ÉS SORRENDJE
+    // ============================================================
+    //
+    // Sorrend:
+    //
+    // 1. TOP 5 kiemelt liga
+    // 2. felhasználói kedvenc ligák
+    // 3. minden egyéb liga ABC sorrendben
+    //
+    val groupedMatchesList = remember(
+        filteredMatches,
+        favoriteLeagueNames
+    ) {
+
+        val groups = filteredMatches.groupBy {
+            it.league ?: "EGYÉB BAJNOKSÁG"
+        }
+
         groups.entries.sortedWith(
-            compareByDescending<Map.Entry<String, List<MatchResponse>>> { (leagueName, _) ->
-                isTopFiveLeague(leagueName)
-            }.thenByDescending { (leagueName, _) ->
-                favoriteLeagueNames.contains(leagueName)
-            }.thenBy { it.key.uppercase() }
+
+            compareByDescending<Map.Entry<String, List<MatchResponse>>> {
+                (leagueName, leagueMatches) ->
+
+                isTopFiveLeague(
+                    leagueName,
+                    leagueMatches.firstOrNull()?.countryCode
+                )
+            }
+
+                .thenByDescending { (leagueName, _) ->
+                    favoriteLeagueNames.contains(leagueName)
+                }
+
+                .thenBy {
+                    it.key.uppercase()
+                }
         )
     }
 
@@ -137,18 +291,31 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
         modifier = Modifier.fillMaxSize(),
         color = bgColor
     ) {
-        Column(modifier = Modifier.fillMaxSize()) {
+
+        Column(
+            modifier = Modifier.fillMaxSize()
+        ) {
+
+            // ====================================================
+            // FEJLÉC
+            // ====================================================
+
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(headerBgColor)
-                    .padding(horizontal = 20.dp, vertical = 14.dp)
+                    .padding(
+                        horizontal = 20.dp,
+                        vertical = 14.dp
+                    )
             ) {
+
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+
                     Text(
                         text = "⚡ Élő Meccsközpont",
                         fontSize = 20.sp,
@@ -157,22 +324,44 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                     )
 
                     IconButton(
-                        onClick = { isDarkMode = !isDarkMode },
+                        onClick = {
+                            isDarkMode = !isDarkMode
+                        },
                         modifier = Modifier
                             .clip(CircleShape)
                             .background(leagueBgColor)
                             .size(36.dp)
                     ) {
-                        Text(text = if (isDarkMode) "☀️" else "🌙", fontSize = 16.sp)
+
+                        Text(
+                            text = if (isDarkMode) "☀️" else "🌙",
+                            fontSize = 16.sp
+                        )
                     }
                 }
             }
 
+            // ====================================================
+            // KERESÉS
+            // ====================================================
+
             TextField(
                 value = searchQuery,
-                onValueChange = { searchQuery = it },
-                placeholder = { Text("Keresés csapatra vagy bajnokságra...", color = subTextColor, fontSize = 12.sp) },
+
+                onValueChange = {
+                    searchQuery = it
+                },
+
+                placeholder = {
+                    Text(
+                        "Keresés csapatra vagy bajnokságra...",
+                        color = subTextColor,
+                        fontSize = 12.sp
+                    )
+                },
+
                 singleLine = true,
+
                 colors = TextFieldDefaults.textFieldColors(
                     containerColor = headerBgColor,
                     focusedIndicatorColor = primaryGreen,
@@ -180,180 +369,498 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                     focusedTextColor = textColor,
                     unfocusedTextColor = textColor
                 ),
+
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 4.dp)
+                    .padding(
+                        horizontal = 12.dp,
+                        vertical = 4.dp
+                    )
                     .clip(RoundedCornerShape(8.dp))
             )
+
+            // ====================================================
+            // SZŰRŐ FÜLEK
+            // ====================================================
 
             TabRow(
                 selectedTabIndex = selectedTab,
                 containerColor = headerBgColor,
                 contentColor = primaryGreen,
-                divider = { Divider(color = leagueBgColor, thickness = 1.dp) }
+                divider = {
+                    Divider(
+                        color = leagueBgColor,
+                        thickness = 1.dp
+                    )
+                }
             ) {
-                Tab(selected = selectedTab == 0, onClick = { selectedTab = 0 }) {
+
+                Tab(
+                    selected = selectedTab == 0,
+                    onClick = {
+                        selectedTab = 0
+                    }
+                ) {
+
                     Text(
                         "ÖSSZES",
-                        modifier = Modifier.padding(vertical = 10.dp),
-                        color = if (selectedTab == 0) primaryGreen else subTextColor,
+                        modifier = Modifier.padding(
+                            vertical = 10.dp
+                        ),
+                        color = if (selectedTab == 0) {
+                            primaryGreen
+                        } else {
+                            subTextColor
+                        },
                         fontSize = 10.sp,
                         fontWeight = FontWeight.Bold
                     )
                 }
-                Tab(selected = selectedTab == 1, onClick = { selectedTab = 1 }) {
+
+                Tab(
+                    selected = selectedTab == 1,
+                    onClick = {
+                        selectedTab = 1
+                    }
+                ) {
+
                     Text(
                         "🔴 ÉLŐ",
-                        modifier = Modifier.padding(vertical = 10.dp),
-                        color = if (selectedTab == 1) primaryGreen else subTextColor,
+                        modifier = Modifier.padding(
+                            vertical = 10.dp
+                        ),
+                        color = if (selectedTab == 1) {
+                            primaryGreen
+                        } else {
+                            subTextColor
+                        },
                         fontSize = 10.sp,
                         fontWeight = FontWeight.Bold
                     )
                 }
-                Tab(selected = selectedTab == 2, onClick = { selectedTab = 2 }) {
+
+                Tab(
+                    selected = selectedTab == 2,
+                    onClick = {
+                        selectedTab = 2
+                    }
+                ) {
+
                     Text(
                         "⭐ KEDVENC",
-                        modifier = Modifier.padding(vertical = 10.dp),
-                        color = if (selectedTab == 2) Color(0xFFFF9100) else subTextColor,
+                        modifier = Modifier.padding(
+                            vertical = 10.dp
+                        ),
+                        color = if (selectedTab == 2) {
+                            Color(0xFFFF9100)
+                        } else {
+                            subTextColor
+                        },
                         fontSize = 10.sp,
                         fontWeight = FontWeight.Bold
                     )
                 }
             }
 
+            // ====================================================
+            // LOADING / MECCSLISTA
+            // ====================================================
+
             if (isLoading) {
-                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator(color = primaryGreen)
+
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+
+                    CircularProgressIndicator(
+                        color = primaryGreen
+                    )
                 }
+
             } else {
-                LazyColumn(modifier = Modifier.fillMaxSize()) {
-                    groupedMatchesList.forEach { (leagueName, leagueMatches) ->
-                        val isLeagueFav = favoriteLeagueNames.contains(leagueName)
+
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize()
+                ) {
+
+                    groupedMatchesList.forEach {
+                            (leagueName, leagueMatches) ->
+
+                        val isLeagueFav =
+                            favoriteLeagueNames.contains(leagueName)
+
+                        val firstLeagueMatch =
+                            leagueMatches.firstOrNull()
+
+                        val isTopFive =
+                            isTopFiveLeague(
+                                leagueName,
+                                firstLeagueMatch?.countryCode
+                            )
+
+                        val isUserHighlighted =
+                            favoriteLeagueNames.contains(leagueName)
+
+                        val isCollapsed =
+                            collapsedLeagueNames.contains(leagueName)
+
+                        // ====================================================
+                        // LIGA FEJLÉC
+                        // ====================================================
 
                         item {
-                            val isTopFive = isTopFiveLeague(leagueName)
-                            val isUserHighlighted = favoriteLeagueNames.contains(leagueName)
 
                             val leagueHeaderColor = when {
-                                isTopFive && isDarkMode -> Color(0xFF5A4700)
-                                isTopFive -> Color(0xFFFFE8A3)
-                                isUserHighlighted && isDarkMode -> Color(0xFF3B3020)
-                                isUserHighlighted -> Color(0xFFFFF2D2)
-                                else -> leagueBgColor
+
+                                isTopFive && isDarkMode ->
+                                    Color(0xFF5A4700)
+
+                                isTopFive ->
+                                    Color(0xFFFFE8A3)
+
+                                isUserHighlighted && isDarkMode ->
+                                    Color(0xFF3B3020)
+
+                                isUserHighlighted ->
+                                    Color(0xFFFFF2D2)
+
+                                else ->
+                                    leagueBgColor
                             }
 
-                            val leagueHeaderTextColor = if (isTopFive) {
-                                if (isDarkMode) Color(0xFFFFD54F) else Color(0xFF6D4C00)
-                            } else {
-                                textColor
-                            }
+                            val leagueHeaderTextColor =
+                                if (isTopFive) {
+
+                                    if (isDarkMode) {
+                                        Color(0xFFFFD54F)
+                                    } else {
+                                        Color(0xFF6D4C00)
+                                    }
+
+                                } else {
+
+                                    textColor
+                                }
 
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .background(leagueHeaderColor)
-                                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
+                                    .background(
+                                        leagueHeaderColor
+                                    )
+                                    .clickable {
+
+                                        collapsedLeagueNames =
+                                            if (isCollapsed) {
+
+                                                // NYITÁS
+                                                collapsedLeagueNames -
+                                                        leagueName
+
+                                            } else {
+
+                                                // ZÁRÁS
+                                                collapsedLeagueNames +
+                                                        leagueName
+                                            }
+                                    }
+                                    .padding(
+                                        horizontal = 12.dp,
+                                        vertical = 8.dp
+                                    ),
+
+                                horizontalArrangement =
+                                    Arrangement.SpaceBetween,
+
+                                verticalAlignment =
+                                    Alignment.CenterVertically
                             ) {
+
+                                // ====================================================
+                                // BAL OLDAL
+                                // ====================================================
+
                                 Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    modifier = Modifier.weight(1f)
+                                    verticalAlignment =
+                                        Alignment.CenterVertically,
+
+                                    modifier =
+                                        Modifier.weight(1f)
                                 ) {
-                                    // TOP 5 automatikusan kiemelt.
-                                    // Minden más liga szabadon kiemelhető és visszavonható.
+
+                                    // ====================================================
+                                    // KEDVENC / KIEMELT CSILLAG
+                                    // ====================================================
+
                                     Text(
-                                        text = if (isTopFive || isLeagueFav) "★" else "☆",
+                                        text =
+                                            if (
+                                                isTopFive ||
+                                                isLeagueFav
+                                            ) {
+                                                "★"
+                                            } else {
+                                                "☆"
+                                            },
+
                                         color = when {
-                                            isTopFive -> Color(0xFFFFB300)
-                                            isLeagueFav -> Color(0xFFFF9100)
-                                            else -> subTextColor
+
+                                            isTopFive ->
+                                                Color(0xFFFFB300)
+
+                                            isLeagueFav ->
+                                                Color(0xFFFF9100)
+
+                                            else ->
+                                                subTextColor
                                         },
+
                                         fontSize = 15.sp,
+
                                         modifier = Modifier
                                             .then(
+
+                                                // A TOP 5 csillaga fix.
+                                                //
+                                                // A többi liga csillaga
+                                                // továbbra is kedvenccé
+                                                // tehető.
                                                 if (!isTopFive) {
+
                                                     Modifier.clickable {
-                                                        favoriteLeagueNames = if (isLeagueFav) {
-                                                            favoriteLeagueNames.filter { it != leagueName }.toSet()
-                                                        } else {
-                                                            favoriteLeagueNames + leagueName
-                                                        }
+
+                                                        favoriteLeagueNames =
+                                                            if (isLeagueFav) {
+
+                                                                favoriteLeagueNames
+                                                                    .filter {
+                                                                        it != leagueName
+                                                                    }
+                                                                    .toSet()
+
+                                                            } else {
+
+                                                                favoriteLeagueNames +
+                                                                        leagueName
+                                                            }
                                                     }
+
                                                 } else {
+
                                                     Modifier
                                                 }
                                             )
                                             .padding(end = 6.dp)
                                     )
 
-                                    val firstLeagueMatch = leagueMatches.firstOrNull()
+                                    // ====================================================
+                                    // ORSZÁG ZÁSZLÓ
+                                    // ====================================================
 
                                     Text(
-                                        text = countryFlag(firstLeagueMatch?.countryCode),
+                                        text = countryFlag(
+                                            firstLeagueMatch?.countryCode
+                                        ),
+
                                         fontSize = 14.sp,
-                                        modifier = Modifier.padding(end = 6.dp)
+
+                                        modifier = Modifier.padding(
+                                            end = 6.dp
+                                        )
                                     )
 
-                                    firstLeagueMatch?.let { leagueMatch ->
-                                        if (!leagueMatch.leagueLogoUrl.isNullOrBlank()) {
+                                    // ====================================================
+                                    // LIGA LOGÓ
+                                    // ====================================================
+
+                                    firstLeagueMatch?.let {
+                                        leagueMatch ->
+
+                                        if (
+                                            !leagueMatch
+                                                .leagueLogoUrl
+                                                .isNullOrBlank()
+                                        ) {
+
                                             AsyncImage(
-                                                model = leagueMatch.leagueLogoUrl,
-                                                contentDescription = "$leagueName logó",
+                                                model =
+                                                    leagueMatch.leagueLogoUrl,
+
+                                                contentDescription =
+                                                    "$leagueName logó",
+
                                                 modifier = Modifier
                                                     .size(18.dp)
-                                                    .clip(RoundedCornerShape(4.dp))
+                                                    .clip(
+                                                        RoundedCornerShape(4.dp)
+                                                    )
                                             )
-                                            Spacer(modifier = Modifier.width(5.dp))
+
+                                            Spacer(
+                                                modifier =
+                                                    Modifier.width(5.dp)
+                                            )
                                         }
                                     }
 
+                                    // ====================================================
+                                    // LIGA NEVE
+                                    // ====================================================
+
                                     Text(
-                                        text = leagueName.uppercase(),
-                                        color = leagueHeaderTextColor,
+                                        text =
+                                            leagueName.uppercase(),
+
+                                        color =
+                                            leagueHeaderTextColor,
+
                                         fontSize = 11.sp,
-                                        fontWeight = FontWeight.ExtraBold,
+
+                                        fontWeight =
+                                            FontWeight.ExtraBold,
+
                                         letterSpacing = 0.5.sp
                                     )
                                 }
 
-                                Text(
-                                    text = "📊 TABELLA ➔",
-                                    color = primaryGreen,
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.clickable {
-                                        val realLeagueId = leagueMatches
-                                            .firstOrNull()
-                                            ?.leagueId
-                                            ?.takeIf { it.isNotBlank() }
-                                            ?: leagueName
+                                // ====================================================
+                                // JOBB OLDAL
+                                // TABELLA + NYITÁS/ZÁRÁS
+                                // ====================================================
 
-                                        selectedLeaguePair = Pair(realLeagueId, leagueName)
-                                    }
-                                )
+                                Row(
+                                    verticalAlignment =
+                                        Alignment.CenterVertically,
+
+                                    modifier =
+                                        Modifier.padding(start = 8.dp)
+                                ) {
+
+                                    // TABELLA
+                                    Text(
+                                        text =
+                                            "📊 TABELLA ➔",
+
+                                        color =
+                                            primaryGreen,
+
+                                        fontSize = 10.sp,
+
+                                        fontWeight =
+                                            FontWeight.Bold,
+
+                                        modifier =
+                                            Modifier.clickable {
+
+                                                val realLeagueId =
+                                                    leagueMatches
+                                                        .firstOrNull()
+                                                        ?.leagueId
+                                                        ?.takeIf {
+                                                            it.isNotBlank()
+                                                        }
+                                                        ?: leagueName
+
+                                                selectedLeaguePair =
+                                                    Pair(
+                                                        realLeagueId,
+                                                        leagueName
+                                                    )
+                                            }
+                                    )
+
+                                    Spacer(
+                                        modifier =
+                                            Modifier.width(8.dp)
+                                    )
+
+                                    // NYITVA / ZÁRVA JELZÉS
+                                    Text(
+                                        text =
+                                            if (isCollapsed) {
+                                                "▼"
+                                            } else {
+                                                "▲"
+                                            },
+
+                                        color =
+                                            if (isTopFive) {
+                                                Color(0xFFFFD54F)
+                                            } else {
+                                                subTextColor
+                                            },
+
+                                        fontSize = 12.sp,
+
+                                        fontWeight =
+                                            FontWeight.Bold
+                                    )
+                                }
                             }
                         }
 
-                        items(leagueMatches) { match ->
-                            val isFav = favoriteMatchIds.contains(match.id)
-                            PremiumMatchRow(
-                                match = match,
-                                isFavorite = isFav,
-                                cardBgColor = cardBgColor,
-                                textColor = textColor,
-                                subTextColor = subTextColor,
-                                primaryGreen = primaryGreen,
-                                onFavoriteToggle = {
-                                    favoriteMatchIds = if (isFav) {
-                                        favoriteMatchIds.filter { it != match.id }.toSet()
-                                    } else {
-                                        favoriteMatchIds + match.id
+                        // ====================================================
+                        // MECCSEK
+                        // ====================================================
+                        //
+                        // Ha a liga zárva van, a meccsek nem jelennek meg.
+                        //
+                        if (!isCollapsed) {
+
+                            items(leagueMatches) { match ->
+
+                                val isFav =
+                                    favoriteMatchIds.contains(
+                                        match.id
+                                    )
+
+                                PremiumMatchRow(
+                                    match = match,
+
+                                    isFavorite = isFav,
+
+                                    cardBgColor =
+                                        cardBgColor,
+
+                                    textColor =
+                                        textColor,
+
+                                    subTextColor =
+                                        subTextColor,
+
+                                    primaryGreen =
+                                        primaryGreen,
+
+                                    onFavoriteToggle = {
+
+                                        favoriteMatchIds =
+                                            if (isFav) {
+
+                                                favoriteMatchIds
+                                                    .filter {
+                                                        it != match.id
+                                                    }
+                                                    .toSet()
+
+                                            } else {
+
+                                                favoriteMatchIds +
+                                                        match.id
+                                            }
+                                    },
+
+                                    onVideoClick = {
+                                        url ->
+                                        selectedVideoUrl = url
                                     }
-                                },
-                                onVideoClick = { url -> selectedVideoUrl = url }
-                            )
-                            Divider(color = leagueBgColor, thickness = 1.dp)
+                                )
+
+                                Divider(
+                                    color = leagueBgColor,
+                                    thickness = 1.dp
+                                )
+                            }
                         }
                     }
                 }
@@ -361,30 +868,80 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
         }
     }
 
+    // ============================================================
+    // VIDEÓ LEJÁTSZÓ
+    // ============================================================
+
     selectedVideoUrl?.let { url ->
-        VideoPlayerDialog(url = url) { selectedVideoUrl = null }
+
+        VideoPlayerDialog(
+            url = url
+        ) {
+            selectedVideoUrl = null
+        }
     }
 
-    selectedLeaguePair?.let { (leagueId, leagueName) ->
-        FullLeagueTableDialog(leagueId = leagueId, leagueName = leagueName, isDarkMode = isDarkMode) {
+    // ============================================================
+    // TABELLA
+    // ============================================================
+
+    selectedLeaguePair?.let {
+            (leagueId, leagueName) ->
+
+        FullLeagueTableDialog(
+            leagueId = leagueId,
+            leagueName = leagueName,
+            isDarkMode = isDarkMode
+        ) {
+
             selectedLeaguePair = null
         }
     }
 }
 
-private fun countryFlag(countryCode: String?): String {
-    val code = countryCode?.trim()?.lowercase().orEmpty()
-    if (code.length != 2) return "🌐"
+// ================================================================
+// ORSZÁGZÁSZLÓ
+// ================================================================
+
+private fun countryFlag(
+    countryCode: String?
+): String {
+
+    val code =
+        countryCode
+            ?.trim()
+            ?.lowercase()
+            .orEmpty()
+
+    if (code.length != 2) {
+        return "🌐"
+    }
 
     val first = code[0]
     val second = code[1]
-    if (first !in 'a'..'z' || second !in 'a'..'z') return "🌐"
+
+    if (
+        first !in 'a'..'z' ||
+        second !in 'a'..'z'
+    ) {
+        return "🌐"
+    }
 
     return buildString {
-        appendCodePoint(0x1F1E6 + (first - 'a'))
-        appendCodePoint(0x1F1E6 + (second - 'a'))
+
+        appendCodePoint(
+            0x1F1E6 + (first - 'a')
+        )
+
+        appendCodePoint(
+            0x1F1E6 + (second - 'a')
+        )
     }
 }
+
+// ================================================================
+// CSAPAT LOGÓ
+// ================================================================
 
 @Composable
 private fun TeamLogo(
@@ -392,53 +949,84 @@ private fun TeamLogo(
     teamName: String,
     size: androidx.compose.ui.unit.Dp = 26.dp
 ) {
-    val initials = teamName
-        .trim()
-        .split(Regex("\\s+"))
-        .filter { it.isNotBlank() }
-        .take(2)
-        .joinToString("") { it.first().uppercase() }
-        .ifBlank { "⚽" }
+
+    val initials =
+        teamName
+            .trim()
+            .split(Regex("\\s+"))
+            .filter {
+                it.isNotBlank()
+            }
+            .take(2)
+            .joinToString("") {
+                it.first().uppercase()
+            }
+            .ifBlank {
+                "⚽"
+            }
 
     Box(
         modifier = Modifier
             .size(size)
             .clip(CircleShape)
-            .background(Color(0xFF252A31)),
-        contentAlignment = Alignment.Center
+            .background(
+                Color(0xFF252A31)
+            ),
+
+        contentAlignment =
+            Alignment.Center
     ) {
+
         if (!url.isNullOrBlank()) {
+
             SubcomposeAsyncImage(
                 model = url,
-                contentDescription = "$teamName logó",
-                modifier = Modifier.fillMaxSize(),
+
+                contentDescription =
+                    "$teamName logó",
+
+                modifier =
+                    Modifier.fillMaxSize(),
+
                 loading = {
+
                     Text(
                         text = initials,
                         color = Color(0xFF8C939D),
                         fontSize = 8.sp,
-                        fontWeight = FontWeight.Bold
+                        fontWeight =
+                            FontWeight.Bold
                     )
                 },
+
                 error = {
+
                     Text(
                         text = initials,
                         color = Color(0xFF8C939D),
                         fontSize = 8.sp,
-                        fontWeight = FontWeight.Bold
+                        fontWeight =
+                            FontWeight.Bold
                     )
                 }
             )
+
         } else {
+
             Text(
                 text = initials,
                 color = Color(0xFF8C939D),
                 fontSize = 8.sp,
-                fontWeight = FontWeight.Bold
+                fontWeight =
+                    FontWeight.Bold
             )
         }
     }
 }
+
+// ================================================================
+// MECCS SOR
+// ================================================================
 
 @Composable
 fun PremiumMatchRow(
@@ -451,244 +1039,787 @@ fun PremiumMatchRow(
     onFavoriteToggle: () -> Unit,
     onVideoClick: (String) -> Unit
 ) {
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .background(cardBgColor)
-            .padding(horizontal = 12.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically
+            .padding(
+                horizontal = 12.dp,
+                vertical = 10.dp
+            ),
+
+        verticalAlignment =
+            Alignment.CenterVertically
     ) {
+
+        // ============================================================
+        // MECCS KEDVENC
+        // ============================================================
+
         Text(
-            text = if (isFavorite) "★" else "☆",
-            color = if (isFavorite) Color(0xFFFF9100) else subTextColor,
+            text =
+                if (isFavorite) {
+                    "★"
+                } else {
+                    "☆"
+                },
+
+            color =
+                if (isFavorite) {
+                    Color(0xFFFF9100)
+                } else {
+                    subTextColor
+                },
+
             fontSize = 18.sp,
+
             modifier = Modifier
-                .clickable { onFavoriteToggle() }
+                .clickable {
+                    onFavoriteToggle()
+                }
                 .padding(end = 8.dp)
         )
 
+        // ============================================================
+        // STÁTUSZ / IDŐ
+        // ============================================================
+
         Column(
-            modifier = Modifier.width(55.dp),
-            horizontalAlignment = Alignment.Start
+            modifier =
+                Modifier.width(55.dp),
+
+            horizontalAlignment =
+                Alignment.Start
         ) {
-            val isLive = match.status != "FT" && (match.minute ?: 0) > 0
-            val statusText = when (match.status) {
-                "FT" -> "Vége"
-                "HT" -> "Félidő"
-                "1H" -> "1. Félidő"
-                "2H" -> "2. Félidő"
-                "NS" -> "Kezdés"
-                else -> match.status
-            }
+
+            val isLive =
+                match.status != "FT" &&
+                        (match.minute ?: 0) > 0
+
+            val statusText =
+                when (match.status) {
+
+                    "FT" ->
+                        "Vége"
+
+                    "HT" ->
+                        "Félidő"
+
+                    "1H" ->
+                        "1. Félidő"
+
+                    "2H" ->
+                        "2. Félidő"
+
+                    "NS" ->
+                        "Kezdés"
+
+                    else ->
+                        match.status
+                }
 
             if (isLive) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+
+                Row(
+                    verticalAlignment =
+                        Alignment.CenterVertically
+                ) {
+
                     Box(
                         modifier = Modifier
                             .size(6.dp)
                             .clip(CircleShape)
-                            .background(primaryGreen)
+                            .background(
+                                primaryGreen
+                            )
                     )
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text(text = "${match.minute}'", color = primaryGreen, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+
+                    Spacer(
+                        modifier =
+                            Modifier.width(4.dp)
+                    )
+
+                    Text(
+                        text =
+                            "${match.minute}'",
+
+                        color =
+                            primaryGreen,
+
+                        fontSize = 11.sp,
+
+                        fontWeight =
+                            FontWeight.Bold
+                    )
                 }
+
             } else {
-                Text(text = statusText, color = subTextColor, fontSize = 10.sp, fontWeight = FontWeight.Medium)
-            }
 
+                Text(
+                    text = statusText,
+
+                    color =
+                        subTextColor,
+
+                    fontSize = 10.sp,
+
+                    fontWeight =
+                        FontWeight.Medium
+                )
+            }
         }
 
-        Column(modifier = Modifier.weight(1f)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+        // ============================================================
+        // CSAPATOK
+        // ============================================================
+
+        Column(
+            modifier =
+                Modifier.weight(1f)
+        ) {
+
+            Row(
+                verticalAlignment =
+                    Alignment.CenterVertically
+            ) {
+
                 TeamLogo(
-                    url = match.homeLogoUrl,
-                    teamName = match.homeTeam
+                    url =
+                        match.homeLogoUrl,
+
+                    teamName =
+                        match.homeTeam
                 )
-                Spacer(modifier = Modifier.width(8.dp))
+
+                Spacer(
+                    modifier =
+                        Modifier.width(8.dp)
+                )
+
                 Text(
-                    text = match.homeTeam,
-                    color = textColor,
+                    text =
+                        match.homeTeam,
+
+                    color =
+                        textColor,
+
                     fontSize = 13.sp,
-                    fontWeight = FontWeight.SemiBold,
+
+                    fontWeight =
+                        FontWeight.SemiBold,
+
                     maxLines = 1
                 )
             }
 
-            Spacer(modifier = Modifier.height(4.dp))
+            Spacer(
+                modifier =
+                    Modifier.height(4.dp)
+            )
 
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                verticalAlignment =
+                    Alignment.CenterVertically
+            ) {
+
                 TeamLogo(
-                    url = match.awayLogoUrl,
-                    teamName = match.awayTeam
+                    url =
+                        match.awayLogoUrl,
+
+                    teamName =
+                        match.awayTeam
                 )
-                Spacer(modifier = Modifier.width(8.dp))
+
+                Spacer(
+                    modifier =
+                        Modifier.width(8.dp)
+                )
+
                 Text(
-                    text = match.awayTeam,
-                    color = textColor,
+                    text =
+                        match.awayTeam,
+
+                    color =
+                        textColor,
+
                     fontSize = 13.sp,
-                    fontWeight = FontWeight.SemiBold,
+
+                    fontWeight =
+                        FontWeight.SemiBold,
+
                     maxLines = 1
                 )
             }
         }
 
-        Column(horizontalAlignment = Alignment.End) {
+        // ============================================================
+        // EREDMÉNY
+        // ============================================================
+
+        Column(
+            horizontalAlignment =
+                Alignment.End
+        ) {
+
             Text(
-                text = "${match.homeScore ?: 0}",
-                color = if (match.homeScore != null) primaryGreen else subTextColor,
+                text =
+                    "${match.homeScore ?: 0}",
+
+                color =
+                    if (match.homeScore != null) {
+                        primaryGreen
+                    } else {
+                        subTextColor
+                    },
+
                 fontSize = 13.sp,
-                fontWeight = FontWeight.Bold
+
+                fontWeight =
+                    FontWeight.Bold
             )
-            Spacer(modifier = Modifier.height(2.dp))
+
+            Spacer(
+                modifier =
+                    Modifier.height(2.dp)
+            )
+
             Text(
-                text = "${match.awayScore ?: 0}",
-                color = if (match.awayScore != null) primaryGreen else subTextColor,
+                text =
+                    "${match.awayScore ?: 0}",
+
+                color =
+                    if (match.awayScore != null) {
+                        primaryGreen
+                    } else {
+                        subTextColor
+                    },
+
                 fontSize = 13.sp,
-                fontWeight = FontWeight.Bold
+
+                fontWeight =
+                    FontWeight.Bold
             )
         }
+
+        // ============================================================
+        // VIDEÓ
+        // ============================================================
 
         match.highlightUrl?.let { url ->
-            Spacer(modifier = Modifier.width(8.dp))
+
+            Spacer(
+                modifier =
+                    Modifier.width(8.dp)
+            )
+
             Box(
                 modifier = Modifier
-                    .clip(RoundedCornerShape(6.dp))
-                    .background(Color(0xFF2979FF))
-                    .clickable { onVideoClick(url) }
-                    .padding(horizontal = 6.dp, vertical = 4.dp)
+                    .clip(
+                        RoundedCornerShape(6.dp)
+                    )
+                    .background(
+                        Color(0xFF2979FF)
+                    )
+                    .clickable {
+                        onVideoClick(url)
+                    }
+                    .padding(
+                        horizontal = 6.dp,
+                        vertical = 4.dp
+                    )
             ) {
-                Text(text = "🎥", color = Color.White, fontSize = 11.sp)
+
+                Text(
+                    text = "🎥",
+                    color = Color.White,
+                    fontSize = 11.sp
+                )
             }
         }
     }
 }
 
+// ================================================================
+// TELJES LIGA TABELLA
+// ================================================================
+
 @Composable
-fun FullLeagueTableDialog(leagueId: String, leagueName: String, isDarkMode: Boolean, onDismiss: () -> Unit) {
-    val dialogBg = if (isDarkMode) Color(0xFF1A1D21) else Color(0xFFFFFFFF)
-    val textColor = if (isDarkMode) Color.White else Color.Black
-    val coroutineScope = rememberCoroutineScope()
-    var standings by remember { mutableStateOf<List<StandingTeam>>(emptyList()) }
-    var isLoading by remember { mutableStateOf(true) }
+fun FullLeagueTableDialog(
+    leagueId: String,
+    leagueName: String,
+    isDarkMode: Boolean,
+    onDismiss: () -> Unit
+) {
+
+    val dialogBg =
+        if (isDarkMode) {
+            Color(0xFF1A1D21)
+        } else {
+            Color(0xFFFFFFFF)
+        }
+
+    val textColor =
+        if (isDarkMode) {
+            Color.White
+        } else {
+            Color.Black
+        }
+
+    val coroutineScope =
+        rememberCoroutineScope()
+
+    var standings by remember {
+        mutableStateOf<List<StandingTeam>>(
+            emptyList()
+        )
+    }
+
+    var isLoading by remember {
+        mutableStateOf(true)
+    }
 
     LaunchedEffect(leagueId) {
+
         coroutineScope.launch {
+
             try {
-                val api = RetrofitInstance.api
-                standings = api.getStandings(leagueId)
+
+                val api =
+                    RetrofitInstance.api
+
+                standings =
+                    api.getStandings(
+                        leagueId
+                    )
+
             } catch (e: Exception) {
-                standings = emptyList()
+
+                standings =
+                    emptyList()
+
             } finally {
+
                 isLoading = false
             }
         }
     }
 
-    Dialog(onDismissRequest = onDismiss) {
+    Dialog(
+        onDismissRequest = onDismiss
+    ) {
+
         Card(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(8.dp),
-            shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(containerColor = dialogBg)
-        ) {
-            Column(modifier = Modifier.padding(16.dp)) {
-                Text(
-                    text = "📊 $leagueName Tabella",
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = Color(0xFF00E676)
+
+            shape =
+                RoundedCornerShape(16.dp),
+
+            colors =
+                CardDefaults.cardColors(
+                    containerColor =
+                        dialogBg
                 )
-                Spacer(modifier = Modifier.height(10.dp))
+        ) {
+
+            Column(
+                modifier =
+                    Modifier.padding(16.dp)
+            ) {
+
+                Text(
+                    text =
+                        "📊 $leagueName Tabella",
+
+                    fontSize = 15.sp,
+
+                    fontWeight =
+                        FontWeight.Bold,
+
+                    color =
+                        Color(0xFF00E676)
+                )
+
+                Spacer(
+                    modifier =
+                        Modifier.height(10.dp)
+                )
 
                 Row(
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(
+                            vertical = 4.dp
+                        ),
+
+                    verticalAlignment =
+                        Alignment.CenterVertically
                 ) {
-                    Text("#", fontWeight = FontWeight.Bold, color = Color.Gray, fontSize = 10.sp, modifier = Modifier.width(20.dp))
-                    Text("CSAPAT", fontWeight = FontWeight.Bold, color = Color.Gray, fontSize = 10.sp, modifier = Modifier.weight(1f))
-                    Text("M", fontWeight = FontWeight.Bold, color = Color.Gray, fontSize = 10.sp, modifier = Modifier.width(22.dp))
-                    Text("GY", fontWeight = FontWeight.Bold, color = Color.Gray, fontSize = 10.sp, modifier = Modifier.width(22.dp))
-                    Text("D", fontWeight = FontWeight.Bold, color = Color.Gray, fontSize = 10.sp, modifier = Modifier.width(22.dp))
-                    Text("V", fontWeight = FontWeight.Bold, color = Color.Gray, fontSize = 10.sp, modifier = Modifier.width(22.dp))
-                    Text("GÓL", fontWeight = FontWeight.Bold, color = Color.Gray, fontSize = 10.sp, modifier = Modifier.width(36.dp))
-                    Text("P", fontWeight = FontWeight.Bold, color = Color(0xFF00E676), fontSize = 10.sp, modifier = Modifier.width(24.dp))
+
+                    Text(
+                        "#",
+                        fontWeight =
+                            FontWeight.Bold,
+                        color = Color.Gray,
+                        fontSize = 10.sp,
+                        modifier =
+                            Modifier.width(20.dp)
+                    )
+
+                    Text(
+                        "CSAPAT",
+                        fontWeight =
+                            FontWeight.Bold,
+                        color = Color.Gray,
+                        fontSize = 10.sp,
+                        modifier =
+                            Modifier.weight(1f)
+                    )
+
+                    Text(
+                        "M",
+                        fontWeight =
+                            FontWeight.Bold,
+                        color = Color.Gray,
+                        fontSize = 10.sp,
+                        modifier =
+                            Modifier.width(22.dp)
+                    )
+
+                    Text(
+                        "GY",
+                        fontWeight =
+                            FontWeight.Bold,
+                        color = Color.Gray,
+                        fontSize = 10.sp,
+                        modifier =
+                            Modifier.width(22.dp)
+                    )
+
+                    Text(
+                        "D",
+                        fontWeight =
+                            FontWeight.Bold,
+                        color = Color.Gray,
+                        fontSize = 10.sp,
+                        modifier =
+                            Modifier.width(22.dp)
+                    )
+
+                    Text(
+                        "V",
+                        fontWeight =
+                            FontWeight.Bold,
+                        color = Color.Gray,
+                        fontSize = 10.sp,
+                        modifier =
+                            Modifier.width(22.dp)
+                    )
+
+                    Text(
+                        "GÓL",
+                        fontWeight =
+                            FontWeight.Bold,
+                        color = Color.Gray,
+                        fontSize = 10.sp,
+                        modifier =
+                            Modifier.width(36.dp)
+                    )
+
+                    Text(
+                        "P",
+                        fontWeight =
+                            FontWeight.Bold,
+                        color =
+                            Color(0xFF00E676),
+                        fontSize = 10.sp,
+                        modifier =
+                            Modifier.width(24.dp)
+                    )
                 }
-                Divider(color = Color.Gray, thickness = 1.dp)
+
+                Divider(
+                    color = Color.Gray,
+                    thickness = 1.dp
+                )
 
                 if (isLoading) {
-                    Box(modifier = Modifier.fillMaxWidth().height(150.dp), contentAlignment = Alignment.Center) {
-                        CircularProgressIndicator(color = Color(0xFF00E676))
+
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(150.dp),
+
+                        contentAlignment =
+                            Alignment.Center
+                    ) {
+
+                        CircularProgressIndicator(
+                            color =
+                                Color(0xFF00E676)
+                        )
                     }
+
                 } else if (standings.isEmpty()) {
-                    Text("A tabella jelenleg nem érhető el ehhez a ligához.", color = Color.Gray, fontSize = 11.sp, modifier = Modifier.padding(vertical = 16.dp))
+
+                    Text(
+                        "A tabella jelenleg nem érhető el ehhez a ligához.",
+
+                        color =
+                            Color.Gray,
+
+                        fontSize = 11.sp,
+
+                        modifier =
+                            Modifier.padding(
+                                vertical = 16.dp
+                            )
+                    )
+
                 } else {
-                    LazyColumn(modifier = Modifier.heightIn(max = 350.dp)) {
+
+                    LazyColumn(
+                        modifier =
+                            Modifier.heightIn(
+                                max = 350.dp
+                            )
+                    ) {
+
                         items(standings) { item ->
+
                             Row(
-                                modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
-                                verticalAlignment = Alignment.CenterVertically
+                                modifier =
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .padding(
+                                            vertical = 6.dp
+                                        ),
+
+                                verticalAlignment =
+                                    Alignment.CenterVertically
                             ) {
-                                Text("${item.position}.", color = textColor, fontSize = 10.sp, fontWeight = FontWeight.Bold, modifier = Modifier.width(20.dp))
-                                Text(item.team, color = textColor, fontSize = 11.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-                                Text("${item.played}", color = textColor, fontSize = 10.sp, modifier = Modifier.width(22.dp))
-                                Text("${item.wins}", color = textColor, fontSize = 10.sp, modifier = Modifier.width(22.dp))
-                                Text("${item.draws}", color = textColor, fontSize = 10.sp, modifier = Modifier.width(22.dp))
-                                Text("${item.losses}", color = textColor, fontSize = 10.sp, modifier = Modifier.width(22.dp))
-                                Text("${item.goalsScored}:${item.goalsAllowed}", color = textColor, fontSize = 10.sp, modifier = Modifier.width(36.dp))
-                                Text("${item.points}", color = Color(0xFF00E676), fontSize = 11.sp, fontWeight = FontWeight.Bold, modifier = Modifier.width(24.dp))
+
+                                Text(
+                                    "${item.position}.",
+
+                                    color =
+                                        textColor,
+
+                                    fontSize = 10.sp,
+
+                                    fontWeight =
+                                        FontWeight.Bold,
+
+                                    modifier =
+                                        Modifier.width(20.dp)
+                                )
+
+                                Text(
+                                    item.team,
+
+                                    color =
+                                        textColor,
+
+                                    fontSize = 11.sp,
+
+                                    fontWeight =
+                                        FontWeight.SemiBold,
+
+                                    modifier =
+                                        Modifier.weight(1f)
+                                )
+
+                                Text(
+                                    "${item.played}",
+
+                                    color =
+                                        textColor,
+
+                                    fontSize = 10.sp,
+
+                                    modifier =
+                                        Modifier.width(22.dp)
+                                )
+
+                                Text(
+                                    "${item.wins}",
+
+                                    color =
+                                        textColor,
+
+                                    fontSize = 10.sp,
+
+                                    modifier =
+                                        Modifier.width(22.dp)
+                                )
+
+                                Text(
+                                    "${item.draws}",
+
+                                    color =
+                                        textColor,
+
+                                    fontSize = 10.sp,
+
+                                    modifier =
+                                        Modifier.width(22.dp)
+                                )
+
+                                Text(
+                                    "${item.losses}",
+
+                                    color =
+                                        textColor,
+
+                                    fontSize = 10.sp,
+
+                                    modifier =
+                                        Modifier.width(22.dp)
+                                )
+
+                                Text(
+                                    "${item.goalsScored}:${item.goalsAllowed}",
+
+                                    color =
+                                        textColor,
+
+                                    fontSize = 10.sp,
+
+                                    modifier =
+                                        Modifier.width(36.dp)
+                                )
+
+                                Text(
+                                    "${item.points}",
+
+                                    color =
+                                        Color(0xFF00E676),
+
+                                    fontSize = 11.sp,
+
+                                    fontWeight =
+                                        FontWeight.Bold,
+
+                                    modifier =
+                                        Modifier.width(24.dp)
+                                )
                             }
-                            Divider(color = Color(0xFF2B2B2B), thickness = 0.5.dp)
+
+                            Divider(
+                                color =
+                                    Color(0xFF2B2B2B),
+
+                                thickness = 0.5.dp
+                            )
                         }
                     }
                 }
 
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(
+                    modifier =
+                        Modifier.height(12.dp)
+                )
+
                 Button(
-                    onClick = onDismiss,
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00E676)),
-                    modifier = Modifier.align(Alignment.End)
+                    onClick =
+                        onDismiss,
+
+                    colors =
+                        ButtonDefaults.buttonColors(
+                            containerColor =
+                                Color(0xFF00E676)
+                        ),
+
+                    modifier =
+                        Modifier.align(
+                            Alignment.End
+                        )
                 ) {
-                    Text("Bezárás", color = Color.Black, fontSize = 12.sp)
+
+                    Text(
+                        "Bezárás",
+                        color = Color.Black,
+                        fontSize = 12.sp
+                    )
                 }
             }
         }
     }
 }
 
+// ================================================================
+// VIDEÓ LEJÁTSZÓ DIALOG
+// ================================================================
+
 @Composable
-fun VideoPlayerDialog(url: String, onDismiss: () -> Unit) {
-    val context = LocalContext.current
-    val exoPlayer = remember {
-        ExoPlayer.Builder(context).build().apply {
-            setMediaItem(MediaItem.fromUri(url))
-            prepare()
-            playWhenReady = true
+fun VideoPlayerDialog(
+    url: String,
+    onDismiss: () -> Unit
+) {
+
+    val context =
+        LocalContext.current
+
+    val exoPlayer =
+        remember {
+
+            ExoPlayer
+                .Builder(context)
+                .build()
+                .apply {
+
+                    setMediaItem(
+                        MediaItem.fromUri(url)
+                    )
+
+                    prepare()
+
+                    playWhenReady = true
+                }
+        }
+
+    DisposableEffect(Unit) {
+
+        onDispose {
+            exoPlayer.release()
         }
     }
 
-    DisposableEffect(Unit) {
-        onDispose { exoPlayer.release() }
-    }
+    Dialog(
+        onDismissRequest =
+            onDismiss
+    ) {
 
-    Dialog(onDismissRequest = onDismiss) {
         Card(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(260.dp),
-            shape = RoundedCornerShape(16.dp)
+
+            shape =
+                RoundedCornerShape(16.dp)
         ) {
+
             AndroidView(
+
                 factory = { ctx ->
+
                     PlayerView(ctx).apply {
-                        player = exoPlayer
-                        layoutParams = FrameLayout.LayoutParams(
-                            ViewGroup.LayoutParams.MATCH_PARENT,
-                            ViewGroup.LayoutParams.MATCH_PARENT
-                        )
+
+                        player =
+                            exoPlayer
+
+                        layoutParams =
+                            FrameLayout.LayoutParams(
+                                ViewGroup.LayoutParams.MATCH_PARENT,
+                                ViewGroup.LayoutParams.MATCH_PARENT
+                            )
                     }
                 },
-                modifier = Modifier.fillMaxSize()
+
+                modifier =
+                    Modifier.fillMaxSize()
             )
         }
     }
