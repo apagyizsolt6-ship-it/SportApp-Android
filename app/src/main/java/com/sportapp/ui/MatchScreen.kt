@@ -2,6 +2,7 @@ package com.sportapp.ui
 
 import android.view.ViewGroup
 import android.widget.FrameLayout
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -27,31 +28,89 @@ import com.sportapp.models.MatchResponse
 fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
     val matches by viewModel.matches.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
+    var selectedTab by remember { mutableIntStateOf(0) } // 0: ÖSSZES, 1: ÉLŐ, 2: VALUE BET
     var selectedVideoUrl by remember { mutableStateOf<String?>(null) }
+
+    val filteredMatches = remember(matches, selectedTab) {
+        when (selectedTab) {
+            1 -> matches.filter { it.status != "FT" && (it.minute ?: 0) > 0 }
+            2 -> matches.filter { it.isValueBet == true }
+            else -> matches
+        }
+    }
+
+    val groupedMatches = remember(filteredMatches) {
+        filteredMatches.groupBy { it.league ?: "Egyéb Bajnokság" }
+    }
 
     Surface(
         modifier = Modifier.fillMaxSize(),
         color = Color(0xFF121212)
     ) {
-        Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
-            Text(
-                text = "⚡ ÉLŐ MATCH CENTER",
-                style = MaterialTheme.typography.headlineMedium.copy(
-                    fontWeight = FontWeight.Bold,
-                    color = Color(0xFF00E676)
-                ),
-                modifier = Modifier.padding(bottom = 16.dp)
-            )
+        Column(modifier = Modifier.fillMaxSize()) {
+            // Fejléc
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color(0xFF1E1E1E))
+                    .padding(16.dp)
+            ) {
+                Text(
+                    text = "⚡ FlashScore MatchCenter",
+                    style = MaterialTheme.typography.headlineMedium.copy(
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFF00E676)
+                    )
+                )
+            }
+
+            // Flashscore-stílusú fülek
+            TabRow(
+                selectedTabIndex = selectedTab,
+                containerColor = Color(0xFF1E1E1E),
+                contentColor = Color(0xFF00E676)
+            ) {
+                Tab(selected = selectedTab == 0, onClick = { selectedTab = 0 }) {
+                    Text("ÖSSZES (${matches.size})", modifier = Modifier.padding(12.dp), color = if(selectedTab == 0) Color(0xFF00E676) else Color.Gray, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                }
+                Tab(selected = selectedTab == 1, onClick = { selectedTab = 1 }) {
+                    Text("🔴 ÉLŐ", modifier = Modifier.padding(12.dp), color = if(selectedTab == 1) Color(0xFF00E676) else Color.Gray, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                }
+                Tab(selected = selectedTab == 2, onClick = { selectedTab = 2 }) {
+                    Text("🔥 VALUE BETS", modifier = Modifier.padding(12.dp), color = if(selectedTab == 2) Color(0xFFFFD600) else Color.Gray, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                }
+            }
 
             if (isLoading) {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     CircularProgressIndicator(color = Color(0xFF00E676))
                 }
             } else {
-                LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    items(matches) { match ->
-                        MatchItemCard(match) { url ->
-                            selectedVideoUrl = url
+                LazyColumn(modifier = Modifier.fillMaxSize()) {
+                    groupedMatches.forEach { (leagueName, leagueMatches) ->
+                        // Liga Sáv
+                        item {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(Color(0xFF2A2A2A))
+                                    .padding(horizontal = 16.dp, vertical = 8.dp)
+                            ) {
+                                Text(
+                                    text = leagueName.uppercase(),
+                                    color = Color.White,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+
+                        // Meccs Kártyák a ligán belül
+                        items(leagueMatches) { match ->
+                            MatchItemCard(match) { url ->
+                                selectedVideoUrl = url
+                            }
+                            HorizontalDivider(color = Color(0xFF222222), thickness = 1.dp)
                         }
                     }
                 }
@@ -69,11 +128,13 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
 @Composable
 fun MatchItemCard(match: MatchResponse, onVideoClick: (String) -> Unit) {
     Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(12.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+        shape = RoundedCornerShape(8.dp),
         colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1E1E))
     ) {
-        Column(modifier = Modifier.padding(16.dp)) {
+        Column(modifier = Modifier.padding(12.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -82,18 +143,19 @@ fun MatchItemCard(match: MatchResponse, onVideoClick: (String) -> Unit) {
                 Text(
                     text = "${match.homeTeam} - ${match.awayTeam}",
                     color = Color.White,
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.Bold
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.weight(1f)
                 )
                 Text(
                     text = if (match.homeScore != null) "${match.homeScore} : ${match.awayScore}" else "VS",
                     color = Color(0xFF00E676),
-                    fontSize = 20.sp,
+                    fontSize = 18.sp,
                     fontWeight = FontWeight.Black
                 )
             }
 
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(6.dp))
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -106,13 +168,14 @@ fun MatchItemCard(match: MatchResponse, onVideoClick: (String) -> Unit) {
             }
 
             match.highlightUrl?.let { url ->
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(8.dp))
                 Button(
                     onClick = { onVideoClick(url) },
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2979FF)),
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(6.dp)
                 ) {
-                    Text("Összefoglaló Lejátszása 🎥", color = Color.White)
+                    Text("Összefoglaló Lejátszása 🎥", color = Color.White, fontSize = 12.sp)
                 }
             }
         }
@@ -138,7 +201,9 @@ fun VideoPlayerDialog(url: String, onDismiss: () -> Unit) {
 
     Dialog(onDismissRequest = onDismiss) {
         Card(
-            modifier = Modifier.fillMaxWidth().height(260.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(260.dp),
             shape = RoundedCornerShape(16.dp)
         ) {
             AndroidView(
