@@ -23,6 +23,8 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.viewmodel.compose.viewModel
+import coil.compose.AsyncImage
+import coil.compose.SubcomposeAsyncImage
 import androidx.media3.common.MediaItem
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
@@ -179,17 +181,39 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                                     modifier = Modifier.weight(1f)
                                 ) {
                                     Text(
-                                        text = if (isLeagueFav) "★ " else "☆ ",
+                                        text = if (isLeagueFav) "★" else "☆",
                                         color = if (isLeagueFav) Color(0xFFFF9100) else subTextColor,
-                                        fontSize = 16.sp,
-                                        modifier = Modifier.clickable {
-                                            favoriteLeagueNames = if (isLeagueFav) {
-                                                favoriteLeagueNames.filter { it != leagueName }.toSet()
-                                            } else {
-                                                favoriteLeagueNames + leagueName
+                                        fontSize = 15.sp,
+                                        modifier = Modifier
+                                            .clickable {
+                                                favoriteLeagueNames = if (isLeagueFav) {
+                                                    favoriteLeagueNames.filter { it != leagueName }.toSet()
+                                                } else {
+                                                    favoriteLeagueNames + leagueName
+                                                }
                                             }
-                                        }
+                                            .padding(end = 6.dp)
                                     )
+
+                                    val firstLeagueMatch = leagueMatches.firstOrNull()
+
+                                    Text(
+                                        text = countryFlag(firstLeagueMatch?.countryCode),
+                                        fontSize = 14.sp,
+                                        modifier = Modifier.padding(end = 6.dp)
+                                    )
+
+                                    if (!firstLeagueMatch?.leagueLogoUrl.isNullOrBlank()) {
+                                        AsyncImage(
+                                            model = firstLeagueMatch.leagueLogoUrl,
+                                            contentDescription = "$leagueName logó",
+                                            modifier = Modifier
+                                                .size(18.dp)
+                                                .clip(RoundedCornerShape(4.dp))
+                                        )
+                                        Spacer(modifier = Modifier.width(5.dp))
+                                    }
+
                                     Text(
                                         text = leagueName.uppercase(),
                                         color = textColor,
@@ -254,6 +278,74 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
     }
 }
 
+private fun countryFlag(countryCode: String?): String {
+    val code = countryCode?.trim()?.lowercase().orEmpty()
+    if (code.length != 2) return "🌐"
+
+    val first = code[0]
+    val second = code[1]
+    if (first !in 'a'..'z' || second !in 'a'..'z') return "🌐"
+
+    return buildString {
+        appendCodePoint(0x1F1E6 + (first - 'a'))
+        appendCodePoint(0x1F1E6 + (second - 'a'))
+    }
+}
+
+@Composable
+private fun TeamLogo(
+    url: String?,
+    teamName: String,
+    size: androidx.compose.ui.unit.Dp = 26.dp
+) {
+    val initials = teamName
+        .trim()
+        .split(Regex("\\s+"))
+        .filter { it.isNotBlank() }
+        .take(2)
+        .joinToString("") { it.first().uppercase() }
+        .ifBlank { "⚽" }
+
+    Box(
+        modifier = Modifier
+            .size(size)
+            .clip(CircleShape)
+            .background(Color(0xFF252A31)),
+        contentAlignment = Alignment.Center
+    ) {
+        if (!url.isNullOrBlank()) {
+            SubcomposeAsyncImage(
+                model = url,
+                contentDescription = "$teamName logó",
+                modifier = Modifier.fillMaxSize(),
+                loading = {
+                    Text(
+                        text = initials,
+                        color = Color(0xFF8C939D),
+                        fontSize = 8.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                },
+                error = {
+                    Text(
+                        text = initials,
+                        color = Color(0xFF8C939D),
+                        fontSize = 8.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            )
+        } else {
+            Text(
+                text = initials,
+                color = Color(0xFF8C939D),
+                fontSize = 8.sp,
+                fontWeight = FontWeight.Bold
+            )
+        }
+    }
+}
+
 @Composable
 fun PremiumMatchRow(
     match: MatchResponse,
@@ -310,15 +402,40 @@ fun PremiumMatchRow(
                 Text(text = statusText, color = subTextColor, fontSize = 10.sp, fontWeight = FontWeight.Medium)
             }
 
-            if (match.isValueBet == true) {
-                Text(text = "🔥 ÉRTÉKES", color = Color(0xFFFFD600), fontSize = 7.sp, fontWeight = FontWeight.Black)
-            }
         }
 
         Column(modifier = Modifier.weight(1f)) {
-            Text(text = match.homeTeam, color = textColor, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-            Spacer(modifier = Modifier.height(2.dp))
-            Text(text = match.awayTeam, color = textColor, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TeamLogo(
+                    url = match.homeLogoUrl,
+                    teamName = match.homeTeam
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = match.homeTeam,
+                    color = textColor,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1
+                )
+            }
+
+            Spacer(modifier = Modifier.height(4.dp))
+
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TeamLogo(
+                    url = match.awayLogoUrl,
+                    teamName = match.awayTeam
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = match.awayTeam,
+                    color = textColor,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1
+                )
+            }
         }
 
         Column(horizontalAlignment = Alignment.End) {
