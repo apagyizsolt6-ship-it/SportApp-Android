@@ -1,73 +1,47 @@
 from fastapi import FastAPI
 import requests
 import os
-import re
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 app = FastAPI()
 
 STATPAL_KEY = os.getenv("STATPAL_KEY")
 HIGHLIGHTLY_KEY = os.getenv("HIGHLIGHTLY_KEY")
 
-# ------------------------------------------------------------------
-# CACHE
-# StatPal Starter csomag: 50.000 hívás/nap. Az élő végpontok a StatPal
-#   szerverén is csak 15 mp-enként frissülnek, ezért nincs értelme ennél
-#   gyakrabban lekérdezni. Cache nélkül MINDEN kliens kérés = 1 StatPal
-#   hívás -> egy megosztott, folyamat-szintű cache-szel a StatPal-t
-#   ténylegesen csak STATPAL_CACHE_TTL másodpercenként hívjuk meg,
-#   függetlenül attól hányan nyitják meg az appot ugyanabban az ablakban.
-#   (86400 / 20 = 4320 hívás/nap a StatPal felé, az 50.000-es keret ~9%-a)
-#
-# Highlightly Ultra csomag: 25.000 hívás/nap. A /highlights végpont a
-#   dokumentáció szerint percenként frissül -> percnél gyakrabban kérni
-#   felesleges.
-#   (2 hívás/frissítés * 86400/90 = ~1920 hívás/nap, a 25.000-es keret ~8%-a)
-# ------------------------------------------------------------------
-STATPAL_CACHE_TTL = 20       # másodperc
-HIGHLIGHTLY_CACHE_TTL = 90   # másodperc
+STATPAL_CACHE_TTL = 20
+HIGHLIGHTLY_CACHE_TTL = 90
 
 _statpal_cache = {"data": None, "ts": 0.0}
 _highlightly_cache = {"data": None, "ts": 0.0}
 
+TOP_LEAGUES_ORDER = [
+    "ANGLIA: Premier League",
+    "SPANYOLORSZÁG: La Liga",
+    "OLASZORSZÁG: Serie A",
+    "NÉMETORSZÁG: Bundesliga",
+    "FRANCIAORSZÁG: Ligue 1"
+]
+
 TRANSLATIONS = {
-    # ORSZÁGOK & KONTINENSEK
     "england": "Anglia", "spain": "Spanyolország", "italy": "Olaszország",
     "germany": "Németország", "france": "Franciaország", "hungary": "Magyarország",
     "brazil": "Brazília", "argentina": "Argentína", "netherlands": "Hollandia",
-    "portugal": "Portugália", "turkey": "Törökország", "belgium": "Belgium",
-    "austria": "Ausztria", "poland": "Lengyelország", "croatia": "Horvátország",
-    "serbia": "Szerbia", "romania": "Románia", "slovakia": "Szlovákia",
-    "czech republic": "Csehország", "greece": "Görögország", "switzerland": "Svájc",
-    "denmark": "Dánia", "sweden": "Svédország", "norway": "Norvégia",
-    "scotland": "Skócia", "ukraine": "Ukrajna", "usa": "USA", "world": "Nemzetközi",
-    "europe": "Európa", "south america": "Dél-Amerika", "asia": "Ázsia",
-    "africa": "Afrika", "north america": "Észak-Amerika", "australia": "Ausztrália",
-    "ireland": "Írország", "northern ireland": "Észak-Írország", "wales": "Wales",
-    "finland": "Finnország", "iceland": "Izland", "slovenia": "Szlovénia",
-    "bulgaria": "Bulgária", "cyprus": "Ciprus", "israel": "Izrael",
-    "japan": "Japán", "south korea": "Dél-Korea", "china": "Kína",
-    "saudi arabia": "Szaúd-Arábia", "egypt": "Egyiptom", "morocco": "Marokkó",
-    "albania": "Albánia", "angola": "Angola", "belarus": "Fehéroroszország",
-    "kazakhstan": "Kazahsztán", "kenya": "Kenyai", "kosovo": "Koszovó",
-    "andorra": "Andorra", "georgia": "Grúzia", "armenia": "Örményország",
-    "azerbaijan": "Azerbajdzsán", "moldova": "Moldova", "bosnia & herzegovina": "Bosznia-Hercegovina",
-    "russia": "Oroszország", "southafrica": "Dél-Afrika", "south africa": "Dél-Afrika",
-    "united_arab_emirates": "Egyesült Arab Emírségek", "uae": "Egyesült Arab Emírségek",
-    "faroe_islands": "Feröer-szigetek", "faroe islands": "Feröer-szigetek",
-    "uzbekistan": "Üzbegisztán", "venezuela": "Venezuela", "tanzania": "Tanzánia",
-
-    # BAJNOKSÁGOK & KUPÁK
-    "premier league": "Premier League", "la liga": "La Liga", "serie a": "Serie A",
-    "bundesliga": "Bundesliga", "ligue 1": "Ligue 1", "nb i": "NB I", "nb ii": "NB II",
-    "champions league": "Bajnokok Ligája", "europa league": "Európa-liga",
-    "conference league": "Konferencia Liga", "world cup": "Világbajnokság",
-    "euro": "Európa-bajnokság", "copa america": "Copa América",
-    "dfb pokal": "Német Kupa", "copa del rey": "Spanyol Kupa",
-    "coppa italia": "Olasz Kupa", "fa cup": "FA Kupa", "efl cup": "Angol Ligakupa",
-    "moly kupa": "Magyar Kupa", "super cup": "Szuperkupa",
-    "friendly": "Barátságos Mérkőzés", "friendlies": "Barátságos Mérkőzések"
+    "holland": "Hollandia", "portugal": "Portugália", "turkey": "Törökország",
+    "belgium": "Belgium", "austria": "Ausztria", "poland": "Lengyelország",
+    "croatia": "Horvátország", "serbia": "Szerbia", "romania": "Románia",
+    "slovakia": "Szlovákia", "czech": "Csehország", "czech republic": "Csehország",
+    "greece": "Görögország", "switzerland": "Svájc", "denmark": "Dánia",
+    "sweden": "Svédország", "norway": "Norvégia", "scotland": "Skócia",
+    "ukraine": "Ukrajna", "usa": "USA", "world": "Nemzetközi", "europe": "Európa",
+    "saudi arabia": "Szaúd-Arábia", "saudiarabia": "Szaúd-Arábia", "egypt": "Egyiptom",
+    "estonia": "Észtország", "lithuania": "Litvánia", "luxembourg": "Luxemburg",
+    "malta": "Málta", "mexico": "Mexikó", "nicaragua": "Nicaragua",
+    "tunisia": "Tunézia", "uruguay": "Uruguay", "fiji": "Fidzsi-szigetek",
+    "dominican republic": "Dominikai Köztársaság", "equador": "Ecuador", "ecuador": "Ecuador",
+    "el salvador": "El Salvador", "kyrgyzstan": "Kirgizisztán", "latvia": "Lettország",
+    "russia": "Oroszország", "south africa": "Dél-Afrika", "uae": "Egyesült Arab Emírségek",
+    "faroe islands": "Feröer-szigetek", "uzbekistan": "Üzbegisztán", "venezuela": "Venezuela"
 }
 
 def translate_text(text):
@@ -80,7 +54,6 @@ def format_league_title(raw_country, raw_league):
     country_hu = translate_text(raw_country).upper()
     league_clean = str(raw_league or "Egyéb Bajnokság").strip()
 
-    # Megszünteti a duplázott országneveket a ligacímből
     if ":" in league_clean:
         parts = league_clean.split(":")
         league_clean = parts[-1].strip()
@@ -88,6 +61,16 @@ def format_league_title(raw_country, raw_league):
     if country_hu and country_hu not in league_clean.upper():
         return f"{country_hu}: {league_clean}"
     return league_clean
+
+def adjust_time(time_str):
+    if not time_str or ":" not in str(time_str):
+        return time_str
+    try:
+        dt = datetime.strptime(str(time_str).strip(), "%H:%M")
+        dt_adj = dt + timedelta(hours=2)
+        return dt_adj.strftime("%H:%M")
+    except:
+        return time_str
 
 def ensure_list(value):
     if value is None:
@@ -98,9 +81,7 @@ def ensure_list(value):
         return [value]
     return []
 
-
 def fetch_statpal_matches():
-    """StatPal meccsadatok lekérése, folyamat-szintű cache-elve (STATPAL_CACHE_TTL)."""
     now = time.time()
     if _statpal_cache["data"] is not None and (now - _statpal_cache["ts"]) < STATPAL_CACHE_TTL:
         return _statpal_cache["data"]
@@ -118,22 +99,7 @@ def fetch_statpal_matches():
     _statpal_cache["ts"] = now
     return data
 
-
 def fetch_highlightly_highlights():
-    """
-    Highlightly videók lekérése - JAVÍTVA:
-    - RÉGI (hibás) hívás: https://api.highlightly.net/v1/highlights?api_key=...
-      -> ez a domain/verzió soha nem is létezett, ezért highlights_data mindig
-         üres listaként tért vissza, a 🎥 gomb sosem jelent meg az appban.
-    - HELYES Highlightly (nem RapidAPI-n keresztüli) végpont a foci API-hoz:
-      https://soccer.highlightly.net/highlights
-      header: x-rapidapi-key: <kulcs>  (ez a header neve a Highlightly saját
-      kulcsainál is, nem csak RapidAPI-nál)
-      + kötelező legalább egy elsődleges query paraméter (pl. date=YYYY-MM-DD)
-    Ultra csomaggal (25.000 hívás/nap) bőven belefér, hogy naponta lekérjük a
-    mai nap videóit, akár 2 oldalban (limit=40 a max/oldal), hogy minél több
-    meccshez legyen videónk.
-    """
     if not HIGHLIGHTLY_KEY:
         return []
 
@@ -170,12 +136,11 @@ def fetch_highlightly_highlights():
     _highlightly_cache["ts"] = now
     return all_highlights
 
-
 @app.get("/api/matches")
 def get_matches():
     if not STATPAL_KEY:
         return [{
-            "id": "0", "league": "Hiba",
+            "id": "0", "league_id": "0", "league": "Hiba",
             "home_team": "StatPal Kulcs Hiányzik", "away_team": "Render Environment-ben",
             "home_score": 0, "away_score": 0, "status": "error", "minute": 0
         }]
@@ -195,6 +160,7 @@ def get_matches():
             if not isinstance(league, dict):
                 continue
             
+            league_id = str(league.get("id", ""))
             raw_country = league.get("country", "")
             raw_league = league.get("name", "Egyéb Bajnokság")
             full_league_title = format_league_title(raw_country, raw_league)
@@ -245,14 +211,18 @@ def get_matches():
                     except:
                         minute_val = 0
 
+                raw_status = m.get("status", "live")
+                adjusted_status = adjust_time(raw_status)
+
                 matches_list.append({
                     "id": str(m.get("main_id", "")),
+                    "league_id": league_id,
                     "league": full_league_title,
                     "home_team": home_name,
                     "away_team": away_name,
                     "home_score": home_score,
                     "away_score": away_score,
-                    "status": m.get("status", "live"),
+                    "status": adjusted_status,
                     "minute": minute_val,
                     "highlight_url": highlight_url,
                     "value_bet": True if m.get("inplay_odds_running") == "True" else False
@@ -260,27 +230,76 @@ def get_matches():
 
         if not matches_list:
             return [{
-                "id": "0", "league": "Információ",
+                "id": "0", "league_id": "0", "league": "Információ",
                 "home_team": "Jelenleg nincs", "away_team": "aktív mérkőzés",
                 "home_score": None, "away_score": None, "status": "info", "minute": 0
             }]
 
+        def get_league_sort_key(item):
+            league_title = item["league"]
+            if league_title in TOP_LEAGUES_ORDER:
+                return (0, TOP_LEAGUES_ORDER.index(league_title))
+            return (1, league_title)
+
+        matches_list.sort(key=get_league_sort_key)
         return matches_list
 
     except Exception as e:
         return [{
-            "id": "err", "league": "Szerver hiba",
+            "id": "err", "league_id": "0", "league": "Szerver hiba",
             "home_team": "API Hiba", "away_team": str(e)[:20],
             "home_score": None, "away_score": None, "status": "error", "minute": 0
         }]
 
+@app.get("/api/standings/{league_id}")
+def get_standings(league_id: str):
+    if not STATPAL_KEY or not league_id:
+        return []
+
+    try:
+        url = f"https://statpal.io/api/v2/soccer/leagues/{league_id}/standings?access_key={STATPAL_KEY}"
+        res = requests.get(url, timeout=10)
+        if res.status_code != 200:
+            return []
+
+        data = res.json()
+        standings_data = data.get("standings", {})
+        tournament = standings_data.get("tournament", {})
+        
+        if isinstance(tournament, list) and len(tournament) > 0:
+            tournament = tournament[0]
+
+        team_list = ensure_list(tournament.get("team"))
+        standings = []
+
+        for t in team_list:
+            if not isinstance(t, dict):
+                continue
+            
+            overall = t.get("overall", {})
+            total = t.get("total", {})
+
+            standings.append({
+                "position": int(t.get("position", 0)),
+                "team": translate_text(t.get("name", "Csapat")),
+                "played": int(overall.get("games_played", 0)),
+                "wins": int(overall.get("wins", 0)),
+                "draws": int(overall.get("draws", 0)),
+                "losses": int(overall.get("losses", 0)),
+                "goalsScored": int(overall.get("goals_scored", 0)),
+                "goalsAllowed": int(overall.get("goals_allowed", 0)),
+                "goalDifference": str(total.get("goal_difference", "0")),
+                "points": int(total.get("points", 0))
+            })
+
+        standings.sort(key=lambda x: x["position"])
+        return standings
+    except Exception:
+        return []
 
 @app.get("/api/status")
 def get_status():
-    """Gyors ellenőrzés Render-en: mikor volt az utolsó valódi StatPal/Highlightly
-    hívás, és mennyi ideig érvényes még a cache-elt adat."""
     now = time.time()
-
     def cache_info(cache, ttl):
         if cache["data"] is None:
             return {"cached": False}
