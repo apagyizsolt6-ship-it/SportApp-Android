@@ -27,6 +27,9 @@ import androidx.media3.common.MediaItem
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import com.sportapp.models.MatchResponse
+import com.sportapp.api.RetrofitInstance
+import com.sportapp.api.StandingTeam
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -36,8 +39,13 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
     var isDarkMode by remember { mutableStateOf(true) }
     var selectedTab by remember { mutableIntStateOf(0) } // 0: ÖSSZES, 1: ÉLŐ, 2: ÉRTÉKES, 3: KEDVENCEK
     var searchQuery by remember { mutableStateOf("") }
-    var favoriteIds by remember { mutableStateOf(setOf<String>()) }
+    
+    // Kedvenc meccsek és ligák elmentése
+    var favoriteMatchIds by remember { mutableStateOf(setOf<String>()) }
+    var favoriteLeagueNames by remember { mutableStateOf(setOf<String>()) }
+    
     var selectedVideoUrl by remember { mutableStateOf<String?>(null) }
+    var selectedLeaguePair by remember { mutableStateOf<Pair<String, String>?>(null) }
 
     val bgColor by animateColorAsState(if (isDarkMode) Color(0xFF101214) else Color(0xFFF4F6F8), label = "bg")
     val cardBgColor by animateColorAsState(if (isDarkMode) Color(0xFF1A1D21) else Color(0xFFFFFFFF), label = "card")
@@ -47,17 +55,21 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
     val subTextColor by animateColorAsState(if (isDarkMode) Color(0xFF8C939D) else Color(0xFF6C757D), label = "subtext")
     val primaryGreen = Color(0xFF00E676)
 
-    val filteredMatches = remember(matches, selectedTab, searchQuery, favoriteIds) {
+    val filteredMatches = remember(matches, selectedTab, searchQuery, favoriteMatchIds, favoriteLeagueNames) {
         matches.filter { match ->
+            val leagueName = match.league ?: "EGYÉB BAJNOKSÁG"
+            val isLeagueFav = favoriteLeagueNames.contains(leagueName)
+            val isMatchFav = favoriteMatchIds.contains(match.matchId)
+
             val matchesSearch = searchQuery.isEmpty() ||
                     match.homeTeam.contains(searchQuery, ignoreCase = true) ||
                     match.awayTeam.contains(searchQuery, ignoreCase = true) ||
-                    (match.league ?: "").contains(searchQuery, ignoreCase = true)
+                    leagueName.contains(searchQuery, ignoreCase = true)
 
             val matchesTab = when (selectedTab) {
                 1 -> match.status != "FT" && (match.minute ?: 0) > 0
                 2 -> match.isValueBet == true
-                3 -> favoriteIds.contains(match.matchId)
+                3 -> isMatchFav || isLeagueFav
                 else -> true
             }
 
@@ -65,8 +77,12 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
         }
     }
 
-    val groupedMatches = remember(filteredMatches) {
-        filteredMatches.groupBy { it.league ?: "EGYÉB BAJNOKSÁG" }
+    // Kedvenc ligák kiemelése a lista tetejére
+    val groupedMatches = remember(filteredMatches, favoriteLeagueNames) {
+        val groups = filteredMatches.groupBy { it.league ?: "EGYÉB BAJNOKSÁG" }
+        groups.entries.sortedByDescending { (leagueName, _) ->
+            favoriteLeagueNames.contains(leagueName)
+        }.toMap()
     }
 
     Surface(
@@ -74,7 +90,6 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
         color = bgColor
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
-            // Fejléc
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -105,7 +120,6 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                 }
             }
 
-            // Keresősáv (kompatibilis színbeállításokkal)
             TextField(
                 value = searchQuery,
                 onValueChange = { searchQuery = it },
@@ -124,7 +138,6 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                     .clip(RoundedCornerShape(8.dp))
             )
 
-            // Szűrő Fülek
             TabRow(
                 selectedTabIndex = selectedTab,
                 containerColor = headerBgColor,
@@ -152,25 +165,56 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
             } else {
                 LazyColumn(modifier = Modifier.fillMaxSize()) {
                     groupedMatches.forEach { (leagueName, leagueMatches) ->
+                        val leagueId = leagueMatches.firstOrNull()?.leagueId ?: ""
+                        val isLeagueFav = favoriteLeagueNames.contains(leagueName)
+
                         item {
-                            Box(
+                            // Liga Fejléc Csillaggal És Tabella Gombbal
+                            Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .background(leagueBgColor)
-                                    .padding(horizontal = 16.dp, vertical = 6.dp)
+                                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Text(
+                                        text = if (isLeagueFav) "★ " else "☆ ",
+                                        color = if (isLeagueFav) Color(0xFFFF9100) else subTextColor,
+                                        fontSize = 16.sp,
+                                        modifier = Modifier.clickable {
+                                            favoriteLeagueNames = if (isLeagueFav) favoriteLeagueNames - leagueName else favoriteLeagueNames + leagueName
+                                        }
+                                    )
+                                    Text(
+                                        text = leagueName.uppercase(),
+                                        color = textColor,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        letterSpacing = 0.5.sp
+                                    )
+                                }
+
                                 Text(
-                                    text = leagueName.uppercase(),
-                                    color = textColor,
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.ExtraBold,
-                                    letterSpacing = 0.5.sp
+                                    text = "📊 TABELLA ➔",
+                                    color = primaryGreen,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.clickable {
+                                        if (leagueId.isNotEmpty()) {
+                                            selectedLeaguePair = Pair(leagueId, leagueName)
+                                        }
+                                    }
                                 )
                             }
                         }
 
                         items(leagueMatches) { match ->
-                            val isFav = favoriteIds.contains(match.matchId)
+                            val isFav = favoriteMatchIds.contains(match.matchId)
                             PremiumMatchRow(
                                 match = match,
                                 isFavorite = isFav,
@@ -179,7 +223,7 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                                 subTextColor = subTextColor,
                                 primaryGreen = primaryGreen,
                                 onFavoriteToggle = {
-                                    favoriteIds = if (isFav) favoriteIds - match.matchId else favoriteIds + match.matchId
+                                    favoriteMatchIds = if (isFav) favoriteMatchIds - match.matchId else favoriteMatchIds + match.matchId
                                 },
                                 onVideoClick = { url -> selectedVideoUrl = url }
                             )
@@ -193,6 +237,12 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
 
     selectedVideoUrl?.let { url ->
         VideoPlayerDialog(url = url) { selectedVideoUrl = null }
+    }
+
+    selectedLeaguePair?.let { (leagueId, leagueName) ->
+        FullLeagueTableDialog(leagueId = leagueId, leagueName = leagueName, isDarkMode = isDarkMode) {
+            selectedLeaguePair = null
+        }
     }
 }
 
@@ -214,7 +264,6 @@ fun PremiumMatchRow(
             .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // Kedvencek csillag
         Text(
             text = if (isFavorite) "★" else "☆",
             color = if (isFavorite) Color(0xFFFF9100) else subTextColor,
@@ -224,7 +273,6 @@ fun PremiumMatchRow(
                 .padding(end = 8.dp)
         )
 
-        // Perc & Státusz
         Column(
             modifier = Modifier.width(55.dp),
             horizontalAlignment = Alignment.Start
@@ -259,14 +307,12 @@ fun PremiumMatchRow(
             }
         }
 
-        // Csapatnevek
         Column(modifier = Modifier.weight(1f)) {
             Text(text = match.homeTeam, color = textColor, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
             Spacer(modifier = Modifier.height(2.dp))
             Text(text = match.awayTeam, color = textColor, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
         }
 
-        // Gólok
         Column(horizontalAlignment = Alignment.End) {
             Text(
                 text = "${match.homeScore ?: 0}",
@@ -283,7 +329,6 @@ fun PremiumMatchRow(
             )
         }
 
-        // Videó gomb
         match.highlightUrl?.let { url ->
             Spacer(modifier = Modifier.width(8.dp))
             Box(
@@ -294,6 +339,99 @@ fun PremiumMatchRow(
                     .padding(horizontal = 6.dp, vertical = 4.dp)
             ) {
                 Text(text = "🎥", color = Color.White, fontSize = 11.sp)
+            }
+        }
+    }
+}
+
+@Composable
+fun FullLeagueTableDialog(leagueId: String, leagueName: String, isDarkMode: Boolean, onDismiss: () -> Unit) {
+    val dialogBg = if (isDarkMode) Color(0xFF1A1D21) else Color(0xFFFFFFFF)
+    val textColor = if (isDarkMode) Color.White else Color.Black
+    val coroutineScope = rememberCoroutineScope()
+    var standings by remember { mutableStateOf<List<StandingTeam>>(emptyList()) }
+    var isLoading by remember { mutableStateOf(true) }
+
+    LaunchedEffect(leagueId) {
+        coroutineScope.launch {
+            try {
+                val api = RetrofitInstance.api
+                standings = api.getStandings(leagueId)
+            } catch (e: Exception) {
+                standings = emptyList()
+            } finally {
+                isLoading = false
+            }
+        }
+    }
+
+    Dialog(onDismissRequest = onDismiss) {
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(8.dp),
+            shape = RoundedCornerShape(16.dp),
+            colors = CardDefaults.cardColors(containerColor = dialogBg)
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text(
+                    text = "📊 $leagueName Tabella",
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFF00E676)
+                )
+                Spacer(modifier = Modifier.height(10.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("#", fontWeight = FontWeight.Bold, color = Color.Gray, fontSize = 10.sp, modifier = Modifier.width(20.dp))
+                    Text("CSAPAT", fontWeight = FontWeight.Bold, color = Color.Gray, fontSize = 10.sp, modifier = Modifier.weight(1f))
+                    Text("M", fontWeight = FontWeight.Bold, color = Color.Gray, fontSize = 10.sp, modifier = Modifier.width(22.dp))
+                    Text("GY", fontWeight = FontWeight.Bold, color = Color.Gray, fontSize = 10.sp, modifier = Modifier.width(22.dp))
+                    Text("D", fontWeight = FontWeight.Bold, color = Color.Gray, fontSize = 10.sp, modifier = Modifier.width(22.dp))
+                    Text("V", fontWeight = FontWeight.Bold, color = Color.Gray, fontSize = 10.sp, modifier = Modifier.width(22.dp))
+                    Text("GÓL", fontWeight = FontWeight.Bold, color = Color.Gray, fontSize = 10.sp, modifier = Modifier.width(36.dp))
+                    Text("P", fontWeight = FontWeight.Bold, color = Color(0xFF00E676), fontSize = 10.sp, modifier = Modifier.width(24.dp))
+                }
+                Divider(color = Color.Gray, thickness = 1.dp)
+
+                if (isLoading) {
+                    Box(modifier = Modifier.fillMaxWidth().height(150.dp), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator(color = Color(0xFF00E676))
+                    }
+                } else if (standings.isEmpty()) {
+                    Text("A tabella jelenleg nem érhető el ehhez a ligához.", color = Color.Gray, fontSize = 11.sp, modifier = Modifier.padding(vertical = 16.dp))
+                } else {
+                    LazyColumn(modifier = Modifier.heightIn(max = 350.dp)) {
+                        items(standings) { item ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("${item.position}.", color = textColor, fontSize = 10.sp, fontWeight = FontWeight.Bold, modifier = Modifier.width(20.dp))
+                                Text(item.team, color = textColor, fontSize = 11.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                                Text("${item.played}", color = textColor, fontSize = 10.sp, modifier = Modifier.width(22.dp))
+                                Text("${item.wins}", color = textColor, fontSize = 10.sp, modifier = Modifier.width(22.dp))
+                                Text("${item.draws}", color = textColor, fontSize = 10.sp, modifier = Modifier.width(22.dp))
+                                Text("${item.losses}", color = textColor, fontSize = 10.sp, modifier = Modifier.width(22.dp))
+                                Text("${item.goalsScored}:${item.goalsAllowed}", color = textColor, fontSize = 10.sp, modifier = Modifier.width(36.dp))
+                                Text("${item.points}", color = Color(0xFF00E676), fontSize = 11.sp, fontWeight = FontWeight.Bold, modifier = Modifier.width(24.dp))
+                            }
+                            Divider(color = Color(0xFF2B2B2B), thickness = 0.5.dp)
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+                Button(
+                    onClick = onDismiss,
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00E676)),
+                    modifier = Modifier.align(Alignment.End)
+                ) {
+                    Text("Bezárás", color = Color.Black, fontSize = 12.sp)
+                }
             }
         }
     }
