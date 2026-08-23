@@ -203,15 +203,17 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                                         modifier = Modifier.padding(end = 6.dp)
                                     )
 
-                                    if (!firstLeagueMatch?.leagueLogoUrl.isNullOrBlank()) {
-                                        AsyncImage(
-                                            model = firstLeagueMatch.leagueLogoUrl,
-                                            contentDescription = "$leagueName logó",
-                                            modifier = Modifier
-                                                .size(18.dp)
-                                                .clip(RoundedCornerShape(4.dp))
-                                        )
-                                        Spacer(modifier = Modifier.width(5.dp))
+                                    firstLeagueMatch?.let { leagueMatch ->
+                                        if (!leagueMatch.leagueLogoUrl.isNullOrBlank()) {
+                                            AsyncImage(
+                                                model = leagueMatch.leagueLogoUrl,
+                                                contentDescription = "$leagueName logó",
+                                                modifier = Modifier
+                                                    .size(18.dp)
+                                                    .clip(RoundedCornerShape(4.dp))
+                                            )
+                                            Spacer(modifier = Modifier.width(5.dp))
+                                        }
                                     }
 
                                     Text(
