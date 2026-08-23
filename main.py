@@ -7,10 +7,62 @@ app = FastAPI()
 STATPAL_KEY = os.getenv("STATPAL_KEY")
 HIGHLIGHTLY_KEY = os.getenv("HIGHLIGHTLY_KEY")
 
+# GIGANTIKUS FULLOS MAGYARÍTÓ SZÓTÁR
+TRANSLATIONS = {
+    # ORSZÁGOK & KONTINENSEK
+    "england": "Anglia", "spain": "Spanyolország", "italy": "Olaszország",
+    "germany": "Németország", "france": "Franciaország", "hungary": "Magyarország",
+    "brazil": "Brazília", "argentina": "Argentína", "netherlands": "Hollandia",
+    "portugal": "Portugália", "turkey": "Törökország", "belgium": "Belgium",
+    "austria": "Ausztria", "poland": "Lengyelország", "croatia": "Horvátország",
+    "serbia": "Szerbia", "romania": "Románia", "slovakia": "Szlovákia",
+    "czech republic": "Csehország", "greece": "Görögország", "switzerland": "Svájc",
+    "denmark": "Dánia", "sweden": "Svédország", "norway": "Norvégia",
+    "scotland": "Skócia", "ukraine": "Ukrajna", "usa": "USA", "world": "Nemzetközi",
+    "europe": "Európa", "south america": "Dél-Amerika", "asia": "Ázsia",
+    "africa": "Afrika", "north america": "Észak-Amerika", "australia": "Ausztrália",
+    "ireland": "Írország", "northern ireland": "Észak-Írország", "wales": "Wales",
+    "finland": "Finnország", "iceland": "Izland", "slovenia": "Szlovénia",
+    "bulgaria": "Bulgária", "cyprus": "Ciprus", "israel": "Izrael",
+    "japan": "Japán", "south korea": "Dél-Korea", "china": "Kína",
+    "saudi arabia": "Szaúd-Arábia", "egypt": "Egyiptom", "morocco": "Marokkó",
+    "albania": "Albánia", "angola": "Angola", "belarus": "Fehéroroszország",
+    "kazakhstan": "Kazahsztán", "kenya": "Kenyai", "kosovo": "Koszovó",
+    "andorra": "Andorra", "georgia": "Grúzia", "armenia": "Örményország",
+    "azerbaijan": "Azerbajdzsán", "moldova": "Moldova", "bosnia & herzegovina": "Bosznia-Hercegovina",
+
+    # BAJNOKSÁGOK & KUPÁK
+    "premier league": "Premier League", "la liga": "La Liga", "serie a": "Serie A",
+    "bundesliga": "Bundesliga", "ligue 1": "Ligue 1", "nb i": "NB I", "nb ii": "NB II",
+    "champions league": "Bajnokok Ligája", "europa league": "Európa-liga",
+    "conference league": "Konferencia Liga", "world cup": "Világbajnokság",
+    "euro": "Európa-bajnokság", "copa america": "Copa América",
+    "dfb pokal": "Német Kupa", "copa del rey": "Spanyol Kupa",
+    "coppa italia": "Olasz Kupa", "fa cup": "FA Kupa", "efl cup": "Angol Ligakupa",
+    "moly kupa": "Magyar Kupa", "super cup": "Szuperkupa",
+    "friendly": "Barátságos Mérkőzés", "friendlies": "Barátságos Mérkőzések",
+
+    # CSAPATOK
+    "bayern munich": "Bayern München", "red star belgrade": "Crvena Zvezda",
+    "sporting cp": "Sporting Lisszabon", "inter": "Inter Milánó",
+    "ac milan": "AC Milan", "as roma": "AS Roma", "real madrid": "Real Madrid",
+    "barcelona": "FC Barcelona", "atletico madrid": "Atlético Madrid",
+    "manchester united": "Manchester United", "manchester city": "Manchester City",
+    "liverpool": "Liverpool", "chelsea": "Chelsea", "arsenal": "Arsenal",
+    "tottenham": "Tottenham Hotspur", "juventus": "Juventus",
+    "paris saint germain": "PSG", "psg": "PSG", "ferencvaros": "Ferencváros",
+    "uipest": "Újpest FC", "fehervar": "Fehérvár FC", "debrecen": "Debreceni VSC",
+    "paks": "Paksi FC", "puskas akademia": "Puskás Akadémia", "gyor": "ETO FC Győr",
+    "zalaegerszeg": "Zalaegerszegi TE", "kisvarda": "Kisvárda", "diósgyőr": "DVTK"
+}
+
+def translate_text(text):
+    if not text:
+        return ""
+    clean = str(text).strip()
+    return TRANSLATIONS.get(clean.lower(), clean)
 
 def ensure_list(value):
-    """A StatPal API (XML->JSON konverzió miatt) egy elem esetén nem listát,
-    hanem egyetlen dict-et ad vissza. Ez a helper mindig listává alakítja."""
     if value is None:
         return []
     if isinstance(value, list):
@@ -23,14 +75,9 @@ def ensure_list(value):
 def get_matches():
     if not STATPAL_KEY:
         return [{
-            "id": "0", 
-            "league": "Hiba",
-            "home_team": "StatPal Kulcs Hiányzik", 
-            "away_team": "Render Environment-ben", 
-            "home_score": 0, 
-            "away_score": 0, 
-            "status": "error", 
-            "minute": 0
+            "id": "0", "league": "Hiba",
+            "home_team": "StatPal Kulcs Hiányzik", "away_team": "Render Environment-ben",
+            "home_score": 0, "away_score": 0, "status": "error", "minute": 0
         }]
 
     try:
@@ -65,22 +112,29 @@ def get_matches():
             if not isinstance(league, dict):
                 continue
             
-            league_name = league.get("name", "Egyéb Bajnokság")
-            country_name = league.get("country", "")
-            full_league_title = f"{country_name.upper()} - {league_name}" if country_name else league_name
+            # Ország és Bajnokság magyarítása & egyedi összefűzése
+            raw_country = league.get("country", "")
+            raw_league = league.get("name", "Egyéb Bajnokság")
+            
+            hu_country = translate_text(raw_country).upper()
+            hu_league = translate_text(raw_league)
+
+            # EGYEDI KULCS: megakadályozza a szétcsúszást (pl. OLASZORSZÁG: Serie A)
+            if hu_country and hu_country not in hu_league.upper():
+                full_league_title = f"{hu_country}: {hu_league}"
+            else:
+                full_league_title = hu_league
 
             matches = ensure_list(league.get("match"))
             for m in matches:
                 if not isinstance(m, dict):
                     continue
+                
                 home_data = m.get("home") or {}
                 away_data = m.get("away") or {}
-                if not isinstance(home_data, dict):
-                    home_data = {}
-                if not isinstance(away_data, dict):
-                    away_data = {}
-                home_name = home_data.get("name", "Hazai")
-                away_name = away_data.get("name", "Vendég")
+                
+                home_name = translate_text(home_data.get("name", "Hazai"))
+                away_name = translate_text(away_data.get("name", "Vendég"))
 
                 highlight_url = None
                 if isinstance(highlights_data, list):
@@ -132,26 +186,16 @@ def get_matches():
 
         if not matches_list:
             return [{
-                "id": "0", 
-                "league": "Információ",
-                "home_team": "Mára nincs több", 
-                "away_team": "kiírt mérkőzés", 
-                "home_score": None, 
-                "away_score": None, 
-                "status": "info", 
-                "minute": 0
+                "id": "0", "league": "Információ",
+                "home_team": "Jelenleg nincs", "away_team": "aktív mérkőzés",
+                "home_score": None, "away_score": None, "status": "info", "minute": 0
             }]
 
         return matches_list
 
     except Exception as e:
         return [{
-            "id": "err", 
-            "league": "Szerver hiba",
-            "home_team": "API Hiba", 
-            "away_team": str(e)[:20], 
-            "home_score": None, 
-            "away_score": None, 
-            "status": "error", 
-            "minute": 0
+            "id": "err", "league": "Szerver hiba",
+            "home_team": "API Hiba", "away_team": str(e)[:20],
+            "home_score": None, "away_score": None, "status": "error", "minute": 0
         }]
