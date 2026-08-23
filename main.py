@@ -7,6 +7,19 @@ app = FastAPI()
 STATPAL_KEY = os.getenv("STATPAL_KEY")
 HIGHLIGHTLY_KEY = os.getenv("HIGHLIGHTLY_KEY")
 
+
+def ensure_list(value):
+    """A StatPal API (XML->JSON konverzió miatt) egy elem esetén nem listát,
+    hanem egyetlen dict-et ad vissza. Ez a helper mindig listává alakítja,
+    hogy a 'for x in ...: x.get(...)' soha ne fusson stringeken/kulcsokon."""
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, dict):
+        return [value]
+    return []
+
 @app.get("/api/matches")
 def get_matches():
     if not STATPAL_KEY:
@@ -36,7 +49,9 @@ def get_matches():
         matches_list = []
         
         live_matches_data = data.get("live_matches") or data.get("matches") or {}
-        leagues = live_matches_data.get("league") or []
+        if not isinstance(live_matches_data, dict):
+            live_matches_data = {}
+        leagues = ensure_list(live_matches_data.get("league"))
 
         # Highlightly videók lekérése
         highlights_data = []
@@ -51,10 +66,18 @@ def get_matches():
                 pass
 
         for league in leagues:
-            matches = league.get("match") or []
+            if not isinstance(league, dict):
+                continue
+            matches = ensure_list(league.get("match"))
             for m in matches:
+                if not isinstance(m, dict):
+                    continue
                 home_data = m.get("home") or {}
                 away_data = m.get("away") or {}
+                if not isinstance(home_data, dict):
+                    home_data = {}
+                if not isinstance(away_data, dict):
+                    away_data = {}
                 home_name = home_data.get("name", "Hazai")
                 away_name = away_data.get("name", "Vendég")
 
@@ -82,10 +105,14 @@ def get_matches():
                     away_score = 0
 
                 minute_val = 0
-                events = (m.get("events") or {}).get("event") or []
-                if isinstance(events, list) and len(events) > 0:
+                events_container = m.get("events") or {}
+                if not isinstance(events_container, dict):
+                    events_container = {}
+                events = ensure_list(events_container.get("event"))
+                if events:
                     try:
-                        minute_val = int(events[-1].get("minute", 0))
+                        last_event = events[-1]
+                        minute_val = int(last_event.get("minute", 0)) if isinstance(last_event, dict) else 0
                     except:
                         minute_val = 0
 
