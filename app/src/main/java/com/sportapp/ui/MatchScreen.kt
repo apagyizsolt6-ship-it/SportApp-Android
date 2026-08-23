@@ -105,7 +105,7 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                 }
             }
 
-            // Keresősáv
+            // Keresősáv (kompatibilis színbeállításokkal)
             TextField(
                 value = searchQuery,
                 onValueChange = { searchQuery = it },
@@ -115,7 +115,8 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                     containerColor = headerBgColor,
                     focusedIndicatorColor = primaryGreen,
                     unfocusedIndicatorColor = Color.Transparent,
-                    textColor = textColor
+                    focusedTextColor = textColor,
+                    unfocusedTextColor = textColor
                 ),
                 modifier = Modifier
                     .fillMaxWidth()
