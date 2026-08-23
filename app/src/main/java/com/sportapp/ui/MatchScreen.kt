@@ -37,10 +37,9 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
     val matches by viewModel.matches.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
     var isDarkMode by remember { mutableStateOf(true) }
-    var selectedTab by remember { mutableIntStateOf(0) } // 0: ÖSSZES, 1: ÉLŐ, 2: ÉRTÉKES, 3: KEDVENCEK
+    var selectedTab by remember { mutableIntStateOf(0) }
     var searchQuery by remember { mutableStateOf("") }
     
-    // Kedvenc meccsek és ligák elmentése
     var favoriteMatchIds by remember { mutableStateOf(setOf<String>()) }
     var favoriteLeagueNames by remember { mutableStateOf(setOf<String>()) }
     
@@ -59,7 +58,7 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
         matches.filter { match ->
             val leagueName = match.league ?: "EGYÉB BAJNOKSÁG"
             val isLeagueFav = favoriteLeagueNames.contains(leagueName)
-            val isMatchFav = favoriteMatchIds.contains(match.matchId)
+            val isMatchFav = favoriteMatchIds.contains(match.id)
 
             val matchesSearch = searchQuery.isEmpty() ||
                     match.homeTeam.contains(searchQuery, ignoreCase = true) ||
@@ -77,12 +76,11 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
         }
     }
 
-    // Kedvenc ligák kiemelése a lista tetejére
-    val groupedMatches = remember(filteredMatches, favoriteLeagueNames) {
+    val groupedMatchesList = remember(filteredMatches, favoriteLeagueNames) {
         val groups = filteredMatches.groupBy { it.league ?: "EGYÉB BAJNOKSÁG" }
         groups.entries.sortedByDescending { (leagueName, _) ->
             favoriteLeagueNames.contains(leagueName)
-        }.toMap()
+        }
     }
 
     Surface(
@@ -164,12 +162,10 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                 }
             } else {
                 LazyColumn(modifier = Modifier.fillMaxSize()) {
-                    groupedMatches.forEach { (leagueName, leagueMatches) ->
-                        val leagueId = leagueMatches.firstOrNull()?.leagueId ?: ""
+                    groupedMatchesList.forEach { (leagueName, leagueMatches) ->
                         val isLeagueFav = favoriteLeagueNames.contains(leagueName)
 
                         item {
-                            // Liga Fejléc Csillaggal És Tabella Gombbal
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -187,7 +183,11 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                                         color = if (isLeagueFav) Color(0xFFFF9100) else subTextColor,
                                         fontSize = 16.sp,
                                         modifier = Modifier.clickable {
-                                            favoriteLeagueNames = if (isLeagueFav) favoriteLeagueNames - leagueName else favoriteLeagueNames + leagueName
+                                            favoriteLeagueNames = if (isLeagueFav) {
+                                                favoriteLeagueNames.filter { it != leagueName }.toSet()
+                                            } else {
+                                                favoriteLeagueNames + leagueName
+                                            }
                                         }
                                     )
                                     Text(
@@ -205,16 +205,14 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                                     fontSize = 10.sp,
                                     fontWeight = FontWeight.Bold,
                                     modifier = Modifier.clickable {
-                                        if (leagueId.isNotEmpty()) {
-                                            selectedLeaguePair = Pair(leagueId, leagueName)
-                                        }
+                                        selectedLeaguePair = Pair(leagueName, leagueName)
                                     }
                                 )
                             }
                         }
 
                         items(leagueMatches) { match ->
-                            val isFav = favoriteMatchIds.contains(match.matchId)
+                            val isFav = favoriteMatchIds.contains(match.id)
                             PremiumMatchRow(
                                 match = match,
                                 isFavorite = isFav,
@@ -223,7 +221,11 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                                 subTextColor = subTextColor,
                                 primaryGreen = primaryGreen,
                                 onFavoriteToggle = {
-                                    favoriteMatchIds = if (isFav) favoriteMatchIds - match.matchId else favoriteMatchIds + match.matchId
+                                    favoriteMatchIds = if (isFav) {
+                                        favoriteMatchIds.filter { it != match.id }.toSet()
+                                    } else {
+                                        favoriteMatchIds + match.id
+                                    }
                                 },
                                 onVideoClick = { url -> selectedVideoUrl = url }
                             )
