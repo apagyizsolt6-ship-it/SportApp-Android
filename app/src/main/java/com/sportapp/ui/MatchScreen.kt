@@ -41,10 +41,34 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
     var isDarkMode by remember { mutableStateOf(true) }
     var selectedTab by remember { mutableIntStateOf(0) }
     var searchQuery by remember { mutableStateOf("") }
-    
+
+    val context = LocalContext.current
+    val favoritePrefs = remember(context) {
+        context.getSharedPreferences(
+            "match_screen_preferences",
+            android.content.Context.MODE_PRIVATE
+        )
+    }
+
     var favoriteMatchIds by remember { mutableStateOf(setOf<String>()) }
-    var favoriteLeagueNames by remember { mutableStateOf(setOf<String>()) }
-    
+
+    // Korlátlan számú kedvenc liga. A kiválasztás tartósan elmentésre kerül.
+    var favoriteLeagueNames by remember {
+        mutableStateOf(
+            favoritePrefs
+                .getStringSet("favorite_leagues", emptySet())
+                ?.toSet()
+                ?: emptySet()
+        )
+    }
+
+    // Minden módosítás után elmentjük a kedvenc ligák aktuális listáját.
+    LaunchedEffect(favoriteLeagueNames) {
+        favoritePrefs.edit()
+            .putStringSet("favorite_leagues", favoriteLeagueNames)
+            .apply()
+    }
+
     var selectedVideoUrl by remember { mutableStateOf<String?>(null) }
     var selectedLeaguePair by remember { mutableStateOf<Pair<String, String>?>(null) }
 
@@ -69,8 +93,7 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
 
             val matchesTab = when (selectedTab) {
                 1 -> match.status != "FT" && (match.minute ?: 0) > 0
-                2 -> match.isValueBet == true
-                3 -> isMatchFav || isLeagueFav
+                2 -> isMatchFav || isLeagueFav
                 else -> true
             }
 
@@ -145,18 +168,32 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                 divider = { Divider(color = leagueBgColor, thickness = 1.dp) }
             ) {
                 Tab(selected = selectedTab == 0, onClick = { selectedTab = 0 }) {
-                    Text("ÖSSZES", modifier = Modifier.padding(vertical = 10.dp), color = if(selectedTab == 0) primaryGreen else subTextColor, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    Text(
+                        "ÖSSZES",
+                        modifier = Modifier.padding(vertical = 10.dp),
+                        color = if (selectedTab == 0) primaryGreen else subTextColor,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold
+                    )
                 }
                 Tab(selected = selectedTab == 1, onClick = { selectedTab = 1 }) {
-                    Text("🔴 ÉLŐ", modifier = Modifier.padding(vertical = 10.dp), color = if(selectedTab == 1) primaryGreen else subTextColor, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    Text(
+                        "🔴 ÉLŐ",
+                        modifier = Modifier.padding(vertical = 10.dp),
+                        color = if (selectedTab == 1) primaryGreen else subTextColor,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold
+                    )
                 }
                 Tab(selected = selectedTab == 2, onClick = { selectedTab = 2 }) {
-                    Text("🔥 ÉRTÉKES", modifier = Modifier.padding(vertical = 10.dp), color = if(selectedTab == 2) Color(0xFFFFD600) else subTextColor, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    Text(
+                        "⭐ KEDVENC",
+                        modifier = Modifier.padding(vertical = 10.dp),
+                        color = if (selectedTab == 2) Color(0xFFFF9100) else subTextColor,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold
+                    )
                 }
-                Tab(selected = selectedTab == 3, onClick = { selectedTab = 3 }) {
-                    Text("⭐ KEDVENC", modifier = Modifier.padding(vertical = 10.dp), color = if(selectedTab == 3) Color(0xFFFF9100) else subTextColor, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                }
-            }
 
             if (isLoading) {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -180,6 +217,8 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                                     verticalAlignment = Alignment.CenterVertically,
                                     modifier = Modifier.weight(1f)
                                 ) {
+                                    // Korlátlan számú liga jelölhető ki.
+                                    // Újabb koppintás ugyanitt visszavonja a kiemelést.
                                     Text(
                                         text = if (isLeagueFav) "★" else "☆",
                                         color = if (isLeagueFav) Color(0xFFFF9100) else subTextColor,
