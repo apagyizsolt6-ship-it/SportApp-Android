@@ -205,7 +205,13 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                                     fontSize = 10.sp,
                                     fontWeight = FontWeight.Bold,
                                     modifier = Modifier.clickable {
-                                        selectedLeaguePair = Pair(leagueName, leagueName)
+                                        val realLeagueId = leagueMatches
+                                            .firstOrNull()
+                                            ?.leagueId
+                                            ?.takeIf { it.isNotBlank() }
+                                            ?: leagueName
+
+                                        selectedLeaguePair = Pair(realLeagueId, leagueName)
                                     }
                                 )
                             }
