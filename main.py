@@ -2,11 +2,34 @@ from fastapi import FastAPI
 import requests
 import os
 import re
+import time
+from datetime import datetime, timezone
 
 app = FastAPI()
 
 STATPAL_KEY = os.getenv("STATPAL_KEY")
 HIGHLIGHTLY_KEY = os.getenv("HIGHLIGHTLY_KEY")
+
+# ------------------------------------------------------------------
+# CACHE
+# StatPal Starter csomag: 50.000 hívás/nap. Az élő végpontok a StatPal
+#   szerverén is csak 15 mp-enként frissülnek, ezért nincs értelme ennél
+#   gyakrabban lekérdezni. Cache nélkül MINDEN kliens kérés = 1 StatPal
+#   hívás -> egy megosztott, folyamat-szintű cache-szel a StatPal-t
+#   ténylegesen csak STATPAL_CACHE_TTL másodpercenként hívjuk meg,
+#   függetlenül attól hányan nyitják meg az appot ugyanabban az ablakban.
+#   (86400 / 20 = 4320 hívás/nap a StatPal felé, az 50.000-es keret ~9%-a)
+#
+# Highlightly Ultra csomag: 25.000 hívás/nap. A /highlights végpont a
+#   dokumentáció szerint percenként frissül -> percnél gyakrabban kérni
+#   felesleges.
+#   (2 hívás/frissítés * 86400/90 = ~1920 hívás/nap, a 25.000-es keret ~8%-a)
+# ------------------------------------------------------------------
+STATPAL_CACHE_TTL = 20       # másodperc
+HIGHLIGHTLY_CACHE_TTL = 90   # másodperc
+
+_statpal_cache = {"data": None, "ts": 0.0}
+_highlightly_cache = {"data": None, "ts": 0.0}
 
 TRANSLATIONS = {
     # ORSZÁGOK & KONTINENSEK
@@ -75,6 +98,79 @@ def ensure_list(value):
         return [value]
     return []
 
+
+def fetch_statpal_matches():
+    """StatPal meccsadatok lekérése, folyamat-szintű cache-elve (STATPAL_CACHE_TTL)."""
+    now = time.time()
+    if _statpal_cache["data"] is not None and (now - _statpal_cache["ts"]) < STATPAL_CACHE_TTL:
+        return _statpal_cache["data"]
+
+    headers = {"Accept": "application/json"}
+    url = f"https://statpal.io/api/v2/soccer/matches/today?access_key={STATPAL_KEY}"
+    response = requests.get(url, headers=headers, timeout=10)
+
+    if response.status_code != 200:
+        url = f"https://statpal.io/api/v2/soccer/matches/live?access_key={STATPAL_KEY}"
+        response = requests.get(url, headers=headers, timeout=10)
+
+    data = response.json()
+    _statpal_cache["data"] = data
+    _statpal_cache["ts"] = now
+    return data
+
+
+def fetch_highlightly_highlights():
+    """
+    Highlightly videók lekérése - JAVÍTVA:
+    - RÉGI (hibás) hívás: https://api.highlightly.net/v1/highlights?api_key=...
+      -> ez a domain/verzió soha nem is létezett, ezért highlights_data mindig
+         üres listaként tért vissza, a 🎥 gomb sosem jelent meg az appban.
+    - HELYES Highlightly (nem RapidAPI-n keresztüli) végpont a foci API-hoz:
+      https://soccer.highlightly.net/highlights
+      header: x-rapidapi-key: <kulcs>  (ez a header neve a Highlightly saját
+      kulcsainál is, nem csak RapidAPI-nál)
+      + kötelező legalább egy elsődleges query paraméter (pl. date=YYYY-MM-DD)
+    Ultra csomaggal (25.000 hívás/nap) bőven belefér, hogy naponta lekérjük a
+    mai nap videóit, akár 2 oldalban (limit=40 a max/oldal), hogy minél több
+    meccshez legyen videónk.
+    """
+    if not HIGHLIGHTLY_KEY:
+        return []
+
+    now = time.time()
+    if _highlightly_cache["data"] is not None and (now - _highlightly_cache["ts"]) < HIGHLIGHTLY_CACHE_TTL:
+        return _highlightly_cache["data"]
+
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    base_url = "https://soccer.highlightly.net/highlights"
+    headers = {"x-rapidapi-key": HIGHLIGHTLY_KEY}
+
+    all_highlights = []
+    try:
+        for offset in (0, 40):
+            resp = requests.get(
+                base_url,
+                headers=headers,
+                params={"date": today, "limit": 40, "offset": offset},
+                timeout=6
+            )
+            if resp.status_code != 200:
+                break
+            payload = resp.json()
+            page = payload.get("data") if isinstance(payload, dict) else None
+            if not isinstance(page, list) or not page:
+                break
+            all_highlights.extend(page)
+            if len(page) < 40:
+                break
+    except Exception:
+        pass
+
+    _highlightly_cache["data"] = all_highlights
+    _highlightly_cache["ts"] = now
+    return all_highlights
+
+
 @app.get("/api/matches")
 def get_matches():
     if not STATPAL_KEY:
@@ -85,15 +181,7 @@ def get_matches():
         }]
 
     try:
-        url = f"https://statpal.io/api/v2/soccer/matches/today?access_key={STATPAL_KEY}"
-        headers = {"Accept": "application/json"}
-        response = requests.get(url, headers=headers, timeout=10)
-        
-        if response.status_code != 200:
-            url = f"https://statpal.io/api/v2/soccer/matches/live?access_key={STATPAL_KEY}"
-            response = requests.get(url, headers=headers, timeout=10)
-
-        data = response.json()
+        data = fetch_statpal_matches()
         matches_list = []
         
         live_matches_data = data.get("live_matches") or data.get("matches") or {}
@@ -101,16 +189,7 @@ def get_matches():
             live_matches_data = {}
         leagues = ensure_list(live_matches_data.get("league"))
 
-        highlights_data = []
-        if HIGHLIGHTLY_KEY:
-            try:
-                hl_url = f"https://api.highlightly.net/v1/highlights?api_key={HIGHLIGHTLY_KEY}"
-                hl_res = requests.get(hl_url, timeout=5)
-                if hl_res.status_code == 200:
-                    hl_json = hl_res.json()
-                    highlights_data = hl_json.get("data") or []
-            except:
-                pass
+        highlights_data = fetch_highlightly_highlights()
 
         for league in leagues:
             if not isinstance(league, dict):
@@ -194,3 +273,27 @@ def get_matches():
             "home_team": "API Hiba", "away_team": str(e)[:20],
             "home_score": None, "away_score": None, "status": "error", "minute": 0
         }]
+
+
+@app.get("/api/status")
+def get_status():
+    """Gyors ellenőrzés Render-en: mikor volt az utolsó valódi StatPal/Highlightly
+    hívás, és mennyi ideig érvényes még a cache-elt adat."""
+    now = time.time()
+
+    def cache_info(cache, ttl):
+        if cache["data"] is None:
+            return {"cached": False}
+        age = now - cache["ts"]
+        return {
+            "cached": True,
+            "age_seconds": round(age, 1),
+            "ttl_seconds": ttl,
+            "still_valid": age < ttl
+        }
+
+    return {
+        "statpal": cache_info(_statpal_cache, STATPAL_CACHE_TTL),
+        "highlightly": cache_info(_highlightly_cache, HIGHLIGHTLY_CACHE_TTL),
+        "highlightly_count": len(_highlightly_cache["data"] or []) if _highlightly_cache["data"] else 0
+    }
