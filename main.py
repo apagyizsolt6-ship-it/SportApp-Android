@@ -480,14 +480,14 @@ def fetch_highlightly_highlights():
         # A dokumentációban a limit akár 100 is lehet.
         # Több oldalt töltünk le, hogy a mai meccsek nagyobb eséllyel
         # bekerüljenek a listába.
-        for offset in (0, 100, 200, 300, 400):
+        for offset in (0, 40, 80, 120):
 
             resp = requests.get(
                 base_url,
                 headers=headers,
                 params={
                     "date": today,
-                    "limit": 100,
+                    "limit": 40,
                     "offset": offset
                 },
                 timeout=8
