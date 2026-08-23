@@ -1,13 +1,13 @@
 from fastapi import FastAPI
 import requests
 import os
+import re
 
 app = FastAPI()
 
 STATPAL_KEY = os.getenv("STATPAL_KEY")
 HIGHLIGHTLY_KEY = os.getenv("HIGHLIGHTLY_KEY")
 
-# GIGANTIKUS FULLOS MAGYARÍTÓ SZÓTÁR
 TRANSLATIONS = {
     # ORSZÁGOK & KONTINENSEK
     "england": "Anglia", "spain": "Spanyolország", "italy": "Olaszország",
@@ -30,6 +30,10 @@ TRANSLATIONS = {
     "kazakhstan": "Kazahsztán", "kenya": "Kenyai", "kosovo": "Koszovó",
     "andorra": "Andorra", "georgia": "Grúzia", "armenia": "Örményország",
     "azerbaijan": "Azerbajdzsán", "moldova": "Moldova", "bosnia & herzegovina": "Bosznia-Hercegovina",
+    "russia": "Oroszország", "southafrica": "Dél-Afrika", "south africa": "Dél-Afrika",
+    "united_arab_emirates": "Egyesült Arab Emírségek", "uae": "Egyesült Arab Emírségek",
+    "faroe_islands": "Feröer-szigetek", "faroe islands": "Feröer-szigetek",
+    "uzbekistan": "Üzbegisztán", "venezuela": "Venezuela", "tanzania": "Tanzánia",
 
     # BAJNOKSÁGOK & KUPÁK
     "premier league": "Premier League", "la liga": "La Liga", "serie a": "Serie A",
@@ -40,27 +44,27 @@ TRANSLATIONS = {
     "dfb pokal": "Német Kupa", "copa del rey": "Spanyol Kupa",
     "coppa italia": "Olasz Kupa", "fa cup": "FA Kupa", "efl cup": "Angol Ligakupa",
     "moly kupa": "Magyar Kupa", "super cup": "Szuperkupa",
-    "friendly": "Barátságos Mérkőzés", "friendlies": "Barátságos Mérkőzések",
-
-    # CSAPATOK
-    "bayern munich": "Bayern München", "red star belgrade": "Crvena Zvezda",
-    "sporting cp": "Sporting Lisszabon", "inter": "Inter Milánó",
-    "ac milan": "AC Milan", "as roma": "AS Roma", "real madrid": "Real Madrid",
-    "barcelona": "FC Barcelona", "atletico madrid": "Atlético Madrid",
-    "manchester united": "Manchester United", "manchester city": "Manchester City",
-    "liverpool": "Liverpool", "chelsea": "Chelsea", "arsenal": "Arsenal",
-    "tottenham": "Tottenham Hotspur", "juventus": "Juventus",
-    "paris saint germain": "PSG", "psg": "PSG", "ferencvaros": "Ferencváros",
-    "uipest": "Újpest FC", "fehervar": "Fehérvár FC", "debrecen": "Debreceni VSC",
-    "paks": "Paksi FC", "puskas akademia": "Puskás Akadémia", "gyor": "ETO FC Győr",
-    "zalaegerszeg": "Zalaegerszegi TE", "kisvarda": "Kisvárda", "diósgyőr": "DVTK"
+    "friendly": "Barátságos Mérkőzés", "friendlies": "Barátságos Mérkőzések"
 }
 
 def translate_text(text):
     if not text:
         return ""
-    clean = str(text).strip()
-    return TRANSLATIONS.get(clean.lower(), clean)
+    clean = str(text).replace("_", " ").strip()
+    return TRANSLATIONS.get(clean.lower(), clean.title())
+
+def format_league_title(raw_country, raw_league):
+    country_hu = translate_text(raw_country).upper()
+    league_clean = str(raw_league or "Egyéb Bajnokság").strip()
+
+    # Megszünteti a duplázott országneveket a ligacímből
+    if ":" in league_clean:
+        parts = league_clean.split(":")
+        league_clean = parts[-1].strip()
+
+    if country_hu and country_hu not in league_clean.upper():
+        return f"{country_hu}: {league_clean}"
+    return league_clean
 
 def ensure_list(value):
     if value is None:
@@ -112,18 +116,9 @@ def get_matches():
             if not isinstance(league, dict):
                 continue
             
-            # Ország és Bajnokság magyarítása & egyedi összefűzése
             raw_country = league.get("country", "")
             raw_league = league.get("name", "Egyéb Bajnokság")
-            
-            hu_country = translate_text(raw_country).upper()
-            hu_league = translate_text(raw_league)
-
-            # EGYEDI KULCS: megakadályozza a szétcsúszást (pl. OLASZORSZÁG: Serie A)
-            if hu_country and hu_country not in hu_league.upper():
-                full_league_title = f"{hu_country}: {hu_league}"
-            else:
-                full_league_title = hu_league
+            full_league_title = format_league_title(raw_country, raw_league)
 
             matches = ensure_list(league.get("match"))
             for m in matches:
