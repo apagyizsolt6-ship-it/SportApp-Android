@@ -4,8 +4,7 @@ import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
 
 object RetrofitInstance {
-    // IDE MÁSOLD BE A REPLIT FÖLDGÖMB MÖGÖTTI LINKET (per jellel a végén!)
-    private const val BASE_URL = "https://A_TE_REPLIT_LINKED.replit.app/"
+    private const val BASE_URL = "https://sportapp-android.onrender.com/"
 
     val api: ApiService by lazy {
         Retrofit.Builder()
