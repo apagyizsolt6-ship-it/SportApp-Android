@@ -4,6 +4,7 @@ import com.google.gson.annotations.SerializedName
 
 data class MatchResponse(
     @SerializedName("id") val matchId: String,
+    @SerializedName("league_id") val leagueId: String = "",
     @SerializedName("league") val league: String?,
     @SerializedName("home_team") val homeTeam: String,
     @SerializedName("away_team") val awayTeam: String,
@@ -14,4 +15,14 @@ data class MatchResponse(
     @SerializedName("highlight_url") val highlightUrl: String?,
     @SerializedName("odds_home") val oddsHome: Double?,
     @SerializedName("value_bet") val isValueBet: Boolean?
-)
+) {
+    /**
+     * Backwards-compatible alias.
+     *
+     * The API JSON field is still "id", while the actual Kotlin property
+     * remains "matchId". This keeps existing UI code working without
+     * removing or renaming the original matchId field.
+     */
+    val id: String
+        get() = matchId
+}
