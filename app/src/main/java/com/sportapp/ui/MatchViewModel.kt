@@ -28,7 +28,7 @@ class MatchViewModel : ViewModel() {
             } catch (e: Exception) {
                 e.printStackTrace()
             } finally {
-                _isLoading.value = False
+                _isLoading.value = false
             }
         }
     }
