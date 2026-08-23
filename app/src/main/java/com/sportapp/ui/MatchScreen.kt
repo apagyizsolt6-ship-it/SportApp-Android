@@ -80,6 +80,27 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
     val subTextColor by animateColorAsState(if (isDarkMode) Color(0xFF8C939D) else Color(0xFF6C757D), label = "subtext")
     val primaryGreen = Color(0xFF00E676)
 
+    // Automatikusan kiemelt TOP 5 európai bajnokság.
+    // Ezek mindig arany fejléccel jelennek meg.
+    val topFiveLeagueNames = remember {
+        setOf(
+            "PREMIER LEAGUE",
+            "LA LIGA",
+            "SERIE A",
+            "BUNDESLIGA",
+            "LIGUE 1"
+        )
+    }
+
+    val isTopFiveLeague: (String) -> Boolean = { leagueName ->
+        val normalized = leagueName
+            .trim()
+            .uppercase()
+            .replace("Á", "A")
+            .replace("É", "E")
+        topFiveLeagueNames.any { normalized.contains(it) }
+    }
+
     val filteredMatches = remember(matches, selectedTab, searchQuery, favoriteMatchIds, favoriteLeagueNames) {
         matches.filter { match ->
             val leagueName = match.league ?: "EGYÉB BAJNOKSÁG"
@@ -103,9 +124,13 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
 
     val groupedMatchesList = remember(filteredMatches, favoriteLeagueNames) {
         val groups = filteredMatches.groupBy { it.league ?: "EGYÉB BAJNOKSÁG" }
-        groups.entries.sortedByDescending { (leagueName, _) ->
-            favoriteLeagueNames.contains(leagueName)
-        }
+        groups.entries.sortedWith(
+            compareByDescending<Map.Entry<String, List<MatchResponse>>> { (leagueName, _) ->
+                isTopFiveLeague(leagueName)
+            }.thenByDescending { (leagueName, _) ->
+                favoriteLeagueNames.contains(leagueName)
+            }.thenBy { it.key.uppercase() }
+        )
     }
 
     Surface(
@@ -195,6 +220,7 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                     )
                 }
             }
+
             if (isLoading) {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     CircularProgressIndicator(color = primaryGreen)
@@ -205,10 +231,27 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                         val isLeagueFav = favoriteLeagueNames.contains(leagueName)
 
                         item {
+                            val isTopFive = isTopFiveLeague(leagueName)
+                            val isUserHighlighted = favoriteLeagueNames.contains(leagueName)
+
+                            val leagueHeaderColor = when {
+                                isTopFive && isDarkMode -> Color(0xFF5A4700)
+                                isTopFive -> Color(0xFFFFE8A3)
+                                isUserHighlighted && isDarkMode -> Color(0xFF3B3020)
+                                isUserHighlighted -> Color(0xFFFFF2D2)
+                                else -> leagueBgColor
+                            }
+
+                            val leagueHeaderTextColor = if (isTopFive) {
+                                if (isDarkMode) Color(0xFFFFD54F) else Color(0xFF6D4C00)
+                            } else {
+                                textColor
+                            }
+
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .background(leagueBgColor)
+                                    .background(leagueHeaderColor)
                                     .padding(horizontal = 12.dp, vertical = 8.dp),
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
@@ -217,20 +260,30 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                                     verticalAlignment = Alignment.CenterVertically,
                                     modifier = Modifier.weight(1f)
                                 ) {
-                                    // Korlátlan számú liga jelölhető ki.
-                                    // Újabb koppintás ugyanitt visszavonja a kiemelést.
+                                    // TOP 5 automatikusan kiemelt.
+                                    // Minden más liga szabadon kiemelhető és visszavonható.
                                     Text(
-                                        text = if (isLeagueFav) "★" else "☆",
-                                        color = if (isLeagueFav) Color(0xFFFF9100) else subTextColor,
+                                        text = if (isTopFive || isLeagueFav) "★" else "☆",
+                                        color = when {
+                                            isTopFive -> Color(0xFFFFB300)
+                                            isLeagueFav -> Color(0xFFFF9100)
+                                            else -> subTextColor
+                                        },
                                         fontSize = 15.sp,
                                         modifier = Modifier
-                                            .clickable {
-                                                favoriteLeagueNames = if (isLeagueFav) {
-                                                    favoriteLeagueNames.filter { it != leagueName }.toSet()
+                                            .then(
+                                                if (!isTopFive) {
+                                                    Modifier.clickable {
+                                                        favoriteLeagueNames = if (isLeagueFav) {
+                                                            favoriteLeagueNames.filter { it != leagueName }.toSet()
+                                                        } else {
+                                                            favoriteLeagueNames + leagueName
+                                                        }
+                                                    }
                                                 } else {
-                                                    favoriteLeagueNames + leagueName
+                                                    Modifier
                                                 }
-                                            }
+                                            )
                                             .padding(end = 6.dp)
                                     )
 
@@ -257,7 +310,7 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
 
                                     Text(
                                         text = leagueName.uppercase(),
-                                        color = textColor,
+                                        color = leagueHeaderTextColor,
                                         fontSize = 11.sp,
                                         fontWeight = FontWeight.ExtraBold,
                                         letterSpacing = 0.5.sp
