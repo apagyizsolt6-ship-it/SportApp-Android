@@ -311,6 +311,8 @@ def _country_code(raw_country):
     key = " ".join(
         str(raw_country)
         .replace("_", " ")
+        .replace("-", " ")
+        .replace("&", " and ")
         .strip()
         .lower()
         .split()
@@ -431,10 +433,12 @@ def _country_code(raw_country):
         "south sudan": "ss",
         "spain": "es",
         "sri lanka": "lk",
+        "srilanka": "lk",
         "sweden": "se",
         "switzerland": "ch",
         "taiwan": "tw",
         "tanzania": "tz",
+        "tanzania united republic of": "tz",
         "thailand": "th",
         "togo": "tg",
         "trinidad and tobago": "tt",
