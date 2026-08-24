@@ -27,9 +27,9 @@ _highlightly_match_cache = {}
 
 TOP_LEAGUES_ORDER = [
     "ANGLIA: Premier League",
-    "NÉMETORSZÁG: Bundesliga",
-    "OLASZORSZÁG: Serie A",
     "SPANYOLORSZÁG: La Liga",
+    "OLASZORSZÁG: Serie A",
+    "NÉMETORSZÁG: Bundesliga",
     "FRANCIAORSZÁG: Ligue 1"
 ]
 
@@ -136,51 +136,55 @@ TRANSLATIONS = {
     "zambia": "Zambia",
     "zimbabwe": "Zimbabwe",
     "mauritius": "Mauritius",
-    "ireland": "Írország", "albania": "Albánia", "andorra": "Andorra",
-    "belarus": "Fehéroroszország", "bosnia and herzegovina": "Bosznia-Hercegovina",
-    "bosnia & herzegovina": "Bosznia-Hercegovina", "bulgaria": "Bulgária",
-    "cyprus": "Ciprus", "georgia": "Grúzia", "kosovo": "Koszovó",
-    "monaco": "Monaco", "montenegro": "Montenegró", "north macedonia": "Észak-Macedónia",
-    "macedonia": "Észak-Macedónia", "san marino": "San Marino", "wales": "Wales",
-    "northern ireland": "Észak-Írország", "liechtenstein": "Liechtenstein",
-    "vatican": "Vatikán", "vatican city": "Vatikán",
-    "bangladesh": "Banglades", "brunei": "Brunei", "cambodia": "Kambodzsa",
-    "indonesia": "Indonézia", "laos": "Laosz", "malaysia": "Malajzia",
-    "mongolia": "Mongólia", "myanmar": "Mianmar", "nepal": "Nepál",
-    "pakistan": "Pakisztán", "philippines": "Fülöp-szigetek", "singapore": "Szingapúr",
-    "sri lanka": "Srí Lanka", "taiwan": "Tajvan", "thailand": "Thaiföld",
-    "vietnam": "Vietnam", "bahrain": "Bahrein", "iraq": "Irak", "jordan": "Jordánia",
-    "kuwait": "Kuvait", "lebanon": "Libanon", "oman": "Omán", "palestine": "Palesztina",
-    "syria": "Szíria", "yemen": "Jemen",
-    "benin": "Benin", "botswana": "Botswana", "burkina faso": "Burkina Faso",
-    "burundi": "Burundi", "cameroon": "Kamerun", "central african republic": "Közép-afrikai Köztársaság",
-    "chad": "Csád", "comoros": "Comore-szigetek", "congo": "Kongó",
-    "democratic republic of the congo": "Kongói Demokratikus Köztársaság",
-    "djibouti": "Dzsibuti", "equatorial guinea": "Egyenlítői-Guinea", "eritrea": "Eritrea",
-    "eswatini": "Eswatini", "ethiopia": "Etiópia", "gabon": "Gabon", "gambia": "Gambia",
-    "ghana": "Ghána", "guinea": "Guinea", "guinea-bissau": "Bissau-Guinea",
-    "ivory coast": "Elefántcsontpart", "cote d'ivoire": "Elefántcsontpart", "kenya": "Kenya",
-    "liberia": "Libéria", "libya": "Líbia", "madagascar": "Madagaszkár", "malawi": "Malawi",
-    "mali": "Mali", "mauritania": "Mauritánia", "mauritius": "Mauritius", "mozambique": "Mozambik",
-    "namibia": "Namíbia", "niger": "Niger", "rwanda": "Ruanda", "senegal": "Szenegál",
-    "seychelles": "Seychelle-szigetek", "sierra leone": "Sierra Leone", "somalia": "Szomália",
-    "sudan": "Szudán", "south sudan": "Dél-Szudán", "tanzania": "Tanzánia", "togo": "Togo",
-    "uganda": "Uganda", "zambia": "Zambia",
-    "bahamas": "Bahama-szigetek", "barbados": "Barbados", "belize": "Belize",
-    "cuba": "Kuba", "guyana": "Guyana", "haiti": "Haiti", "jamaica": "Jamaica",
-    "suriname": "Suriname", "trinidad and tobago": "Trinidad és Tobago",
-    "fiji": "Fidzsi-szigetek", "papua new guinea": "Pápua Új-Guinea", "samoa": "Szamoa",
-    "solomon islands": "Salamon-szigetek", "tonga": "Tonga", "vanuatu": "Vanuatu",
-    "new caledonia": "Új-Kaledónia", "oceania": "Óceánia", "international": "Nemzetközi",
-    "europe": "Európa", "asia": "Ázsia"
+
+    # További országok – zászló + magyar ország név
+    "armenia": "Örményország",
+    "belarus": "Fehéroroszország",
+    "north macedonia": "Észak-Macedónia",
+    "macedonia": "Észak-Macedónia",
+    "bulgaria": "Bulgária",
+    "honduras": "Honduras",
+    "malaysia": "Malajzia",
+    "panama": "Panama",
+    "paraguay": "Paraguay",
+    "singapore": "Szingapúr",
+    "sri lanka": "Srí Lanka",
+    "tanzania": "Tanzánia",
+    "taiwan": "Tajvan",
+    "vietnam": "Vietnam",
+    "thailand": "Thaiföld",
+    "philippines": "Fülöp-szigetek",
+    "indonesia": "Indonézia",
+    "south sudan": "Dél-Szudán",
+    "uganda": "Uganda",
+    "senegal": "Szenegál",
+    "cameroon": "Kamerun",
+    "ivory coast": "Elefántcsontpart",
+    "cote d'ivoire": "Elefántcsontpart",
+    "mali": "Mali",
+    "burkina faso": "Burkina Faso",
+    "togo": "Togo",
+    "benin": "Benin",
+    "ethiopia": "Etiópia",
+    "mozambique": "Mozambik",
+    "botswana": "Botswana",
+    "namibia": "Namíbia",
+    "jamaica": "Jamaica",
+    "trinidad and tobago": "Trinidad és Tobago",
+    "new caledonia": "Új-Kaledónia",
+    "hong kong": "Hongkong",
+    "china pr": "Kína",
+    "korea": "Dél-Korea",
+    "palestine": "Palesztina",
+    "iraq": "Irak",
+    "oman": "Omán",
+    "bahrain": "Bahrein",
+    "syria": "Szíria",
+    "albania": "Albánia",
+    "montenegro": "Montenegró",
+    "moldova": "Moldova",
+    "bulgaria": "Bulgária"
 }
-
-
-def _normalize_country_key(value):
-    if value is None:
-        return ""
-    clean = str(value).replace("_", " ").strip()
-    return " ".join(clean.lower().split())
 
 
 def translate_text(text):
@@ -188,47 +192,37 @@ def translate_text(text):
         return ""
 
     clean = str(text).replace("_", " ").strip()
-    key = _normalize_country_key(clean)
+    key = " ".join(clean.lower().split())
+
     aliases = {
         "bosnia-herzegovina": "bosnia and herzegovina",
         "bosnia & herzegovina": "bosnia and herzegovina",
-        "korea, republic of": "south korea",
+        "korea republic": "south korea",
         "republic of korea": "south korea",
-        "saudiarabia": "saudi arabia",
+        "korea, republic of": "south korea",
         "uae": "united arab emirates",
-        "türkiye": "turkey",
-        "românia": "romania",
-        "españa": "spain",
-        "deutschland": "germany",
-        "italia": "italy",
-        "francia": "france",
-        "polska": "poland",
+        "czechia": "czechia",
+        "czech republic": "czech republic",
+        "saudiarabia": "saudi arabia",
     }
+
     key = aliases.get(key, key)
-    return TRANSLATIONS.get(key, clean)
+
+    return TRANSLATIONS.get(key, clean.title())
 
 
 def format_league_title(raw_country, raw_league):
-    """Csak az országnevet normalizálja; a liga nevét változatlanul hagyja."""
-    country_raw = str(raw_country or "").strip()
-    league_text = str(raw_league or "Egyéb Bajnokság").strip()
+    country_hu = translate_text(raw_country).upper()
+    league_clean = str(raw_league or "Egyéb Bajnokság").strip()
 
-    country_hu = translate_text(country_raw).strip()
-    league_body = league_text
+    if ":" in league_clean:
+        parts = league_clean.split(":")
+        league_clean = parts[-1].strip()
 
-    if ":" in league_text:
-        prefix, suffix = league_text.split(":", 1)
-        prefix = prefix.strip()
-        suffix = suffix.strip()
-        league_body = suffix or league_text
-        # Ha az API országmezője üres, a liga előtagjából dolgozunk.
-        if not country_hu:
-            country_hu = translate_text(prefix).strip()
+    if country_hu and country_hu not in league_clean.upper():
+        return f"{country_hu}: {league_clean}"
 
-    if not country_hu:
-        return league_body
-
-    return f"{country_hu.upper()}: {league_body}"
+    return league_clean
 
 
 def adjust_time(time_str):
@@ -304,6 +298,13 @@ def _find_image_url(value):
 
 
 def _country_code(raw_country):
+    """
+    Magyar országnevekhez tartozó ISO 3166-1 alpha-2 kód.
+
+    A mobil kliens ez alapján rajzol zászlót. Ha egy ország itt hiányzik,
+    a felületen földgömb jelenik meg, ezért a gyakori StatPal elnevezéseket
+    és a mai meccslistán előforduló országokat is kezeljük.
+    """
     if not raw_country:
         return ""
 
@@ -327,104 +328,201 @@ def _country_code(raw_country):
         "france": "fr",
         "hungary": "hu",
 
+        "argentina": "ar",
+        "armenia": "am",
+        "australia": "au",
+        "austria": "at",
+        "belarus": "by",
+        "belgium": "be",
+        "bolivia": "bo",
+        "bosnia and herzegovina": "ba",
+        "bosnia & herzegovina": "ba",
+        "brazil": "br",
+        "brazilia": "br",
+        "bulgaria": "bg",
         "canada": "ca",
         "chile": "cl",
         "china": "cn",
+        "china pr": "cn",
         "colombia": "co",
         "costa rica": "cr",
-        "kosovo": "xk",
-        "iceland": "is",
-        "india": "in",
-        "iran": "ir",
-        "israel": "il",
-        "japan": "jp",
-        "kazakhstan": "kz",
-        "kenya": "ke",
-        "kyrgyzstan": "kg",
-
-        "south korea": "kr",
-        "korea republic": "kr",
-        "republic of korea": "kr",
-
-        "south africa": "za",
-
-        "bosnia and herzegovina": "ba",
-        "bosnia & herzegovina": "ba",
-
-        "united arab emirates": "ae",
-        "uae": "ae",
-
-        "romania": "ro",
-        "slovenia": "si",
-        "poland": "pl",
-        "finland": "fi",
-        "gibraltar": "gi",
-        "guatemala": "gt",
-
-        "brazil": "br",
-        "brazilia": "br",
-        "mexico": "mx",
-        "nicaragua": "ni",
-        "uruguay": "uy",
-        "argentina": "ar",
-        "bolivia": "bo",
-        "peru": "pe",
-        "ecuador": "ec",
-        "fiji": "fj",
-
-        "australia": "au",
-        "new zealand": "nz",
-        "qatar": "qa",
-        "saudi arabia": "sa",
-        "turkey": "tr",
-        "jordan": "jo",
-        "kuwait": "kw",
-        "lebanon": "lb",
-        "uzbekistan": "uz",
-        "venezuela": "ve",
-        "malta": "mt",
-        "luxembourg": "lu",
-        "cyprus": "cy",
-        "estonia": "ee",
-        "latvia": "lv",
-        "lithuania": "lt",
         "croatia": "hr",
-        "serbia": "rs",
-        "slovakia": "sk",
+        "cyprus": "cy",
         "czechia": "cz",
         "czech republic": "cz",
-        "greece": "gr",
-        "switzerland": "ch",
         "denmark": "dk",
-        "sweden": "se",
-        "norway": "no",
-        "ukraine": "ua",
-        "russia": "ru",
-        "nigeria": "ng",
-        "ghana": "gh",
-        "tunisia": "tn",
-        "egypt": "eg",
-        "morocco": "ma",
-        "algeria": "dz",
-        "angola": "ao",
-        "zambia": "zm",
-        "zimbabwe": "zw",
-        "mauritius": "mu",
-
         "dominican republic": "do",
+        "ecuador": "ec",
+        "equador": "ec",
+        "egypt": "eg",
         "el salvador": "sv",
+        "estonia": "ee",
+        "ethiopia": "et",
+        "faroe islands": "fo",
+        "fiji": "fj",
+        "finland": "fi",
         "georgia": "ge",
-
+        "germany": "de",
+        "ghana": "gh",
+        "gibraltar": "gi",
+        "greece": "gr",
+        "guatemala": "gt",
+        "honduras": "hn",
+        "hong kong": "hk",
+        "iceland": "is",
+        "india": "in",
+        "indonesia": "id",
+        "iran": "ir",
+        "iraq": "iq",
+        "ireland": "ie",
+        "israel": "il",
+        "ivory coast": "ci",
+        "cote d'ivoire": "ci",
+        "jamaica": "jm",
+        "japan": "jp",
+        "jordan": "jo",
+        "kazakhstan": "kz",
+        "kenya": "ke",
+        "korea": "kr",
+        "korea republic": "kr",
+        "kosovo": "xk",
+        "kyrgyzstan": "kg",
+        "kuwait": "kw",
+        "latvia": "lv",
+        "lebanon": "lb",
+        "lithuania": "lt",
+        "luxembourg": "lu",
+        "malaysia": "my",
+        "malta": "mt",
+        "mauritius": "mu",
+        "mexico": "mx",
+        "moldova": "md",
+        "montenegro": "me",
+        "morocco": "ma",
+        "mozambique": "mz",
         "netherlands": "nl",
+        "new caledonia": "nc",
+        "new zealand": "nz",
+        "nicaragua": "ni",
+        "nigeria": "ng",
+        "north macedonia": "mk",
+        "macedonia": "mk",
+        "norway": "no",
+        "oman": "om",
+        "panama": "pa",
+        "paraguay": "py",
+        "peru": "pe",
+        "philippines": "ph",
+        "poland": "pl",
         "portugal": "pt",
-        "belgium": "be",
-        "austria": "at",
-
+        "qatar": "qa",
+        "romania": "ro",
+        "russia": "ru",
+        "saudi arabia": "sa",
+        "saudiarabia": "sa",
+        "scotland": "gb",
+        "senegal": "sn",
+        "serbia": "rs",
+        "singapore": "sg",
+        "slovakia": "sk",
+        "slovenia": "si",
+        "south africa": "za",
+        "south korea": "kr",
+        "south sudan": "ss",
+        "spain": "es",
+        "sri lanka": "lk",
+        "sweden": "se",
+        "switzerland": "ch",
+        "taiwan": "tw",
+        "tanzania": "tz",
+        "thailand": "th",
+        "togo": "tg",
+        "trinidad and tobago": "tt",
+        "tunisia": "tn",
+        "turkey": "tr",
+        "uganda": "ug",
+        "ukraine": "ua",
+        "united arab emirates": "ae",
+        "uae": "ae",
+        "uruguay": "uy",
+        "usa": "us",
+        "uzbekistan": "uz",
+        "venezuela": "ve",
+        "vietnam": "vn",
+        "wales": "gb",
         "world": "",
-        "europe": ""
+        "europe": "",
+        "zambia": "zm",
+        "zimbabwe": "zw"
     }
 
     return aliases.get(key, "")
+
+def _hungarian_sort_key(value):
+    """
+    Magyar ábécé szerinti rendezési kulcs.
+
+    Fontos: Python alapból Unicode-kódpont szerint rendez, ezért például
+    az Üzbegisztán a lista végére kerülne. A magyar többjegyű betűk
+    (Cs, Dz, Dzs, Gy, Ly, Ny, Sz, Ty, Zs) sorrendjét is kezeljük.
+    """
+    text = str(value or "").strip().casefold()
+
+    # Hosszabb magyar betűk kerüljenek előbb a tokenizáláskor.
+    multigraphs = (
+        "dzs", "cs", "dz", "gy", "ly", "ny", "sz", "ty", "zs"
+    )
+
+    alphabet = {
+        "a": 1, "á": 2,
+        "b": 3,
+        "c": 4, "cs": 5,
+        "d": 6, "dz": 7, "dzs": 8,
+        "e": 9, "é": 10,
+        "f": 11,
+        "g": 12, "gy": 13,
+        "h": 14,
+        "i": 15, "í": 16,
+        "j": 17,
+        "k": 18,
+        "l": 19, "ly": 20,
+        "m": 21,
+        "n": 22, "ny": 23,
+        "o": 24, "ó": 25, "ö": 26, "ő": 27,
+        "p": 28,
+        "q": 29,
+        "r": 30,
+        "s": 31, "sz": 32,
+        "t": 33, "ty": 34,
+        "u": 35, "ú": 36, "ü": 37, "ű": 38,
+        "v": 39,
+        "w": 40,
+        "x": 41,
+        "y": 42,
+        "z": 43, "zs": 44,
+    }
+
+    tokens = []
+    i = 0
+
+    while i < len(text):
+        matched = None
+
+        for token in multigraphs:
+            if text.startswith(token, i):
+                matched = token
+                break
+
+        if matched is not None:
+            tokens.append(alphabet[matched])
+            i += len(matched)
+            continue
+
+        char = text[i]
+        tokens.append(alphabet.get(char, 100 + ord(char)))
+        i += 1
+
+    return tuple(tokens)
 
 
 def _get_team_id(team_data):
@@ -1258,7 +1356,9 @@ def get_matches():
 
         def get_league_sort_key(item):
 
-            league_title = item["league"]
+            league_title = str(
+                item.get("league") or ""
+            ).strip()
 
             if league_title in TOP_LEAGUES_ORDER:
                 return (
@@ -1268,9 +1368,11 @@ def get_matches():
                     )
                 )
 
+            # A kiemelt 5 liga után minden más bajnokság
+            # magyar ábécé szerint következik.
             return (
                 1,
-                league_title
+                _hungarian_sort_key(league_title)
             )
 
         matches_list.sort(
