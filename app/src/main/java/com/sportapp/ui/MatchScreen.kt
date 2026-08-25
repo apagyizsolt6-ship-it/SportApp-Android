@@ -505,7 +505,7 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
             //
             // Ha minden liga nyitva van -> minden liga bezárása.
             // Ha akár csak egy liga nyitva van -> minden liga megnyitása.
-            if (!isLoading && groupedMatchesList.isNotEmpty) {
+            if (!isLoading && groupedMatchesList.isNotEmpty()) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
