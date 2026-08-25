@@ -19,8 +19,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.drawscope.drawCircle
-import androidx.compose.ui.graphics.drawscope.drawLine
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -509,7 +507,7 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
             //
             // Ha minden liga nyitva van -> minden liga bezárása.
             // Ha akár csak egy liga nyitva van -> minden liga megnyitása.
-            if (!isLoading && groupedMatchesList.isNotEmpty) {
+            if (!isLoading && groupedMatchesList.isNotEmpty()) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
