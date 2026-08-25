@@ -4,6 +4,7 @@ import requests
 import re
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
 
 app = FastAPI()
@@ -311,8 +312,6 @@ def _country_code(raw_country):
     key = " ".join(
         str(raw_country)
         .replace("_", " ")
-        .replace("-", " ")
-        .replace("&", " and ")
         .strip()
         .lower()
         .split()
@@ -433,12 +432,10 @@ def _country_code(raw_country):
         "south sudan": "ss",
         "spain": "es",
         "sri lanka": "lk",
-        "srilanka": "lk",
         "sweden": "se",
         "switzerland": "ch",
         "taiwan": "tw",
         "tanzania": "tz",
-        "tanzania united republic of": "tz",
         "thailand": "th",
         "togo": "tg",
         "trinidad and tobago": "tt",
@@ -634,40 +631,31 @@ def fetch_highlightly_highlights():
     all_highlights = []
 
     try:
-        # A dokumentációban a limit akár 100 is lehet.
-        # Több oldalt töltünk le, hogy a mai meccsek nagyobb eséllyel
-        # bekerüljenek a listába.
-        for offset in (0, 40, 80, 120):
+        # Egyetlen nagyobb lekérés elég a mai videók indexeléséhez.
+        # A korábbi 4 oldalas ciklus feleslegesen lassította az első
+        # /api/matches választ. Ha az API 100-nál többet ad, a cache
+        # későbbi frissítésénél újra lekérjük a listát.
+        resp = requests.get(
+            base_url,
+            headers=headers,
+            params={
+                "date": today,
+                "limit": 40,
+                "offset": 0
+            },
+            timeout=5
+        )
 
-            resp = requests.get(
-                base_url,
-                headers=headers,
-                params={
-                    "date": today,
-                    "limit": 40,
-                    "offset": offset
-                },
-                timeout=8
-            )
-
-            if resp.status_code != 200:
-                break
-
+        if resp.status_code == 200:
             payload = resp.json()
-
             page = (
                 payload.get("data")
                 if isinstance(payload, dict)
                 else None
             )
 
-            if not isinstance(page, list) or not page:
-                break
-
-            all_highlights.extend(page)
-
-            if len(page) < 100:
-                break
+            if isinstance(page, list):
+                all_highlights.extend(page)
 
     except Exception:
         pass
@@ -918,6 +906,59 @@ def get_team_image(team_id: str):
         return Response(status_code=404)
 
 
+def _build_highlight_match_index(highlights_data):
+    """
+    Gyors, O(1) körüli highlight-párosítás a meccslista építéséhez.
+
+    A régi kód minden StatPal-meccshez végigjárta az összes Highlightly
+    elemet, ráadásul kétszer. Nagy napi meccslistán ez már látványosan
+    lassította a /api/matches választ.
+    """
+    index = {}
+
+    if not isinstance(highlights_data, list):
+        return index
+
+    for hl in highlights_data:
+        if not isinstance(hl, dict):
+            continue
+
+        match_obj = hl.get("match") or {}
+        if not isinstance(match_obj, dict):
+            continue
+
+        home_obj = match_obj.get("homeTeam") or {}
+        away_obj = match_obj.get("awayTeam") or {}
+
+        home = " ".join(
+            str(home_obj.get("name", "")).lower().split()
+        )
+        away = " ".join(
+            str(away_obj.get("name", "")).lower().split()
+        )
+
+        if not home or not away:
+            continue
+
+        match_id = match_obj.get("id")
+        if match_id is None:
+            continue
+
+        video_url = hl.get("embedUrl") or hl.get("url")
+        if not video_url:
+            continue
+
+        payload = {
+            "match_id": str(match_id),
+            "url": video_url
+        }
+
+        index.setdefault((home, away), payload)
+        index.setdefault((away, home), payload)
+
+    return index
+
+
 @app.get("/api/matches")
 def get_matches():
 
@@ -935,7 +976,14 @@ def get_matches():
         }]
 
     try:
-        data = fetch_statpal_matches()
+        # A két külső API lekérése párhuzamosan indul, így az első
+        # betöltés nem a két hálózati késleltetés összegét várja meg.
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            statpal_future = executor.submit(fetch_statpal_matches)
+            highlights_future = executor.submit(fetch_highlightly_highlights)
+
+            data = statpal_future.result()
+            highlights_data = highlights_future.result()
 
         matches_list = []
 
@@ -952,9 +1000,8 @@ def get_matches():
             live_matches_data.get("league")
         )
 
-        # A Highlightly lista egyszer töltődik le,
-        # utána ebből párosítjuk a meccseket.
-        highlights_data = fetch_highlightly_highlights()
+        # A Highlightly listából egyszer készítünk keresési indexet.
+        highlight_index = _build_highlight_match_index(highlights_data)
 
         for league in leagues:
 
@@ -1027,185 +1074,20 @@ def get_matches():
                 highlight_url = None
                 highlight_match_id = None
 
-                if isinstance(
-                    highlights_data,
-                    list
-                ):
+                normalized_home = " ".join(
+                    home_name.lower().split()
+                )
+                normalized_away = " ".join(
+                    away_name.lower().split()
+                )
 
-                    normalized_home = " ".join(
-                        home_name.lower().split()
-                    )
+                exact_match = highlight_index.get(
+                    (normalized_home, normalized_away)
+                )
 
-                    normalized_away = " ".join(
-                        away_name.lower().split()
-                    )
-
-                    exact_match = None
-
-                    # ====================================================
-                    # 1. PONTOS CSAPATPÁROSÍTÁS
-                    # ====================================================
-
-                    for hl in highlights_data:
-
-                        if not isinstance(
-                            hl,
-                            dict
-                        ):
-                            continue
-
-                        match_obj = (
-                            hl.get("match")
-                            or {}
-                        )
-
-                        hl_home = " ".join(
-                            str(
-                                (
-                                    match_obj.get(
-                                        "homeTeam"
-                                    )
-                                    or {}
-                                ).get(
-                                    "name",
-                                    ""
-                                )
-                            ).lower().split()
-                        )
-
-                        hl_away = " ".join(
-                            str(
-                                (
-                                    match_obj.get(
-                                        "awayTeam"
-                                    )
-                                    or {}
-                                ).get(
-                                    "name",
-                                    ""
-                                )
-                            ).lower().split()
-                        )
-
-                        if (
-                            hl_home == normalized_home
-                            and hl_away == normalized_away
-                        ) or (
-                            hl_home == normalized_away
-                            and hl_away == normalized_home
-                        ):
-                            exact_match = hl
-                            break
-
-                    # ====================================================
-                    # 2. FALLBACK
-                    # ====================================================
-
-                    if exact_match is None:
-
-                        for hl in highlights_data:
-
-                            if not isinstance(
-                                hl,
-                                dict
-                            ):
-                                continue
-
-                            match_obj = (
-                                hl.get("match")
-                                or {}
-                            )
-
-                            hl_home = " ".join(
-                                str(
-                                    (
-                                        match_obj.get(
-                                            "homeTeam"
-                                        )
-                                        or {}
-                                    ).get(
-                                        "name",
-                                        ""
-                                    )
-                                ).lower().split()
-                            )
-
-                            hl_away = " ".join(
-                                str(
-                                    (
-                                        match_obj.get(
-                                            "awayTeam"
-                                        )
-                                        or {}
-                                    ).get(
-                                        "name",
-                                        ""
-                                    )
-                                ).lower().split()
-                            )
-
-                            title = " ".join(
-                                str(
-                                    hl.get(
-                                        "title",
-                                        ""
-                                    )
-                                ).lower().split()
-                            )
-
-                            if (
-                                (
-                                    normalized_home
-                                    in title
-                                    and normalized_away
-                                    in title
-                                )
-                                or (
-                                    normalized_home
-                                    in hl_home
-                                    and normalized_away
-                                    in hl_away
-                                )
-                                or (
-                                    normalized_home
-                                    in hl_away
-                                    and normalized_away
-                                    in hl_home
-                                )
-                            ):
-                                exact_match = hl
-                                break
-
-                    # ====================================================
-                    # 3. HIGHLIGHTLY SAJÁT MATCH.ID
-                    # ====================================================
-
-                    if exact_match is not None:
-
-                        match_obj = (
-                            exact_match.get(
-                                "match"
-                            )
-                            or {}
-                        )
-
-                        raw_hl_match_id = (
-                            match_obj.get("id")
-                        )
-
-                        if raw_hl_match_id is not None:
-                            highlight_match_id = str(
-                                raw_hl_match_id
-                            )
-
-                        highlight_url = (
-                            exact_match.get(
-                                "embedUrl"
-                            )
-                            or exact_match.get(
-                                "url"
-                            )
-                        )
+                if exact_match is not None:
+                    highlight_match_id = exact_match.get("match_id")
+                    highlight_url = exact_match.get("url")
 
                 # ========================================================
                 # GÓLOK
