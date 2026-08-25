@@ -39,6 +39,9 @@ import java.util.Locale
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
+    val aiAnalysis by viewModel.aiAnalysis.collectAsState()
+    val isLoadingAi by viewModel.isLoadingAi.collectAsState()
+    var selectedMatchForAi by remember { mutableStateOf<MatchResponse?>(null) } 
     val matches by viewModel.matches.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
     var isDarkMode by remember { mutableStateOf(true) }
@@ -1057,9 +1060,59 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
 
             selectedLeaguePair = null
         }
-    }
-}
+           // ============================================================
+    // AI ELEMZÉS DIALOG
+    // ============================================================
 
+    selectedMatchForAi?.let { match ->
+        AlertDialog(
+            onDismissRequest = {
+                selectedMatchForAi = null
+                viewModel.clearAiAnalysis()
+            },
+            title = {
+                Text(
+                    text = "🤖 Gemini AI Elemzés",
+                    fontWeight = FontWeight.Bold,
+                    color = primaryGreen
+                )
+            },
+            text = {
+                if (isLoadingAi) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(100.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        CircularProgressIndicator(color = primaryGreen)
+                    }
+                } else {
+                    Text(
+                        text = aiAnalysis ?: "Nincs elérhető elemzés.",
+                        color = textColor,
+                        fontSize = 14.sp
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        selectedMatchForAi = null
+                        viewModel.clearAiAnalysis()
+                    }
+                ) {
+                    Text(
+                        text = "Bezárás",
+                        color = primaryGreen,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            },
+            containerColor = if (isDarkMode) Color(0xFF1E293B) else Color.White
+        )
+    }
+ 
 // ================================================================
 // ORSZÁG / RÉGIÓ ZÁSZLÓ
 // ================================================================
@@ -1747,6 +1800,37 @@ fun PremiumMatchRow(
 
                 fontWeight =
                     FontWeight.Bold
+            )
+        }
+        
+        // ============================================================
+        // AI ELEMZÉS GOMB
+        // ============================================================
+
+        Spacer(
+            modifier = Modifier.width(6.dp)
+        )
+
+        Box(
+            modifier = Modifier
+                .clip(
+                    RoundedCornerShape(6.dp)
+                )
+                .background(
+                    Color(0xFF0284C7)
+                )
+                .clickable {
+                    onAiClick(match)
+                }
+                .padding(
+                    horizontal = 6.dp,
+                    vertical = 4.dp
+                )
+        ) {
+            Text(
+                text = "🤖",
+                color = Color.White,
+                fontSize = 11.sp
             )
         }
 
