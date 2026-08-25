@@ -998,7 +998,6 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                                     },
                                     onAiClick = { match ->
                                         selectedMatchForAi = match
-                                        viewModel.analyzeMatch(match)
                                     }
                                 )
 
