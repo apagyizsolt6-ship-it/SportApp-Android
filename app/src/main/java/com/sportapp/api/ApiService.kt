@@ -2,6 +2,7 @@ package com.sportapp.api
 
 import com.sportapp.models.MatchResponse
 import com.sportapp.models.HighlightVideo
+import com.sportapp.models.AiAnalysisResponse
 import retrofit2.http.GET
 import retrofit2.http.Path
 
@@ -25,8 +26,13 @@ interface ApiService {
     @GET("api/standings/{league_id}")
     suspend fun getStandings(@Path("league_id") leagueId: String): List<StandingTeam>
 
-    @GET("api/highlights/match/{highlight_match_id}")
+    @GET("api/highlights/watch/{highlight_match_id}")
     suspend fun getMatchHighlights(
         @Path("highlight_match_id") highlightMatchId: String
     ): List<HighlightVideo>
+
+    @GET("api/ai-analysis/{match_id}")
+    suspend fun getAiAnalysis(
+        @Path("match_id") matchId: String
+    ): AiAnalysisResponse
 }
