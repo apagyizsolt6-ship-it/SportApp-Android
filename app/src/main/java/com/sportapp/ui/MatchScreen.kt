@@ -313,6 +313,16 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
         })
     }
 
+    // ============================================================
+    // TELJES MECCSLISTA NYITÁS / ZÁRÁS
+    // ============================================================
+    // A ligák továbbra is külön-külön is nyithatók/zárhatók.
+    // Ez a kapcsoló csak az összes jelenleg látható ligára hat.
+    val allLeaguesCollapsed = groupedMatchesList.isNotEmpty() &&
+            groupedMatchesList.all {
+                collapsedLeagueNames.contains(it.key)
+            }
+
     Surface(
         modifier = Modifier.fillMaxSize(),
         color = bgColor
@@ -485,6 +495,64 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                         fontSize = 10.sp,
                         fontWeight = FontWeight.Bold
                     )
+                }
+            }
+
+            // ====================================================
+            // TELJES MECCSLISTA – NYITÁS / ZÁRÁS
+            // ====================================================
+            // Független az egyes ligák saját nyitás/zárás gombjától.
+            //
+            // Ha minden liga nyitva van -> minden liga bezárása.
+            // Ha akár csak egy liga nyitva van -> minden liga megnyitása.
+            if (!isLoading && groupedMatchesList.isNotEmpty) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(8.dp),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Surface(
+                        modifier = Modifier.clickable {
+                            collapsedLeagueNames = if (allLeaguesCollapsed) {
+                                emptySet()
+                            } else {
+                                groupedMatchesList
+                                    .map { it.key }
+                                    .toSet()
+                            }
+                        },
+                        shape = RoundedCornerShape(20.dp),
+                        color = if (isDarkMode) {
+                            Color(0xFF20252B)
+                        } else {
+                            Color(0xFFE7EBEF)
+                        }
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(10.dp, 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = if (allLeaguesCollapsed) "▲" else "▼",
+                                color = primaryGreen,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Spacer(Modifier.width(5.dp))
+                            Text(
+                                text = if (allLeaguesCollapsed) {
+                                    "ÖSSZES NYITÁSA"
+                                } else {
+                                    "ÖSSZES ZÁRÁSA"
+                                },
+                                color = primaryGreen,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
                 }
             }
 
