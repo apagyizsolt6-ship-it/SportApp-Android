@@ -31,6 +31,8 @@ import com.sportapp.models.HighlightVideo
 import com.sportapp.api.RetrofitInstance
 import com.sportapp.api.StandingTeam
 import kotlinx.coroutines.launch
+import java.text.Collator
+import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -262,38 +264,53 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
     // 2. felhasználói kedvenc ligák
     // 3. minden egyéb liga ABC sorrendben
     //
-    val groupedMatchesList = remember(
-        filteredMatches
-    ) {
+    // Magyar ábécés rendező. A java.text.Collator magyar Locale-lal
+    // kezeli az ékezetes és többjegyű magyar betűket is.
+    val hungarianCollator = remember {
+        Collator.getInstance(Locale("hu", "HU")).apply {
+            strength = Collator.TERTIARY
+        }
+    }
 
+    // A TOP ligák fix sorrendben maradnak legelöl. Minden más liga
+    // magyar ABC szerint követi őket. A kedvenc státusz nem írhatja
+    // felül ezt a sorrendet.
+    val topLeagueRanks = remember {
+        mapOf(
+            "ANGLIA: PREMIER LEAGUE" to 0,
+            "SPANYOLORSZÁG: LA LIGA" to 1,
+            "OLASZORSZÁG: SERIE A" to 2,
+            "NÉMETORSZÁG: BUNDESLIGA" to 3,
+            "FRANCIAORSZÁG: LIGUE 1" to 4
+        )
+    }
+
+    val groupedMatchesList = remember(
+        filteredMatches,
+        favoriteLeagueNames,
+        hungarianCollator
+    ) {
         val groups = filteredMatches.groupBy {
             it.league ?: "EGYÉB BAJNOKSÁG"
         }
 
-        // FONTOS: a kedvenc liga NEM kerül előre.
-        // Csak a TOP 5 liga kap fix elsőbbséget, minden más liga
-        // a magyar ábécé szerinti ORSZÁG sorrendjét követi, majd
-        // azon belül a bajnokság neve szerint rendeződik.
-        groups.entries.sortedWith(
-            compareBy<Map.Entry<String, List<MatchResponse>>> { entry ->
-                val first = entry.value.firstOrNull()
-                topLeagueRank(
-                    entry.key,
-                    first?.country,
-                    first?.countryCode
-                )
-            }.thenBy { entry ->
-                val first = entry.value.firstOrNull()
-                hungarianSortKey(
-                    leagueCountryName(
-                        entry.key,
-                        first?.country
-                    )
-                )
-            }.thenBy { entry ->
-                hungarianSortKey(entry.key)
+        groups.entries.sortedWith(Comparator { a, b ->
+            val aName = a.key.trim()
+            val bName = b.key.trim()
+
+            val aRank = topLeagueRanks[aName.uppercase()]
+            val bRank = topLeagueRanks[bName.uppercase()]
+
+            when {
+                aRank != null && bRank != null ->
+                    aRank.compareTo(bRank)
+
+                aRank != null -> -1
+                bRank != null -> 1
+
+                else -> hungarianCollator.compare(aName, bName)
             }
-        )
+        })
     }
 
     Surface(
@@ -669,9 +686,7 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
 
                                     Text(
                                         text = countryFlag(
-                                            countryCode = firstLeagueMatch?.countryCode,
-                                            countryName = firstLeagueMatch?.country,
-                                            leagueName = leagueName
+                                            firstLeagueMatch?.countryCode
                                         ),
 
                                         fontSize = 14.sp,
@@ -982,162 +997,43 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
 }
 
 // ================================================================
-// TOP 5 + MAGYAR ÁBÉCÉSORREND
-// ================================================================
-
-private fun normalizeCountry(value: String?): String {
-    return value
-        ?.trim()
-        ?.uppercase()
-        ?.replace("Á", "A")
-        ?.replace("É", "E")
-        ?.replace("Í", "I")
-        ?.replace("Ó", "O")
-        ?.replace("Ö", "O")
-        ?.replace("Ő", "O")
-        ?.replace("Ú", "U")
-        ?.replace("Ü", "U")
-        ?.replace("Ű", "U")
-        ?.replace("-", " ")
-        ?.replace("_", " ")
-        ?.replace(Regex("\\s+"), " ")
-        ?.trim()
-        .orEmpty()
-}
-
-private fun leagueCountryName(
-    leagueName: String?,
-    countryName: String?
-): String {
-    val country = countryName?.trim().orEmpty()
-    if (country.isNotBlank() &&
-        country.uppercase() !in setOf("WORLD", "INTERNATIONAL", "NEMZETKOZI", "EUROPE", "EURÓPA")) {
-        return country
-    }
-
-    val title = leagueName?.trim().orEmpty()
-    return if (":" in title) title.substringBefore(":").trim() else title
-}
-
-private fun topLeagueRank(
-    leagueName: String?,
-    countryName: String?,
-    countryCode: String?
-): Int {
-    val league = normalizeCountry(leagueName?.substringAfterLast(":") ?: "")
-    val country = normalizeCountry(countryName)
-    val code = countryCode?.trim()?.uppercase().orEmpty()
-
-    return when {
-        league == "PREMIER LEAGUE" && (code == "GB" || code == "UK" || country == "ANGLIA" || country == "ENGLAND") -> 0
-        league == "SERIE A" && (code == "IT" || country == "OLASZORSZAG" || country == "ITALY") -> 1
-        league == "LA LIGA" && (code == "ES" || country == "SPANYOLORSZAG" || country == "SPAIN") -> 2
-        league == "BUNDESLIGA" && (code == "DE" || country == "NEMETORSZAG" || country == "GERMANY") -> 3
-        league == "LIGUE 1" && (code == "FR" || country == "FRANCIAORSZAG" || country == "FRANCE") -> 4
-        else -> 100
-    }
-}
-
-private fun hungarianSortKey(value: String?): String {
-    val text = value?.trim()?.lowercase().orEmpty()
-    val alphabet = mapOf(
-        'a' to 1, 'á' to 2, 'b' to 3, 'c' to 4, 'd' to 6,
-        'e' to 9, 'é' to 10, 'f' to 11, 'g' to 12, 'h' to 14,
-        'i' to 15, 'í' to 16, 'j' to 17, 'k' to 18, 'l' to 19,
-        'm' to 21, 'n' to 22, 'o' to 24, 'ó' to 25, 'ö' to 26,
-        'ő' to 27, 'p' to 28, 'q' to 29, 'r' to 30, 's' to 31,
-        't' to 33, 'u' to 35, 'ú' to 36, 'ü' to 37, 'ű' to 38,
-        'v' to 39, 'w' to 40, 'x' to 41, 'y' to 42, 'z' to 43
-    )
-
-    val digraphs = listOf("dzs" to 8, "cs" to 5, "dz" to 7, "gy" to 13,
-        "ly" to 20, "ny" to 23, "sz" to 32, "ty" to 34, "zs" to 44)
-
-    val result = StringBuilder()
-    var i = 0
-    while (i < text.length) {
-        val match = digraphs.firstOrNull { (token, _) -> text.startsWith(token, i) }
-        val rank: Int
-        if (match != null) {
-            rank = match.second
-            i += match.first.length
-        } else {
-            rank = alphabet[text[i]] ?: (100 + text[i].code)
-            i++
-        }
-        result.append(Char(0x1000 + rank))
-    }
-    return result.toString()
-}
-
-// ================================================================
 // ORSZÁGZÁSZLÓ
 // ================================================================
 
 private fun countryFlag(
-    countryCode: String?,
-    countryName: String?,
-    leagueName: String?
+    countryCode: String?
 ): String {
-    val code = countryCode
-        ?.trim()
-        ?.lowercase()
-        ?.takeIf { it.length == 2 }
-        ?: countryToIso(countryName, leagueName)
 
-    if (code.length != 2 || code.any { it !in 'a'..'z' }) return "🌐"
+    val code =
+        countryCode
+            ?.trim()
+            ?.lowercase()
+            .orEmpty()
+
+    if (code.length != 2) {
+        return "🌐"
+    }
+
+    val first = code[0]
+    val second = code[1]
+
+    if (
+        first !in 'a'..'z' ||
+        second !in 'a'..'z'
+    ) {
+        return "🌐"
+    }
 
     return buildString {
-        appendCodePoint(0x1F1E6 + (code[0] - 'a'))
-        appendCodePoint(0x1F1E6 + (code[1] - 'a'))
-    }
-}
 
-private fun countryToIso(countryName: String?, leagueName: String?): String {
-    val raw = countryName?.trim().orEmpty().ifBlank {
-        leagueName?.substringBefore(":")?.trim().orEmpty()
-    }
-    val key = normalizeCountry(raw)
+        appendCodePoint(
+            0x1F1E6 + (first - 'a')
+        )
 
-    val map = mapOf(
-        "ALBANIA" to "al", "ALGERIA" to "dz", "ARGENTINA" to "ar",
-        "ARMENIA" to "am", "AUSTRALIA" to "au", "AUSTRIA" to "at", "AZERBAIJAN" to "az",
-        "BELARUS" to "by", "BELGIUM" to "be", "BOLIVIA" to "bo", "BOSNIA AND HERZEGOVINA" to "ba",
-        "BOSNIA HERZEGOVINA" to "ba", "BRAZIL" to "br", "BRAZILIA" to "br", "BULGARIA" to "bg",
-        "CANADA" to "ca", "CHILE" to "cl", "CHINA" to "cn", "COLOMBIA" to "co",
-        "COSTA RICA" to "cr", "CROATIA" to "hr", "CYPRUS" to "cy", "CZECHIA" to "cz",
-        "CZECH REPUBLIC" to "cz", "DENMARK" to "dk", "DANIA" to "dk", "DOMINICAN REPUBLIC" to "do",
-        "ECUADOR" to "ec", "EQUADOR" to "ec", "EGYPT" to "eg", "EL SALVADOR" to "sv",
-        "ENGLAND" to "gb", "ANGLIA" to "gb", "ESTONIA" to "ee", "ESZTORSZAG" to "ee",
-        "ETHIOPIA" to "et", "FAROE ISLANDS" to "fo", "FINLAND" to "fi", "FRANCE" to "fr",
-        "FRANCIAORSZAG" to "fr", "GEORGIA" to "ge", "GERMANY" to "de", "NEMETORSZAG" to "de",
-        "GHANA" to "gh", "GIBRALTAR" to "gi", "GREECE" to "gr", "GOROGORSZAG" to "gr",
-        "GUATEMALA" to "gt", "HONDURAS" to "hn", "HONG KONG" to "hk", "HUNGARY" to "hu",
-        "MAGYARORSZAG" to "hu", "ICELAND" to "is", "IZLAND" to "is", "INDIA" to "in",
-        "INDONESIA" to "id", "IRAN" to "ir", "IRAQ" to "iq", "IRELAND" to "ie", "ISRAEL" to "il",
-        "ITALY" to "it", "OLASZORSZAG" to "it", "IVORY COAST" to "ci", "JAMAICA" to "jm",
-        "JAPAN" to "jp", "JORDAN" to "jo", "KAZAKHSTAN" to "kz", "KENYA" to "ke",
-        "KOREA" to "kr", "SOUTH KOREA" to "kr", "KOSOVO" to "xk", "KYRGYZSTAN" to "kg",
-        "KIRGIZISZTAN" to "kg", "KUWAIT" to "kw", "LATVIA" to "lv", "LETTORSZAG" to "lv",
-        "LEBANON" to "lb", "LITHUANIA" to "lt", "LITVANIA" to "lt", "LUXEMBOURG" to "lu",
-        "MALAYSIA" to "my", "MALTA" to "mt", "MEXICO" to "mx", "MEXIKO" to "mx",
-        "MOLDOVA" to "md", "MONTENEGRO" to "me", "MOROCCO" to "ma", "NETHERLANDS" to "nl",
-        "HOLLAND" to "nl", "HOLLANDIA" to "nl", "NEW ZEALAND" to "nz", "NICARAGUA" to "ni",
-        "NIGERIA" to "ng", "NORTH MACEDONIA" to "mk", "ESZAK MACEDONIA" to "mk", "NORWAY" to "no",
-        "OMAN" to "om", "PANAMA" to "pa", "PARAGUAY" to "py", "PERU" to "pe", "PHILIPPINES" to "ph",
-        "POLAND" to "pl", "LENGYELORSZAG" to "pl", "PORTUGAL" to "pt", "PORTUGALIA" to "pt",
-        "QATAR" to "qa", "ROMANIA" to "ro",
-        "RUSSIA" to "ru", "OROSZORSZAG" to "ru", "SAUDI ARABIA" to "sa", "SAUDIARABIA" to "sa",
-        "SERBIA" to "rs", "SINGAPORE" to "sg", "SLOVAKIA" to "sk", "SLOVENIA" to "si",
-        "SOUTH AFRICA" to "za", "SPAIN" to "es", "SPANYOLORSZAG" to "es", "SRI LANKA" to "lk",
-        "SWEDEN" to "se", "SVEDORSZAG" to "se", "SWITZERLAND" to "ch", "TAIWAN" to "tw",
-        "TANZANIA" to "tz", "THAILAND" to "th", "TUNISIA" to "tn", "TURKEY" to "tr",
-        "TOROKORSZAG" to "tr", "UGANDA" to "ug", "UKRAINE" to "ua", "UNITED ARAB EMIRATES" to "ae",
-        "EGYESULT ARAB EMIRATEK" to "ae", "URUGUAY" to "uy", "USA" to "us", "UZBEKISTAN" to "uz",
-        "UZBEGISZTAN" to "uz", "VENEZUELA" to "ve", "VIETNAM" to "vn", "WALES" to "gb",
-        "ZAMBIA" to "zm", "ZIMBABWE" to "zw"
-    )
-    return map[key].orEmpty()
+        appendCodePoint(
+            0x1F1E6 + (second - 'a')
+        )
+    }
 }
 
 // ================================================================

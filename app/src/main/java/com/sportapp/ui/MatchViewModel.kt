@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.sportapp.api.RetrofitInstance
 import com.sportapp.models.MatchResponse
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
@@ -17,11 +18,7 @@ class MatchViewModel : ViewModel() {
     private val _isLoading = MutableStateFlow(true)
     val isLoading: StateFlow<Boolean> = _isLoading
 
-    // A Render-es backend a StatPal élő adatait 20 mp-enként frissíti a
-    // saját cache-éből (lásd main.py STATPAL_CACHE_TTL), ezért ennél
-    // gyakoribb lekérdezés csak felesleges hálózati/akkumulátor terhelés
-    // lenne - 20 mp-enként viszont mindig friss adatot kapunk automatikusan,
-    // anélkül hogy a felhasználónak újra kéne indítania az appot.
+    // A backend saját cache-e frissül, ezért 20 mp-es időköz elegendő.
     private val REFRESH_INTERVAL_MS = 20_000L
 
     init {
@@ -30,10 +27,11 @@ class MatchViewModel : ViewModel() {
 
     private fun startAutoRefresh() {
         viewModelScope.launch {
-            while (true) {
-                // Csak az első betöltésnél mutatunk teljes képernyős spinnert,
-                // a háttérbeli frissítéseknél nem villantjuk fel újra.
-                fetchMatches(showLoading = _matches.value.isEmpty())
+            while (isActive) {
+                // FONTOS: a korábbi verzió fetchMatches() belül új coroutine-t
+                // indított, ezért ha a hálózat lassú volt, a 20 mp-es ciklusok
+                // egymásra torlódtak. Ez lefagyást és lassulást okozhatott.
+                loadMatches(showLoading = _matches.value.isEmpty())
                 delay(REFRESH_INTERVAL_MS)
             }
         }
@@ -41,13 +39,28 @@ class MatchViewModel : ViewModel() {
 
     fun fetchMatches(showLoading: Boolean = true) {
         viewModelScope.launch {
-            if (showLoading) _isLoading.value = true
-            try {
-                _matches.value = RetrofitInstance.api.getMatches()
-            } catch (e: Exception) {
-                e.printStackTrace()
-            } finally {
-                if (showLoading) _isLoading.value = false
+            loadMatches(showLoading)
+        }
+    }
+
+    private suspend fun loadMatches(showLoading: Boolean) {
+        if (showLoading) {
+            _isLoading.value = true
+        }
+
+        try {
+            val result = RetrofitInstance.api.getMatches()
+
+            // Üres vagy hibajellegű válasz esetén nem töröljük le a
+            // már megjelenített meccseket egy rövid hálózati hibával.
+            if (result.isNotEmpty()) {
+                _matches.value = result
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        } finally {
+            if (showLoading) {
+                _isLoading.value = false
             }
         }
     }
