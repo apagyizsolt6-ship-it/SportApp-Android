@@ -995,6 +995,10 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                                                 }
                                             }
                                         }
+                                    },
+                                    onAiClick = { match ->
+                                        selectedMatchForAi = match
+                                        viewModel.analyzeMatch(match)
                                     }
                                 )
 
@@ -1049,18 +1053,17 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
     // TABELLA
     // ============================================================
 
-    selectedLeaguePair?.let {
-            (leagueId, leagueName) ->
-
+    selectedLeaguePair?.let { (leagueId, leagueName) ->
         FullLeagueTableDialog(
             leagueId = leagueId,
             leagueName = leagueName,
             isDarkMode = isDarkMode
         ) {
-
             selectedLeaguePair = null
         }
-           // ============================================================
+    }
+
+    // ============================================================
     // AI ELEMZÉS DIALOG
     // ============================================================
 
@@ -1112,7 +1115,8 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
             containerColor = if (isDarkMode) Color(0xFF1E293B) else Color.White
         )
     }
- }
+}
+
 // ================================================================
 // ORSZÁG / RÉGIÓ ZÁSZLÓ
 // ================================================================
@@ -1538,7 +1542,8 @@ fun PremiumMatchRow(
     subTextColor: Color,
     primaryGreen: Color,
     onFavoriteToggle: () -> Unit,
-    onVideoClick: (MatchResponse) -> Unit
+    onVideoClick: (MatchResponse) -> Unit,
+    onAiClick: (MatchResponse) -> Unit
 ) {
 
     Row(
