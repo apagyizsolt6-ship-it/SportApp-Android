@@ -1112,7 +1112,7 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
             containerColor = if (isDarkMode) Color(0xFF1E293B) else Color.White
         )
     }
- 
+ }
 // ================================================================
 // ORSZÁG / RÉGIÓ ZÁSZLÓ
 // ================================================================
