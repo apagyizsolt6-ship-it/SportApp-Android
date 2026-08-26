@@ -21,6 +21,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -1704,18 +1705,13 @@ fun PremiumMatchRow(
                 )
 
                 Text(
-                    text =
-                        match.homeTeam,
-
-                    color =
-                        textColor,
-
+                    text = match.homeTeam,
+                    color = textColor,
                     fontSize = 13.sp,
-
-                    fontWeight =
-                        FontWeight.SemiBold,
-
-                    maxLines = 1
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false)
                 )
             }
 
@@ -1743,135 +1739,77 @@ fun PremiumMatchRow(
                 )
 
                 Text(
-                    text =
-                        match.awayTeam,
-
-                    color =
-                        textColor,
-
+                    text = match.awayTeam,
+                    color = textColor,
                     fontSize = 13.sp,
-
-                    fontWeight =
-                        FontWeight.SemiBold,
-
-                    maxLines = 1
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false)
                 )
             }
         }
 
         // ============================================================
-        // EREDMÉNY
+        // EREDMÉNY + AKCIÓ GOMBOK (nem zsugorodhatnak el)
         // ============================================================
 
-        Column(
-            horizontalAlignment =
-                Alignment.End
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.wrapContentWidth()
         ) {
-
-            Text(
-                text =
-                    "${match.homeScore ?: 0}",
-
-                color =
-                    if (match.homeScore != null) {
-                        primaryGreen
-                    } else {
-                        subTextColor
-                    },
-
-                fontSize = 13.sp,
-
-                fontWeight =
-                    FontWeight.Bold
-            )
-
-            Spacer(
-                modifier =
-                    Modifier.height(2.dp)
-            )
-
-            Text(
-                text =
-                    "${match.awayScore ?: 0}",
-
-                color =
-                    if (match.awayScore != null) {
-                        primaryGreen
-                    } else {
-                        subTextColor
-                    },
-
-                fontSize = 13.sp,
-
-                fontWeight =
-                    FontWeight.Bold
-            )
-        }
-        
-        // ============================================================
-        // AI ELEMZÉS GOMB
-        // ============================================================
-
-        Spacer(
-            modifier = Modifier.width(6.dp)
-        )
-
-        Box(
-            modifier = Modifier
-                .clip(
-                    RoundedCornerShape(6.dp)
+            Column(
+                horizontalAlignment = Alignment.End,
+                modifier = Modifier.widthIn(min = 20.dp)
+            ) {
+                Text(
+                    text = "${match.homeScore ?: 0}",
+                    color = if (match.homeScore != null) primaryGreen else subTextColor,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold
                 )
-                .background(
-                    Color(0xFF0284C7)
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = "${match.awayScore ?: 0}",
+                    color = if (match.awayScore != null) primaryGreen else subTextColor,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold
                 )
-                .clickable {
-                    onAiClick(match)
-                }
-                .padding(
-                    horizontal = 6.dp,
-                    vertical = 4.dp
-                )
-        ) {
-            Text(
-                text = "🤖",
-                color = Color.White,
-                fontSize = 11.sp
-            )
-        }
+            }
 
-        // ============================================================
-        // VIDEÓ
-        // ============================================================
+            Spacer(modifier = Modifier.width(8.dp))
 
-        match.highlightMatchId?.let {
-
-            Spacer(
-                modifier =
-                    Modifier.width(8.dp)
-            )
-
+            // AI gomb – mindig látszik
             Box(
                 modifier = Modifier
-                    .clip(
-                        RoundedCornerShape(6.dp)
-                    )
-                    .background(
-                        Color(0xFF2979FF)
-                    )
-                    .clickable {
-                        onVideoClick(match)
-                    }
-                    .padding(
-                        horizontal = 6.dp,
-                        vertical = 4.dp
-                    )
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(Color(0xFF0284C7))
+                    .clickable { onAiClick(match) }
+                    .padding(horizontal = 7.dp, vertical = 5.dp)
             ) {
-
                 Text(
-                    text = "🎥",
+                    text = "🤖",
                     color = Color.White,
-                    fontSize = 11.sp
+                    fontSize = 12.sp
                 )
+            }
+
+            // Videó gomb – csak ha van highlight
+            match.highlightMatchId?.let {
+                Spacer(modifier = Modifier.width(6.dp))
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(Color(0xFF2979FF))
+                        .clickable { onVideoClick(match) }
+                        .padding(horizontal = 7.dp, vertical = 5.dp)
+                ) {
+                    Text(
+                        text = "🎥",
+                        color = Color.White,
+                        fontSize = 12.sp
+                    )
+                }
             }
         }
     }
