@@ -1,5 +1,8 @@
 package com.sportapp.ui
 
+import android.content.Intent
+import android.net.Uri
+
 import android.webkit.WebChromeClient
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -78,6 +81,7 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
     }
 
     var selectedVideo by remember { mutableStateOf<HighlightVideo?>(null) }
+    var selectedMatchForMedia by remember { mutableStateOf<MatchResponse?>(null) }
     var highlightVideos by remember { mutableStateOf<List<HighlightVideo>>(emptyList()) }
     var showHighlightPicker by remember { mutableStateOf(false) }
     var isHighlightLoading by remember { mutableStateOf(false) }
@@ -251,6 +255,14 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
 
                 // KEDVENC
                 2 -> isMatchFav || isLeagueFav
+
+                // MÉDIA – élő, befejezett, vagy van highlight
+                3 -> {
+                    val hasHighlight = !match.highlightMatchId.isNullOrBlank()
+                    val isLive = match.status != "FT" && (match.minute ?: 0) > 0
+                    val isFinished = match.status == "FT"
+                    hasHighlight || isLive || isFinished
+                }
 
                 // ÖSSZES
                 else -> true
@@ -495,6 +507,28 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                         ),
                         color = if (selectedTab == 2) {
                             Color(0xFFFF9100)
+                        } else {
+                            subTextColor
+                        },
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                Tab(
+                    selected = selectedTab == 3,
+                    onClick = {
+                        selectedTab = 3
+                    }
+                ) {
+
+                    Text(
+                        "🎬 MÉDIA",
+                        modifier = Modifier.padding(
+                            vertical = 10.dp
+                        ),
+                        color = if (selectedTab == 3) {
+                            Color(0xFF40C4FF)
                         } else {
                             subTextColor
                         },
@@ -944,29 +978,23 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                                             }
                                     },
 
-                                    onVideoClick = {
-                                        match ->
+                                    onVideoClick = { match ->
+                                        selectedMatchForMedia = match
+                                        highlightVideos = emptyList()
+                                        highlightError = null
+                                        showHighlightPicker = true
+
                                         val highlightMatchId =
                                             match.highlightMatchId?.trim().orEmpty()
 
-                                        if (highlightMatchId.isBlank()) {
-                                            highlightError =
-                                                "Ehhez a mérkőzéshez jelenleg nincs elérhető Highlightly videó."
-                                            showHighlightPicker = true
-                                            highlightVideos = emptyList()
-                                        } else {
+                                        if (highlightMatchId.isNotBlank()) {
                                             coroutineScope.launch {
                                                 isHighlightLoading = true
-                                                highlightError = null
-                                                highlightVideos = emptyList()
-                                                showHighlightPicker = true
-
                                                 try {
                                                     val videos =
                                                         RetrofitInstance.api.getMatchHighlights(
                                                             highlightMatchId
                                                         )
-
                                                     highlightVideos =
                                                         videos
                                                             .filter {
@@ -983,14 +1011,8 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                                                                     it.title.orEmpty()
                                                                 }
                                                             )
-
-                                                    if (highlightVideos.isEmpty()) {
-                                                        highlightError =
-                                                            "A Highlightly nem adott vissza lejátszható videót ehhez a mérkőzéshez."
-                                                    }
                                                 } catch (e: Exception) {
-                                                    highlightError =
-                                                        "A Highlightly videók betöltése sikertelen."
+                                                    highlightError = null
                                                 } finally {
                                                     isHighlightLoading = false
                                                 }
@@ -1021,6 +1043,7 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
 
     if (showHighlightPicker) {
         HighlightVideoPickerDialog(
+            match = selectedMatchForMedia,
             videos = highlightVideos,
             isLoading = isHighlightLoading,
             errorMessage = highlightError,
@@ -1029,8 +1052,17 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                 selectedVideo = video
                 showHighlightPicker = false
             },
+            onOpenExternalUrl = { url ->
+                try {
+                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                    context.startActivity(intent)
+                } catch (e: Exception) {
+                    // ignore
+                }
+            },
             onDismiss = {
                 showHighlightPicker = false
+                selectedMatchForMedia = null
                 highlightVideos = emptyList()
                 highlightError = null
             }
@@ -1794,22 +1826,26 @@ fun PremiumMatchRow(
                 )
             }
 
-            // Videó gomb – csak ha van highlight
-            match.highlightMatchId?.let {
-                Spacer(modifier = Modifier.width(6.dp))
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(6.dp))
-                        .background(Color(0xFF2979FF))
-                        .clickable { onVideoClick(match) }
-                        .padding(horizontal = 7.dp, vertical = 5.dp)
-                ) {
-                    Text(
-                        text = "🎥",
-                        color = Color.White,
-                        fontSize = 12.sp
+            // Videó / multimédia gomb – mindig látszik
+            Spacer(modifier = Modifier.width(6.dp))
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(
+                        if (!match.highlightMatchId.isNullOrBlank()) {
+                            Color(0xFF2979FF)
+                        } else {
+                            Color(0xFF455A64)
+                        }
                     )
-                }
+                    .clickable { onVideoClick(match) }
+                    .padding(horizontal = 7.dp, vertical = 5.dp)
+            ) {
+                Text(
+                    text = "🎥",
+                    color = Color.White,
+                    fontSize = 12.sp
+                )
             }
         }
     }
@@ -2230,11 +2266,13 @@ fun FullLeagueTableDialog(
 
 @Composable
 fun HighlightVideoPickerDialog(
+    match: MatchResponse?,
     videos: List<HighlightVideo>,
     isLoading: Boolean,
     errorMessage: String?,
     isDarkMode: Boolean,
     onVideoSelected: (HighlightVideo) -> Unit,
+    onOpenExternalUrl: (String) -> Unit,
     onDismiss: () -> Unit
 ) {
     val dialogBg =
@@ -2248,181 +2286,201 @@ fun HighlightVideoPickerDialog(
 
     val goalClips =
         videos.filter {
-            it.category.equals(
-                "goal-clip",
-                ignoreCase = true
-            )
+            it.category.equals("goal-clip", ignoreCase = true)
         }
 
     val matchHighlights =
         videos.filter {
-            it.category.equals(
-                "match-highlights",
-                ignoreCase = true
-            )
+            it.category.equals("match-highlights", ignoreCase = true)
         }
 
-    Dialog(
-        onDismissRequest = onDismiss
-    ) {
+    val otherVideos =
+        videos.filter {
+            !it.category.equals("goal-clip", ignoreCase = true) &&
+                !it.category.equals("match-highlights", ignoreCase = true)
+        }
+
+    val home = match?.homeTeam.orEmpty()
+    val away = match?.awayTeam.orEmpty()
+    val queryBase = listOf(home, "vs", away).filter { it.isNotBlank() }.joinToString(" ")
+
+    fun ytSearchUrl(extra: String): String {
+        val q = "$queryBase $extra".trim().ifBlank { "football highlights" }
+        return "https://www.youtube.com/results?search_query=" + Uri.encode(q)
+    }
+
+    Dialog(onDismissRequest = onDismiss) {
         Card(
-            modifier =
-                Modifier
-                    .fillMaxWidth()
-                    .padding(10.dp),
-
-            shape =
-                RoundedCornerShape(16.dp),
-
-            colors =
-                CardDefaults.cardColors(
-                    containerColor = dialogBg
-                )
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(10.dp),
+            shape = RoundedCornerShape(16.dp),
+            colors = CardDefaults.cardColors(containerColor = dialogBg)
         ) {
-
-            Column(
-                modifier =
-                    Modifier.padding(16.dp)
-            ) {
+            Column(modifier = Modifier.padding(16.dp)) {
 
                 Text(
-                    text = "🎥 Highlightly videók",
+                    text = "🎬 Multimédia központ",
                     color = Color(0xFF00E676),
                     fontSize = 16.sp,
                     fontWeight = FontWeight.ExtraBold
                 )
 
-                Spacer(
-                    modifier =
-                        Modifier.height(8.dp)
-                )
-
-                if (isLoading) {
-
-                    Box(
-                        modifier =
-                            Modifier
-                                .fillMaxWidth()
-                                .height(120.dp),
-
-                        contentAlignment =
-                            Alignment.Center
-                    ) {
-
-                        CircularProgressIndicator(
-                            color = Color(0xFF00E676)
-                        )
-                    }
-
-                } else if (errorMessage != null) {
-
+                if (!home.isNullOrBlank() || !away.isNullOrBlank()) {
+                    Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text = errorMessage,
-                        color = subTextColor,
-                        fontSize = 12.sp
+                        text = "$home vs $away",
+                        color = textColor,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold
                     )
-
-                } else {
-
-                    if (goalClips.isNotEmpty()) {
-
+                    match?.league?.let { league ->
                         Text(
-                            text = "⚽ Gólvideók",
-                            color = Color(0xFFFFD54F),
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-
-                        Spacer(
-                            modifier =
-                                Modifier.height(6.dp)
-                        )
-
-                        LazyColumn(
-                            modifier =
-                                Modifier.heightIn(
-                                    max = 260.dp
-                                )
-                        ) {
-
-                            items(goalClips) { video ->
-
-                                HighlightVideoRow(
-                                    video = video,
-                                    textColor = textColor,
-                                    subTextColor = subTextColor,
-                                    onClick = {
-                                        onVideoSelected(video)
-                                    }
-                                )
-
-                                Divider(
-                                    color =
-                                        if (isDarkMode) {
-                                            Color(0xFF2B3036)
-                                        } else {
-                                            Color(0xFFE5E7EB)
-                                        },
-                                    thickness = 0.5.dp
-                                )
-                            }
-                        }
-
-                    } else if (matchHighlights.isNotEmpty()) {
-
-                        Text(
-                            text = "🎬 Meccsösszefoglaló",
-                            color = Color(0xFF64B5F6),
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-
-                        Spacer(
-                            modifier =
-                                Modifier.height(6.dp)
-                        )
-
-                        matchHighlights.forEach { video ->
-
-                            HighlightVideoRow(
-                                video = video,
-                                textColor = textColor,
-                                subTextColor = subTextColor,
-                                onClick = {
-                                    onVideoSelected(video)
-                                }
-                            )
-                        }
-
-                    } else {
-
-                        Text(
-                            text =
-                                "Ehhez a mérkőzéshez nincs elérhető videó.",
+                            text = league,
                             color = subTextColor,
-                            fontSize = 12.sp
+                            fontSize = 11.sp
                         )
                     }
                 }
 
-                Spacer(
-                    modifier =
-                        Modifier.height(12.dp)
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // ---- YouTube / külső források (mindig) ----
+                Text(
+                    text = "🌍 Nemzetközi források",
+                    color = Color(0xFF40C4FF),
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold
                 )
+                Spacer(modifier = Modifier.height(6.dp))
+
+                MultimediaLinkRow(
+                    emoji = "▶️",
+                    title = "YouTube – meccsösszefoglaló",
+                    subtitle = "Keresés: highlights",
+                    textColor = textColor,
+                    subTextColor = subTextColor,
+                    onClick = { onOpenExternalUrl(ytSearchUrl("highlights")) }
+                )
+                MultimediaLinkRow(
+                    emoji = "⚽",
+                    title = "YouTube – gólok",
+                    subtitle = "Keresés: goals",
+                    textColor = textColor,
+                    subTextColor = subTextColor,
+                    onClick = { onOpenExternalUrl(ytSearchUrl("goals")) }
+                )
+                MultimediaLinkRow(
+                    emoji = "📡",
+                    title = "YouTube – élő / preview",
+                    subtitle = "Keresés: live OR preview",
+                    textColor = textColor,
+                    subTextColor = subTextColor,
+                    onClick = { onOpenExternalUrl(ytSearchUrl("live OR preview")) }
+                )
+
+                Spacer(modifier = Modifier.height(12.dp))
+                Divider(
+                    color = if (isDarkMode) Color(0xFF2B3036) else Color(0xFFE5E7EB),
+                    thickness = 1.dp
+                )
+                Spacer(modifier = Modifier.height(10.dp))
+
+                Text(
+                    text = "🎥 Highlightly",
+                    color = Color(0xFFFFD54F),
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+
+                if (isLoading) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(100.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        CircularProgressIndicator(color = Color(0xFF00E676))
+                    }
+                } else if (goalClips.isNotEmpty() || matchHighlights.isNotEmpty() || otherVideos.isNotEmpty()) {
+                    LazyColumn(modifier = Modifier.heightIn(max = 220.dp)) {
+                        if (goalClips.isNotEmpty()) {
+                            item {
+                                Text(
+                                    text = "⚽ Gólvideók",
+                                    color = Color(0xFFFFD54F),
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(vertical = 4.dp)
+                                )
+                            }
+                            items(goalClips) { video ->
+                                HighlightVideoRow(
+                                    video = video,
+                                    textColor = textColor,
+                                    subTextColor = subTextColor,
+                                    onClick = { onVideoSelected(video) }
+                                )
+                            }
+                        }
+                        if (matchHighlights.isNotEmpty()) {
+                            item {
+                                Text(
+                                    text = "🎬 Meccsösszefoglaló",
+                                    color = Color(0xFF64B5F6),
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(vertical = 4.dp)
+                                )
+                            }
+                            items(matchHighlights) { video ->
+                                HighlightVideoRow(
+                                    video = video,
+                                    textColor = textColor,
+                                    subTextColor = subTextColor,
+                                    onClick = { onVideoSelected(video) }
+                                )
+                            }
+                        }
+                        if (otherVideos.isNotEmpty()) {
+                            item {
+                                Text(
+                                    text = "📹 Egyéb",
+                                    color = subTextColor,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(vertical = 4.dp)
+                                )
+                            }
+                            items(otherVideos) { video ->
+                                HighlightVideoRow(
+                                    video = video,
+                                    textColor = textColor,
+                                    subTextColor = subTextColor,
+                                    onClick = { onVideoSelected(video) }
+                                )
+                            }
+                        }
+                    }
+                } else {
+                    Text(
+                        text = errorMessage
+                            ?: "Jelenleg nincs Highlightly-videó ehhez a meccshez. Használd a YouTube forrásokat fent.",
+                        color = subTextColor,
+                        fontSize = 12.sp
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
 
                 Button(
                     onClick = onDismiss,
-                    colors =
-                        ButtonDefaults.buttonColors(
-                            containerColor =
-                                Color(0xFF00E676)
-                        ),
-                    modifier =
-                        Modifier.align(
-                            Alignment.End
-                        )
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFF00E676)
+                    ),
+                    modifier = Modifier.align(Alignment.End)
                 ) {
-
                     Text(
                         text = "Bezárás",
                         color = Color.Black,
@@ -2431,6 +2489,46 @@ fun HighlightVideoPickerDialog(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun MultimediaLinkRow(
+    emoji: String,
+    title: String,
+    subtitle: String,
+    textColor: Color,
+    subTextColor: Color,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(text = emoji, fontSize = 18.sp)
+        Spacer(modifier = Modifier.width(10.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = title,
+                color = textColor,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold
+            )
+            Text(
+                text = subtitle,
+                color = subTextColor,
+                fontSize = 10.sp
+            )
+        }
+        Text(
+            text = "↗",
+            color = Color(0xFF40C4FF),
+            fontSize = 14.sp,
+            fontWeight = FontWeight.Bold
+        )
     }
 }
 
