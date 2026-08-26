@@ -3,7 +3,6 @@ package com.sportapp.ui
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.sportapp.api.RetrofitInstance
-import com.sportapp.models.MatchResponse
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -13,21 +12,20 @@ import kotlinx.coroutines.launch
 
 class MatchViewModel : ViewModel() {
 
-    private val _matches = MutableStateFlow<List<MatchResponse>>(emptyList())
-    val matches: StateFlow<List<MatchResponse>> = _matches
+    private val _matches = MutableStateFlow<List<com.sportapp.models.MatchResponse>>(emptyList())
+    val matches: StateFlow<List<com.sportapp.models.MatchResponse>> = _matches
 
     private val _isLoading = MutableStateFlow(true)
     val isLoading: StateFlow<Boolean> = _isLoading
 
-    // Gemini AI állapotok
     private val _aiAnalysis = MutableStateFlow<String?>(null)
     val aiAnalysis: StateFlow<String?> = _aiAnalysis.asStateFlow()
 
     private val _isLoadingAi = MutableStateFlow(false)
     val isLoadingAi: StateFlow<Boolean> = _isLoadingAi.asStateFlow()
 
-    // A backend saját cache-e frissül, ezért 20 mp-es időköz elegendő.
-    private val REFRESH_INTERVAL_MS = 20_000L
+    // Kicsit ritkább frissítés – kevesebb terhelés, snappibb UI
+    private val REFRESH_INTERVAL_MS = 30_000L
 
     init {
         startAutoRefresh()
@@ -67,19 +65,39 @@ class MatchViewModel : ViewModel() {
         }
     }
 
-    // Gemini AI elemzés lekérése backend-ről
+    /**
+     * Gemini AI elemzés – 1 automatikus újrapróbálással.
+     */
     fun fetchAiAnalysis(matchId: String) {
         viewModelScope.launch {
             _isLoadingAi.value = true
             _aiAnalysis.value = null
-            try {
-                val response = RetrofitInstance.api.getAiAnalysis(matchId)
-                _aiAnalysis.value = response.analysis
-            } catch (e: Exception) {
-                _aiAnalysis.value = "Az AI elemzés elérése sikertelen volt."
-            } finally {
-                _isLoadingAi.value = false
+
+            var lastError: String? = null
+            repeat(2) { attempt ->
+                try {
+                    val response = RetrofitInstance.api.getAiAnalysis(matchId)
+                    val text = response.analysis?.trim().orEmpty()
+                    if (text.isNotEmpty()) {
+                        _aiAnalysis.value = text
+                        _isLoadingAi.value = false
+                        return@launch
+                    }
+                    lastError = "Üres AI válasz érkezett."
+                } catch (e: Exception) {
+                    lastError = e.message ?: "hálózati hiba"
+                    e.printStackTrace()
+                    // Rövid várás újrapróbálás előtt
+                    if (attempt == 0) delay(1200)
+                }
             }
+
+            _aiAnalysis.value =
+                "Az AI elemzés elérése sikertelen volt.\n\n" +
+                    "Lehetséges ok: lassú szerver, hálózat vagy Gemini terhelés.\n" +
+                    "Próbáld újra néhány másodperc múlva." +
+                    (if (!lastError.isNullOrBlank()) "\n($lastError)" else "")
+            _isLoadingAi.value = false
         }
     }
 
