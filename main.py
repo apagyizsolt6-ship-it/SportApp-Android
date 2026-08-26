@@ -27,7 +27,7 @@ if GEMINI_KEY and google_genai is not None:
         _gemini_client = None
 
 STATPAL_CACHE_TTL = 20
-HIGHLIGHTLY_CACHE_TTL = 90
+HIGHLIGHTLY_CACHE_TTL = 300  # 5 perc – ne blokkolja a meccslistát gyakran
 TEAM_IMAGE_CACHE_TTL = 21600
 AI_CACHE_TTL = 43200
 
@@ -370,41 +370,43 @@ def fetch_statpal_matches():
     _statpal_cache["ts"] = now
     return data
 
-def fetch_highlightly_highlights():
+_highlightly_refreshing = {"busy": False}
+
+
+def _highlightly_fetch_pages_fast():
+    """Max 2 gyors kérés párhuzamosan – ne fogja le a /api/matches-et."""
     if not HIGHLIGHTLY_KEY:
         return []
-    now = time.time()
-    if _highlightly_cache["data"] is not None and (now - _highlightly_cache["ts"]) < HIGHLIGHTLY_CACHE_TTL:
-        return _highlightly_cache["data"]
     base_url = "https://soccer.highlightly.net/highlights"
     headers = {"x-rapidapi-key": HIGHLIGHTLY_KEY}
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
+
+    def one(day, offset=0):
+        try:
+            resp = requests.get(
+                base_url,
+                headers=headers,
+                params={"date": day, "limit": 40, "offset": offset},
+                timeout=2.5,
+            )
+            if resp.status_code != 200:
+                return []
+            payload = resp.json()
+            page = payload.get("data") if isinstance(payload, dict) else None
+            return page if isinstance(page, list) else []
+        except Exception:
+            return []
+
     all_highlights = []
-    # Ma + tegnap, több oldal – több esély a párosításra
-    dates = [
-        datetime.now(timezone.utc).strftime("%Y-%m-%d"),
-        (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d"),
-    ]
-    for day in dates:
-        for offset in (0, 40, 80):
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        futures = [ex.submit(one, today, 0), ex.submit(one, yesterday, 0)]
+        for fut in futures:
             try:
-                resp = requests.get(
-                    base_url,
-                    headers=headers,
-                    params={"date": day, "limit": 40, "offset": offset},
-                    timeout=6,
-                )
-                if resp.status_code != 200:
-                    break
-                payload = resp.json()
-                page = payload.get("data") if isinstance(payload, dict) else None
-                if not isinstance(page, list) or not page:
-                    break
-                all_highlights.extend(page)
-                if len(page) < 40:
-                    break
+                all_highlights.extend(fut.result())
             except Exception:
-                break
-    # dedup id alapján
+                pass
+
     seen = set()
     unique = []
     for hl in all_highlights:
@@ -415,9 +417,50 @@ def fetch_highlightly_highlights():
             continue
         seen.add(hid)
         unique.append(hl)
-    _highlightly_cache["data"] = unique
-    _highlightly_cache["ts"] = now
     return unique
+
+
+def _refresh_highlightly_background():
+    if _highlightly_refreshing["busy"]:
+        return
+    _highlightly_refreshing["busy"] = True
+    try:
+        data = _highlightly_fetch_pages_fast()
+        # Üres választ ne írjuk felül a jó cache-re
+        if data or _highlightly_cache["data"] is None:
+            _highlightly_cache["data"] = data
+            _highlightly_cache["ts"] = time.time()
+    finally:
+        _highlightly_refreshing["busy"] = False
+
+
+def fetch_highlightly_highlights():
+    """
+    Gyors útvonal a meccslistához:
+    - ha van cache (akár lejárt), azonnal visszaadja
+    - háttérben frissít, nem blokkol 10-30 másodpercet
+    """
+    if not HIGHLIGHTLY_KEY:
+        return []
+    now = time.time()
+    cached = _highlightly_cache.get("data")
+    ts = float(_highlightly_cache.get("ts") or 0)
+
+    # Friss cache
+    if cached is not None and (now - ts) < HIGHLIGHTLY_CACHE_TTL:
+        return cached
+
+    # Van régi cache → azonnal vissza, háttérfrissítés
+    if cached is not None:
+        if not _highlightly_refreshing["busy"]:
+            ThreadPoolExecutor(max_workers=1).submit(_refresh_highlightly_background)
+        return cached
+
+    # Első indítás: egy rövid próbálkozás, max ~2.5s
+    data = _highlightly_fetch_pages_fast()
+    _highlightly_cache["data"] = data
+    _highlightly_cache["ts"] = now
+    return data
 
 def fetch_highlightly_match_highlights(highlight_match_id: str):
     if not HIGHLIGHTLY_KEY or not highlight_match_id:
@@ -762,7 +805,11 @@ def get_matches():
             statpal_future = executor.submit(fetch_statpal_matches)
             highlights_future = executor.submit(fetch_highlightly_highlights)
             data = statpal_future.result()
-            highlights_data = highlights_future.result()
+            # Highlightly max 3 mp – utána üres/cache, ne akassza meg a listát
+            try:
+                highlights_data = highlights_future.result(timeout=3)
+            except Exception:
+                highlights_data = _highlightly_cache.get("data") or []
 
         matches_list = []
         live_matches_data = data.get("live_matches") or data.get("matches") or {}
