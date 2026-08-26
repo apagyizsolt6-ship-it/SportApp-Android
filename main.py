@@ -376,22 +376,48 @@ def fetch_highlightly_highlights():
     now = time.time()
     if _highlightly_cache["data"] is not None and (now - _highlightly_cache["ts"]) < HIGHLIGHTLY_CACHE_TTL:
         return _highlightly_cache["data"]
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     base_url = "https://soccer.highlightly.net/highlights"
     headers = {"x-rapidapi-key": HIGHLIGHTLY_KEY}
     all_highlights = []
-    try:
-        resp = requests.get(base_url, headers=headers, params={"date": today, "limit": 40, "offset": 0}, timeout=5)
-        if resp.status_code == 200:
-            payload = resp.json()
-            page = payload.get("data") if isinstance(payload, dict) else None
-            if isinstance(page, list):
+    # Ma + tegnap, több oldal – több esély a párosításra
+    dates = [
+        datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d"),
+    ]
+    for day in dates:
+        for offset in (0, 40, 80):
+            try:
+                resp = requests.get(
+                    base_url,
+                    headers=headers,
+                    params={"date": day, "limit": 40, "offset": offset},
+                    timeout=6,
+                )
+                if resp.status_code != 200:
+                    break
+                payload = resp.json()
+                page = payload.get("data") if isinstance(payload, dict) else None
+                if not isinstance(page, list) or not page:
+                    break
                 all_highlights.extend(page)
-    except Exception:
-        pass
-    _highlightly_cache["data"] = all_highlights
+                if len(page) < 40:
+                    break
+            except Exception:
+                break
+    # dedup id alapján
+    seen = set()
+    unique = []
+    for hl in all_highlights:
+        if not isinstance(hl, dict):
+            continue
+        hid = hl.get("id") or id(hl)
+        if hid in seen:
+            continue
+        seen.add(hid)
+        unique.append(hl)
+    _highlightly_cache["data"] = unique
     _highlightly_cache["ts"] = now
-    return all_highlights
+    return unique
 
 def fetch_highlightly_match_highlights(highlight_match_id: str):
     if not HIGHLIGHTLY_KEY or not highlight_match_id:
@@ -605,32 +631,127 @@ def get_team_image(team_id: str):
     except Exception:
         return Response(status_code=404)
 
+def _normalize_team_name(name: str) -> str:
+    """Csapatnév normalizálása párosításhoz."""
+    if not name:
+        return ""
+    s = str(name).lower()
+    # ékezetek egyszerűsítése
+    for a, b in (
+        ("á", "a"), ("é", "e"), ("í", "i"), ("ó", "o"), ("ö", "o"), ("ő", "o"),
+        ("ú", "u"), ("ü", "u"), ("ű", "u"), ("ç", "c"), ("ñ", "n"),
+    ):
+        s = s.replace(a, b)
+    # gyakori toldalékok / zaj
+    for token in (
+        " fc", " cf", " sc", " afc", " united", " city", " club",
+        " reserve", " reserves", " u21", " u23", " u19", " ii", " 2",
+    ):
+        s = s.replace(token, " ")
+    s = "".join(ch if ch.isalnum() or ch.isspace() else " " for ch in s)
+    return " ".join(s.split())
+
+
+def _team_tokens(name: str) -> set:
+    stop = {"fc", "cf", "sc", "afc", "the", "de", "la", "el", "and", "vs"}
+    return {t for t in _normalize_team_name(name).split() if len(t) > 2 and t not in stop}
+
+
 def _build_highlight_match_index(highlights_data):
+    """
+    Index több kulccsal:
+    - pontos normalizált névpár
+    - fordított sorrend
+    - első jelentős token pár (lazább illesztés)
+    """
     index = {}
+    fuzzy = []  # (home_tokens, away_tokens, payload)
     if not isinstance(highlights_data, list):
-        return index
+        return index, fuzzy
     for hl in highlights_data:
         if not isinstance(hl, dict):
             continue
         match_obj = hl.get("match") or {}
         if not isinstance(match_obj, dict):
             continue
-        home_obj = match_obj.get("homeTeam") or {}
-        away_obj = match_obj.get("awayTeam") or {}
-        home = " ".join(str(home_obj.get("name", "")).lower().split())
-        away = " ".join(str(away_obj.get("name", "")).lower().split())
+        home_obj = match_obj.get("homeTeam") or match_obj.get("home") or {}
+        away_obj = match_obj.get("awayTeam") or match_obj.get("away") or {}
+        if not isinstance(home_obj, dict):
+            home_obj = {}
+        if not isinstance(away_obj, dict):
+            away_obj = {}
+        home_raw = home_obj.get("name") or home_obj.get("team_name") or ""
+        away_raw = away_obj.get("name") or away_obj.get("team_name") or ""
+        home = _normalize_team_name(home_raw)
+        away = _normalize_team_name(away_raw)
         if not home or not away:
             continue
-        match_id = match_obj.get("id")
+        match_id = match_obj.get("id") or match_obj.get("match_id")
         if match_id is None:
             continue
         video_url = hl.get("embedUrl") or hl.get("url")
         if not video_url:
             continue
-        payload = {"match_id": str(match_id), "url": video_url}
+        payload = {
+            "match_id": str(match_id),
+            "url": video_url,
+            "home": home_raw,
+            "away": away_raw,
+        }
         index.setdefault((home, away), payload)
         index.setdefault((away, home), payload)
-    return index
+        # első tokenes kulcs
+        ht = home.split()[0] if home.split() else home
+        at = away.split()[0] if away.split() else away
+        if ht and at:
+            index.setdefault((ht, at), payload)
+            index.setdefault((at, ht), payload)
+        fuzzy.append((_team_tokens(home_raw), _team_tokens(away_raw), payload))
+    return index, fuzzy
+
+
+def _lookup_highlight(home_name: str, away_name: str, index, fuzzy):
+    """Pontos, majd token-alapú fuzzy keresés."""
+    home = _normalize_team_name(home_name)
+    away = _normalize_team_name(away_name)
+    if not home or not away:
+        return None
+
+    exact = index.get((home, away)) or index.get((away, home))
+    if exact:
+        return exact
+
+    ht = home.split()[0] if home.split() else home
+    at = away.split()[0] if away.split() else away
+    token_hit = index.get((ht, at)) or index.get((at, ht))
+    if token_hit:
+        return token_hit
+
+    home_toks = _team_tokens(home_name)
+    away_toks = _team_tokens(away_name)
+    if not home_toks or not away_toks:
+        return None
+
+    best = None
+    best_score = 0
+    for fh, fa, payload in fuzzy:
+        # mindkét oldalon legyen átfedés
+        sh = len(home_toks & fh)
+        sa = len(away_toks & fa)
+        # fordított hazai/vendég is
+        sh2 = len(home_toks & fa)
+        sa2 = len(away_toks & fh)
+        score = max(
+            (sh + sa) if sh and sa else 0,
+            (sh2 + sa2) if sh2 and sa2 else 0,
+        )
+        if score > best_score:
+            best_score = score
+            best = payload
+    # legalább 2 token egyezés összesen
+    if best_score >= 2:
+        return best
+    return None
 
 @app.get("/api/matches")
 def get_matches():
@@ -649,7 +770,7 @@ def get_matches():
             live_matches_data = {}
 
         leagues = ensure_list(live_matches_data.get("league"))
-        highlight_index = _build_highlight_match_index(highlights_data)
+        highlight_index, highlight_fuzzy = _build_highlight_match_index(highlights_data)
 
         for league in leagues:
             if not isinstance(league, dict):
@@ -674,9 +795,13 @@ def get_matches():
 
                 highlight_url = None
                 highlight_match_id = None
-                normalized_home = " ".join(home_name.lower().split())
-                normalized_away = " ".join(away_name.lower().split())
-                exact_match = highlight_index.get((normalized_home, normalized_away))
+                # Nyers + fordított név is (translate előtt/után)
+                home_raw_name = home_data.get("name", "") or home_name
+                away_raw_name = away_data.get("name", "") or away_name
+                exact_match = (
+                    _lookup_highlight(home_name, away_name, highlight_index, highlight_fuzzy)
+                    or _lookup_highlight(home_raw_name, away_raw_name, highlight_index, highlight_fuzzy)
+                )
                 if exact_match is not None:
                     highlight_match_id = exact_match.get("match_id")
                     highlight_url = exact_match.get("url")
