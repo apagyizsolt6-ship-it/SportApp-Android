@@ -6,7 +6,10 @@ import os
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
-import google.generativeai as genai
+try:
+    from google import genai as google_genai
+except ImportError:
+    google_genai = None
 
 app = FastAPI()
 
@@ -14,8 +17,14 @@ STATPAL_KEY = os.getenv("STATPAL_KEY")
 HIGHLIGHTLY_KEY = os.getenv("HIGHLIGHTLY_KEY")
 GEMINI_KEY = os.getenv("GEMINI_KEY")
 
-if GEMINI_KEY:
-    genai.configure(api_key=GEMINI_KEY)
+# Új Google Gen AI SDK kliens (google-genai csomag)
+_gemini_client = None
+if GEMINI_KEY and google_genai is not None:
+    try:
+        _gemini_client = google_genai.Client(api_key=GEMINI_KEY)
+    except Exception as e:
+        print(f"[AI INIT ERROR] {e}")
+        _gemini_client = None
 
 STATPAL_CACHE_TTL = 20
 HIGHLIGHTLY_CACHE_TTL = 90
@@ -461,29 +470,48 @@ def get_ai_analysis(match_id: str):
     Ne használj száraz szakzsargont, legyen lényegre törő és élvezetes.
     """
 
-    try:
-        # gemini-1.5-flash 2025. szept. 29-én leállt.
-        # Aktuális, stabil Flash modell:
-        model = genai.GenerativeModel("gemini-2.5-flash")
-        response = model.generate_content(prompt)
-        text = (response.text or "").strip()
-        if not text:
-            return {"analysis": "Az AI üres választ adott. Próbáld újra később!"}
-        _ai_analysis_cache[match_id] = {"data": text, "ts": now}
-        return {"analysis": text}
-    except Exception as e:
-        err = str(e)
-        print(f"[AI ERROR] match_id={match_id} error={err}")
-        # Felhasználóbarát, de diagnosztizálható üzenet
-        if "API_KEY" in err.upper() or "API KEY" in err.upper() or "PERMISSION" in err.upper():
-            msg = "Az AI API kulcs érvénytelen vagy nincs jogosultsága. Ellenőrizd a GEMINI_KEY-t."
-        elif "404" in err or "not found" in err.lower() or "not supported" in err.lower():
-            msg = "Az AI modell nem elérhető. Frissítsd a modellnevet a szerveren."
-        elif "quota" in err.lower() or "rate" in err.lower() or "429" in err:
-            msg = "Az AI kvóta ideiglenesen elfogyott. Próbáld újra később!"
-        else:
-            msg = "Az AI elemzés jelenleg nem érhető el. Próbáld újra később!"
-        return {"analysis": msg}
+    if _gemini_client is None:
+        return {"analysis": "Az AI elemző modul jelenleg nem érhető el (SDK/API kulcs hiba)."}
+
+    # Több modell fallback: ha az egyik nem elérhető, a következővel próbálkozunk.
+    candidate_models = [
+        "gemini-2.5-flash",
+        "gemini-flash-latest",
+        "gemini-2.5-flash-lite",
+        "gemini-3.5-flash-lite",
+        "gemini-3.5-flash",
+    ]
+
+    last_error = None
+    for model_name in candidate_models:
+        try:
+            response = _gemini_client.models.generate_content(
+                model=model_name,
+                contents=prompt,
+            )
+            text = (getattr(response, "text", None) or "").strip()
+            if not text:
+                last_error = f"{model_name}: empty response"
+                continue
+            _ai_analysis_cache[match_id] = {"data": text, "ts": now}
+            print(f"[AI OK] match_id={match_id} model={model_name}")
+            return {"analysis": text}
+        except Exception as e:
+            last_error = f"{model_name}: {e}"
+            print(f"[AI ERROR] match_id={match_id} model={model_name} error={e}")
+            continue
+
+    err = str(last_error or "unknown")
+    print(f"[AI FAIL] match_id={match_id} last_error={err}")
+    if "API_KEY" in err.upper() or "API KEY" in err.upper() or "PERMISSION" in err.upper() or "UNAUTHENTICATED" in err.upper():
+        msg = "Az AI API kulcs érvénytelen vagy nincs jogosultsága. Ellenőrizd a GEMINI_KEY-t."
+    elif "quota" in err.lower() or "rate" in err.lower() or "429" in err or "RESOURCE_EXHAUSTED" in err.upper():
+        msg = "Az AI kvóta ideiglenesen elfogyott. Próbáld újra később!"
+    elif "404" in err or "not found" in err.lower() or "not supported" in err.lower():
+        msg = "Az AI modell nem elérhető. Frissítsd a modellnevet / google-genai csomagot a szerveren."
+    else:
+        msg = "Az AI elemzés jelenleg nem érhető el. Próbáld újra később!"
+    return {"analysis": msg}
 
 @app.get("/api/highlights/match/{highlight_match_id}")
 def get_match_highlights(highlight_match_id: str):
