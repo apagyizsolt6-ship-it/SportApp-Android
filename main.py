@@ -510,7 +510,8 @@ def _highlightly_video_payload(highlight: dict):
 @app.get("/api/ai-analysis/{match_id}")
 def get_ai_analysis(match_id: str):
     """
-    Prémium AI elemzés – közvetlen Gemini REST API (stabilabb Renderen, mint az SDK).
+    Prémium AI: szimuláció, valószínűségek, forgatókönyvek, szakmai elemzés.
+    Közvetlen Gemini REST API.
     """
     if not GEMINI_KEY:
         return {"analysis": "Az AI elemző modul jelenleg nem érhető el (Hiányzó API kulcs)."}
@@ -534,11 +535,14 @@ def get_ai_analysis(match_id: str):
 
     home_score = target_match.get("home_score")
     away_score = target_match.get("away_score")
-    score_txt = f"{home_score if home_score is not None else 0}-{away_score if away_score is not None else 0}"
+    hs = home_score if home_score is not None else 0
+    as_ = away_score if away_score is not None else 0
+    score_txt = f"{hs}-{as_}"
     home = target_match.get("home_team") or "Hazai"
     away = target_match.get("away_team") or "Vendég"
     league = target_match.get("league") or "Ismeretlen bajnokság"
     country = target_match.get("country") or ""
+    value_bet = target_match.get("value_bet")
 
     status_upper = raw_status.upper()
     looks_like_kickoff_time = bool(
@@ -550,67 +554,116 @@ def get_ai_analysis(match_id: str):
         phase = "finished"
         match_phase = "A mérkőzés VÉGET ért."
         score_line = f"Végeredmény: {score_txt}"
-        task = (
-            f"Utólagos értékelés, végeredmény: {score_txt}. "
-            "Mi döntött, melyik csapat érdemelte, rövid szakmai konklúzió. "
-            "NE írd, hogy a meccs még tart."
-        )
     elif status_upper == "HT":
         phase = "halftime"
         match_phase = "A mérkőzés FÉLIDŐBEN van."
         score_line = f"Állás félidőben: {score_txt}"
-        task = (
-            f"Félidős értékelés, állás: {score_txt}. "
-            "Első játékrész tanulságai, várható második félidő."
-        )
     elif status_upper in {"1H", "2H", "LIVE", "ET", "P"} or (minute > 0 and not looks_like_kickoff_time):
         phase = "live"
         match_phase = f"A mérkőzés ÉLŐBEN zajlik, kb. a {minute}. percben."
         score_line = f"Jelenlegi állás: {score_txt} ({minute}. perc)"
-        task = (
-            f"Élő elemzés a {minute}. perc környékén, állás: {score_txt}. "
-            "Ki dominál, mi változhat. NE írd, hogy a meccs nem kezdődött el."
-        )
     else:
         phase = "preview"
         kickoff = raw_status if looks_like_kickoff_time else (raw_status or "ismeretlen")
         match_phase = f"A mérkőzés MÉG NEM kezdődött el. Tervezett kezdés: {kickoff}."
         score_line = "Állás: még nincs (kezdés előtt)"
-        task = (
-            "ELŐZETES elemzés – a meccs még NEM kezdődött el. "
-            "Tilos perc/félidő/élő állás említése. Várható stílus, esélyek, kulcsmomentum."
-        )
 
-    cache_key = f"{match_id}|{phase}|{raw_status}|{minute}|{score_txt}"
+    cache_key = f"sim-v2|{match_id}|{phase}|{raw_status}|{minute}|{score_txt}"
     now = time.time()
     cached = _ai_analysis_cache.get(cache_key)
     if cached and (now - cached["ts"]) < AI_CACHE_TTL:
         return {"analysis": cached["data"]}
 
-    prompt = f"""Te a SportApp vezető labdarúgó-szakértője vagy. Magyarul írj, élvezetesen, szakmailag hitelesen.
+    extra_ctx = []
+    if value_bet is True:
+        extra_ctx.append("Inplay odds fut (value_bet jelzés aktív).")
+    if phase == "live":
+        goal_diff = hs - as_
+        if goal_diff > 0:
+            extra_ctx.append(f"Jelenleg a hazai vezet {goal_diff} góllal.")
+        elif goal_diff < 0:
+            extra_ctx.append(f"Jelenleg a vendég vezet {abs(goal_diff)} góllal.")
+        else:
+            extra_ctx.append("Jelenleg döntetlen az állás.")
+        if minute >= 75:
+            extra_ctx.append("A meccs a hajrában van (75+ perc).")
+        elif minute <= 15:
+            extra_ctx.append("Még a meccs elején járunk.")
+    extra_block = ("\n".join(f"- {x}" for x in extra_ctx)) if extra_ctx else "- Nincs további élő jelzés."
 
-MÉRKŐZÉS:
-- Bajnokság: {league}
-- Ország: {country}
-- {home} vs {away}
-- Állapot: {match_phase}
-- {score_line}
-
-FELADAT: {task}
-
-FORMÁTUM:
-1) Rövid felvezetés (1 mondat)
-2) Játékkép / kulcsmozzanatok (2-3 mondat)
-3) Esélyek vagy konklúzió (1-2 mondat)
-4) Ütős záró mondat
-
-Szabályok: 5-8 mondat, konkrét csapatnevek, ne markdown címsorok, ne sablonos frázisok.
+    if phase == "preview":
+        sim_block = f"""
+SZIMULÁCIÓS FELADAT (kezdés ELŐTT):
+- Futtass le fejben egy „1000 ismétléses” jellegű szimulációt a két csapat minősége, hazai pálya és kupa/bajnoki kontextus alapján.
+- Add meg becsült győzelmi valószínűségeket: {home} győzelem % / döntetlen % / {away} győzelem % (összeg 100%).
+- Adj 1 legvalószínűbb végeredményt (pl. 2-1) és 1 alternatív forgatókönyvet.
+- Írj 1 „xG jellegű” megérzést (melyik csapat lőhet többet, nem kell pontos modell).
+- TILOS úgy írni, mintha a meccs már menne.
+"""
+    elif phase == "live":
+        sim_block = f"""
+ÉLŐ SZIMULÁCIÓ (a meccs TART, {minute}. perc, állás {score_txt}):
+- A jelenlegi állásból indíts „hátralévő játékrész” szimulációt.
+- Becsüld meg a végső kimenetel valószínűségeit INNEN: {home} nyer / döntetlen / {away} nyer (összeg 100%).
+- Add meg a legvalószínűbb végeredményt a jelenlegi állásból nézve.
+- Mondj 1 fordulópont-forgatókönyvet (pl. gól, piros lap, időhúzás).
+- NE írd, hogy a meccs még nem kezdődött el.
+"""
+    elif phase == "halftime":
+        sim_block = f"""
+FÉLIDŐS SZIMULÁCIÓ (állás {score_txt}):
+- Értékeld az első játékrészt, majd szimuláld a második félidőt.
+- Második félidős kimenetel-valószínűségek és várható végeredmény.
+- Egy taktikai kulcs a szünet utánra.
+"""
+    else:
+        sim_block = f"""
+UTÓLAGOS ELEMZÉS (végeredmény {score_txt}):
+- Értékeld, mennyire volt „fair” az eredmény egy szimulációs logika szerint.
+- Mi volt a döntő momentum.
+- Alternatív forgatókönyv: mi kellett volna a másik kimenetelhez.
 """
 
-    # Közvetlen REST – nem függ a google-genai SDK verziójától
+    prompt = f"""Te a SportApp elit labdarúgó-adatelemzője és szimulációs szakértője vagy.
+Írj magyarul, magabiztosan, nézőbarát stílusban – de számokkal és forgatókönyvekkel.
+
+MÉRKŐZÉS ADATOK:
+- Bajnokság: {league}
+- Ország: {country}
+- Csapatok: {home} vs {away}
+- Állapot: {match_phase}
+- {score_line}
+További kontextus:
+{extra_block}
+
+{sim_block}
+
+KÖTELEZŐ KIMENETI SZERKEZET (ezt a sorrendet tartsd, rövid címsorokkal):
+
+📊 Szimuláció
+- Valószínűségek egy sorban százalékokkal
+- Legvalószínűbb állás + 1 alternatíva
+
+🎯 Játékkép
+- 2-3 mondat: tempó, presszing, szárnyak/középpálya, ki kontrollál
+
+⚡ Kulcsmomentum
+- 1-2 konkrét fordulópont vagy figyelt zóna
+
+🧠 Konklúzió
+- 1-2 ütős mondat, nézőnek szóló tanács
+
+SZABÁLYOK:
+- Összesen max ~12-14 sor, ne legyen esszé
+- A százalékok legyenek reálisak (ne legyen 99%)
+- Használd a csapatok nevét
+- Ne találj ki nem létező játékos-sérülést névvel, ha nincs róluk adat
+- Ha kevés az adat, mondd ki, hogy modellbecslés / szimuláció
+"""
+
     models = [
-        "gemini-2.5-flash-lite",
         "gemini-2.5-flash",
+        "gemini-2.5-flash-lite",
         "gemini-2.0-flash",
     ]
     last_error = None
@@ -624,17 +677,15 @@ Szabályok: 5-8 mondat, konkrét csapatnevek, ne markdown címsorok, ne sablonos
             payload = {
                 "contents": [{"parts": [{"text": prompt}]}],
                 "generationConfig": {
-                    "temperature": 0.8,
-                    "maxOutputTokens": 512,
+                    "temperature": 0.85,
+                    "maxOutputTokens": 900,
+                    "topP": 0.95,
                 },
             }
-            resp = requests.post(url, json=payload, timeout=20)
+            resp = requests.post(url, json=payload, timeout=25)
             if resp.status_code != 200:
-                last_error = f"{model_name}: HTTP {resp.status_code} {resp.text[:200]}"
+                last_error = f"{model_name}: HTTP {resp.status_code} {resp.text[:220]}"
                 print(f"[AI ERROR] {last_error}")
-                # rossz modell / 404 → következő
-                if resp.status_code in (404, 400):
-                    continue
                 if resp.status_code in (401, 403):
                     return {"analysis": "Az AI API kulcs érvénytelen vagy nincs jogosultsága."}
                 if resp.status_code == 429:
@@ -642,7 +693,6 @@ Szabályok: 5-8 mondat, konkrét csapatnevek, ne markdown címsorok, ne sablonos
                 continue
 
             data = resp.json()
-            # candidates[0].content.parts[0].text
             text_out = ""
             for cand in data.get("candidates") or []:
                 content = cand.get("content") or {}
@@ -651,11 +701,11 @@ Szabályok: 5-8 mondat, konkrét csapatnevek, ne markdown címsorok, ne sablonos
                         text_out += part["text"]
             text_out = text_out.strip()
             if not text_out:
-                last_error = f"{model_name}: empty response body={str(data)[:200]}"
+                last_error = f"{model_name}: empty"
                 continue
 
             _ai_analysis_cache[cache_key] = {"data": text_out, "ts": now}
-            print(f"[AI OK] match={match_id} model={model_name} phase={phase}")
+            print(f"[AI OK] match={match_id} model={model_name} phase={phase} sim=1")
             return {"analysis": text_out}
         except Exception as e:
             last_error = f"{model_name}: {e}"
@@ -664,7 +714,7 @@ Szabályok: 5-8 mondat, konkrét csapatnevek, ne markdown címsorok, ne sablonos
 
     print(f"[AI FAIL] match={match_id} last={last_error}")
     return {
-        "analysis": "Az AI elemzés most nem sikerült. Próbáld újra – a Gemini szolgáltatás átmenetileg lassú vagy terhelt lehet."
+        "analysis": "Az AI szimuláció most nem futott le. Próbáld újra – a Gemini szolgáltatás átmenetileg terhelt lehet."
     }
 
 
