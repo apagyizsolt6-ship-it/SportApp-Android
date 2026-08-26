@@ -11,6 +11,8 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
@@ -1204,6 +1206,7 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
     // ============================================================
 
     selectedMatchForAi?.let { match ->
+        val aiScroll = rememberScrollState()
         AlertDialog(
             onDismissRequest = {
                 selectedMatchForAi = null
@@ -1211,26 +1214,36 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
             },
             title = {
                 Text(
-                    text = "🤖 Gemini AI Elemzés",
+                    text = "🤖 AI Szimuláció & Elemzés",
                     fontWeight = FontWeight.Bold,
                     color = primaryGreen
                 )
             },
             text = {
                 if (isLoadingAi) {
-                    Box(
+                    Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(100.dp),
-                        contentAlignment = Alignment.Center
+                            .padding(vertical = 12.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
                     ) {
                         CircularProgressIndicator(color = primaryGreen)
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Text(
+                            text = "Szimuláció futtatása…",
+                            color = subTextColor,
+                            fontSize = 12.sp
+                        )
                     }
                 } else {
                     Text(
                         text = aiAnalysis ?: "Nincs elérhető elemzés.",
                         color = textColor,
-                        fontSize = 14.sp
+                        fontSize = 13.sp,
+                        lineHeight = 18.sp,
+                        modifier = Modifier
+                            .heightIn(max = 360.dp)
+                            .verticalScroll(aiScroll)
                     )
                 }
             },
