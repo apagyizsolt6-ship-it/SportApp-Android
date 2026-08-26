@@ -509,54 +509,128 @@ def _highlightly_video_payload(highlight: dict):
         "imgUrl": highlight.get("imgUrl")
     }
 
-def _league_strength_factor(league: str) -> tuple:
-    """Visszaad: (strength, home_adv, volatility)."""
+def _league_tier(league: str) -> int:
+    """1 = top, 5 = semi-pro/ifjúsági."""
     u = (league or "").upper()
+    if any(x in u for x in ("CHAMPIONS LEAGUE",)):
+        return 1
     if any(x in u for x in (
         "PREMIER LEAGUE", "LA LIGA", "SERIE A", "BUNDESLIGA", "LIGUE 1",
-        "CHAMPIONS LEAGUE",
-    )):
-        return 1.18, 0.32, 0.92
+    )) and "U21" not in u and "U19" not in u and "CUP" not in u:
+        return 1
     if any(x in u for x in ("EUROPA LEAGUE", "CONFERENCE LEAGUE")):
-        return 1.10, 0.28, 0.95
+        return 2
     if any(x in u for x in (
-        "EFL CUP", "FA CUP", "COPA DEL", "DFB POKAL", "COPPA", "COUPE",
-        "LEAGUE CUP", "CUP",
+        "CHAMPIONSHIP", "LIGA PORTUGAL", "EREDIVISIE", "SUPER LIG",
+        "SCOTTISH PREMIERSHIP", "BELGIUM", "PRO LEAGUE",
     )):
-        return 1.02, 0.22, 1.08  # kupa: kiszámíthatatlanabb
-    if any(x in u for x in ("CHAMPIONSHIP", "LIGA PORTUGAL", "EREDIVISIE", "SUPER LIG")):
-        return 1.02, 0.30, 1.0
-    if any(x in u for x in ("U21", "U19", "YOUTH", "RESERVE", "U23")):
-        return 0.82, 0.18, 1.15
-    return 0.95, 0.26, 1.05
+        return 2
+    if any(x in u for x in ("LEAGUE ONE", "LEAGUE TWO", "SERIE B", "LIGUE 2", "2. BUNDESLIGA")):
+        return 3
+    if any(x in u for x in ("EFL CUP", "FA CUP", "LEAGUE CUP", "DFB", "COPPA", "COPA DEL")):
+        return 2  # kupa – vegyes mezőny
+    if any(x in u for x in ("U21", "U19", "U23", "YOUTH", "RESERVE")):
+        return 5
+    return 3
 
 
-def _team_name_bias(name: str) -> float:
-    """Finom hangolás ismert 'nagy' klubnév-mintákra (nem tökéletes, de segít)."""
+def _team_elo_proxy(name: str, league: str) -> float:
+    """
+    Elo-proxy: realisztikus favorit/underdog, de nem 90%+ abszurdum.
+    Kupa esetén a PL/top klubok erősebben elválnak az alacsonyabb osztálytól.
+    """
+    base_by_tier = {1: 1600, 2: 1510, 3: 1460, 4: 1420, 5: 1380}
+    tier = _league_tier(league)
+    elo = float(base_by_tier.get(tier, 1460))
     u = (name or "").upper()
-    big = (
-        "MANCHESTER", "LIVERPOOL", "CHELSEA", "ARSENAL", "TOTTENHAM", "NEWCASTLE",
-        "REAL MADRID", "BARCELONA", "ATLETICO", "BAYERN", "DORTMUND", "JUVENTUS",
-        "INTER", "MILAN", "NAPOLI", "PSG", "PARIS", "AJAX", "BENFICA", "PORTO",
-        "CELTIC", "RANGERS", "GALATASARAY", "FENERBAHCE", "BESIKTAS",
+    is_cup = any(x in (league or "").upper() for x in ("CUP", "COPA", "COPPA", "POKAL", "TROPHY"))
+
+    elite = (
+        "MANCHESTER CITY", "MAN CITY", "REAL MADRID", "BARCELONA", "BAYERN",
+        "LIVERPOOL", "ARSENAL", "PSG", "PARIS SAINT", "INTER ", "JUVENTUS",
     )
-    mid = ("UNITED", "CITY", "ROMA", "LAZIO", "SEVILLA", "VILLARREAL", "LEVERKUSEN", "LEIPZIG")
-    score = 0.0
-    for b in big:
-        if b in u:
-            score += 0.22
+    # Premier / top5 "erős" – kupában is érezhető előny
+    pl_level = (
+        "MANCHESTER UNITED", "MAN UNITED", "CHELSEA", "TOTTENHAM", "NEWCASTLE",
+        "ASTON VILLA", "WEST HAM", "BRIGHTON", "FULHAM", "BRENTFORD",
+        "CRYSTAL PALACE", "WOLVES", "WOLVERHAMPTON", "BOURNEMOUTH", "EVERTON",
+        "NOTTINGHAM", "FOREST", "LEICESTER", "SOUTHAMPTON", "IPSWICH",
+        "ATLETICO", "ATLÉTICO", "DORTMUND", "MILAN", "NAPOLI", "LEVERKUSEN",
+        "BENFICA", "PORTO", "AJAX", "CELTIC", "GALATASARAY", "FENERBAHCE",
+        "BESIKTAS", "BEŞIKTAŞ", "ROMA", "LAZIO", "SEVILLA", "VILLARREAL",
+    )
+    championship_level = (
+        "BURNLEY", "LEEDS", "SHEFFIELD UNITED", "SHEFFIELD WED", "MIDDLESBROUGH",
+        "WEST BROM", "NORWICH", "WATFORD", "SUNDERLAND", "COVENTRY",
+        "CHARLTON", "BLACKBURN", "PRESTON", "STOKE", "QPR", "SWANSEA",
+        "BRISTOL CITY", "CARDIFF", "HULL", "DERBY", "BOLTON",
+    )
+
+    for e in elite:
+        if e in u:
+            elo += 110 if is_cup else 95
             break
-    for m in mid:
-        if m in u:
-            score += 0.08
-            break
-    if " U21" in u or u.endswith("U21") or " U19" in u:
-        score -= 0.12
-    return max(-0.2, min(0.35, score))
+    else:
+        for s in pl_level:
+            if s in u:
+                elo += 85 if is_cup else 60
+                break
+        else:
+            for s in championship_level:
+                if s in u:
+                    elo += 20 if is_cup else 15
+                    break
+
+    if any(x in u for x in (" U21", " U19", " U23", "RESERVE")):
+        elo -= 90
+    if u.endswith(" II") or " II " in u:
+        elo -= 40
+
+    return max(1340.0, min(1750.0, elo))
+
+
+def _expected_goals_from_elo(home_elo: float, away_elo: float, league: str) -> tuple:
+    """
+    Elo → xG. Meredekebb, mint a nyers logistic, hogy a favorit-underdog
+    arány közelebb legyen a valós piaci oddsokhoz.
+    """
+    home_adv_elo = 50.0
+    diff = (home_elo + home_adv_elo) - away_elo
+
+    tier = _league_tier(league)
+    if tier == 1:
+        base_total = 2.70
+    elif tier == 2:
+        base_total = 2.50
+    elif tier == 5:
+        base_total = 2.85
+    else:
+        base_total = 2.45
+
+    # Meredekebb skála: 280 elo-pont ~ erős favorit
+    share = 1.0 / (1.0 + math.pow(10.0, -diff / 280.0))
+    # Közép: ~0.52-0.55 hazai gólrészarány enyhe hazai előnnyel
+    home_ratio = 0.28 + 0.48 * share  # diff=0, +50 homeadv → share~0.54 → ratio~0.54
+    home_xg = base_total * home_ratio
+    away_xg = base_total * (1.0 - home_ratio)
+
+    # Extra gólkülönbség nagy Elo-résnél (kupa meglepetés ellen is)
+    if abs(diff) > 80:
+        boost = min(0.35, (abs(diff) - 80) / 400.0)
+        if diff > 0:
+            home_xg += boost
+            away_xg = max(0.40, away_xg - boost * 0.6)
+        else:
+            away_xg += boost
+            home_xg = max(0.40, home_xg - boost * 0.6)
+
+    home_xg = max(0.50, min(2.40, home_xg))
+    away_xg = max(0.40, min(2.20, away_xg))
+    return home_xg, away_xg
 
 
 def _poisson_sample(lam: float) -> int:
-    lam = max(0.05, min(float(lam), 5.5))
+    lam = max(0.08, min(float(lam), 4.5))
     L = math.exp(-lam)
     k = 0
     p = 1.0
@@ -566,20 +640,15 @@ def _poisson_sample(lam: float) -> int:
     return k - 1
 
 
-def _dixon_coles_adjust(fh: int, fa: int, lam_h: float, lam_a: float, rho: float = -0.08):
-    """
-    Dixon–Coles jellegű súly alacsony gólú kimenetekre.
-    Visszaad egy súlyt (~1.0 körül); a mintavételnél reject/reweight helyett
-    soft korrekciót alkalmazunk a számlálóknál.
-    """
+def _dixon_coles_adjust(fh: int, fa: int, lam_h: float, lam_a: float, rho: float = -0.10):
     if fh == 0 and fa == 0:
-        return 1.0 + rho * lam_h * lam_a
+        return max(0.7, 1.0 + rho * lam_h * lam_a)
     if fh == 0 and fa == 1:
-        return 1.0 - rho * lam_h
+        return max(0.7, 1.0 - rho * lam_h)
     if fh == 1 and fa == 0:
-        return 1.0 - rho * lam_a
+        return max(0.7, 1.0 - rho * lam_a)
     if fh == 1 and fa == 1:
-        return 1.0 + rho
+        return max(0.7, 1.0 + rho)
     return 1.0
 
 
@@ -591,58 +660,46 @@ def monte_carlo_match_sim(
     minute: int,
     home_score: int,
     away_score: int,
-    n: int = 12000,
+    n: int = 15000,
 ) -> dict:
-    strength, home_adv, volatility = _league_strength_factor(league)
-    hb = _team_name_bias(home)
-    ab = _team_name_bias(away)
-
-    # Alap xG jellegű várható gólok
-    base_home = (1.25 + home_adv + hb - ab * 0.35) * strength
-    base_away = (1.05 + ab - hb * 0.35) * strength
-    base_home *= volatility
-    base_away *= volatility
-    base_home = max(0.35, min(base_home, 2.8))
-    base_away = max(0.30, min(base_away, 2.5))
+    home_elo = _team_elo_proxy(home, league)
+    away_elo = _team_elo_proxy(away, league)
+    base_home_xg, base_away_xg = _expected_goals_from_elo(home_elo, away_elo, league)
 
     if phase in ("live", "halftime"):
         if phase == "halftime":
-            remain_ratio = 0.50
-            # félidő: enyhe „second half higher scoring” effekt
-            tempo = 1.06
+            remain = 0.50
+            tempo = 1.05
         else:
             m = max(0, min(int(minute), 95))
-            remain_ratio = max(0.06, (90 - min(m, 90)) / 90.0)
-            # hajrában több gól
-            tempo = 1.12 if m >= 75 else (1.04 if m >= 60 else 1.0)
-        lam_h = base_home * remain_ratio * tempo
-        lam_a = base_away * remain_ratio * tempo
-        # Állás hatása (game state)
+            remain = max(0.07, (90 - min(m, 90)) / 90.0)
+            # Késői gólok enyhén gyakoribbak
+            tempo = 1.10 if m >= 80 else (1.04 if m >= 65 else 1.0)
+        lam_h = base_home_xg * remain * tempo
+        lam_a = base_away_xg * remain * tempo
+        # Game state: vezető kicsit óvatosabb, vesztes nyitottabb
         diff = home_score - away_score
         if diff >= 2:
-            lam_h *= 0.88
-            lam_a *= 1.10
+            lam_h *= 0.90
+            lam_a *= 1.08
         elif diff == 1:
-            lam_h *= 0.94
-            lam_a *= 1.06
+            lam_h *= 0.95
+            lam_a *= 1.04
         elif diff == -1:
-            lam_h *= 1.08
-            lam_a *= 0.94
+            lam_h *= 1.05
+            lam_a *= 0.95
         elif diff <= -2:
-            lam_h *= 1.12
-            lam_a *= 0.88
+            lam_h *= 1.10
+            lam_a *= 0.90
     else:
-        lam_h = base_home
-        lam_a = base_away
+        lam_h = base_home_xg
+        lam_a = base_away_xg
 
-    # Súlyozott számlálók (Dixon–Coles)
     w_home = w_draw = w_away = 0.0
     w_btts = w_over15 = w_over25 = w_over35 = 0.0
     w_total = 0.0
     score_weights = {}
-    sum_goals = 0.0
-    sum_home_goals = 0.0
-    sum_away_goals = 0.0
+    sum_h = sum_a = 0.0
 
     for _ in range(n):
         if phase in ("live", "halftime"):
@@ -650,20 +707,15 @@ def monte_carlo_match_sim(
             ga = _poisson_sample(lam_a)
             fh = home_score + gh
             fa = away_score + ga
-            # DC súly a hátralévő gólpárosra
-            w = max(0.05, _dixon_coles_adjust(gh, ga, lam_h, lam_a))
-        elif phase == "finished":
-            fh = _poisson_sample(lam_h)
-            fa = _poisson_sample(lam_a)
-            w = max(0.05, _dixon_coles_adjust(fh, fa, lam_h, lam_a))
+            w = _dixon_coles_adjust(gh, ga, lam_h, lam_a)
         else:
             fh = _poisson_sample(lam_h)
             fa = _poisson_sample(lam_a)
-            w = max(0.05, _dixon_coles_adjust(fh, fa, lam_h, lam_a))
+            w = _dixon_coles_adjust(fh, fa, lam_h, lam_a)
 
+        w = max(0.15, w)
         w_total += w
-        key = (fh, fa)
-        score_weights[key] = score_weights.get(key, 0.0) + w
+        score_weights[(fh, fa)] = score_weights.get((fh, fa), 0.0) + w
         if fh > fa:
             w_home += w
         elif fh < fa:
@@ -671,9 +723,8 @@ def monte_carlo_match_sim(
         else:
             w_draw += w
         total = fh + fa
-        sum_goals += total * w
-        sum_home_goals += fh * w
-        sum_away_goals += fa * w
+        sum_h += fh * w
+        sum_a += fa * w
         if fh > 0 and fa > 0:
             w_btts += w
         if total >= 2:
@@ -686,34 +737,49 @@ def monte_carlo_match_sim(
     def pct(x):
         return round(100.0 * x / w_total, 1) if w_total else 0.0
 
+    # Valószínűségek finom simítása – kerüli a szélsőséges 85%+ favoritot előzetesben
+    p_home = pct(w_home)
+    p_draw = pct(w_draw)
+    p_away = pct(w_away)
+    if phase == "preview":
+        # Soft cap: max 68% – reális favorit, nem "tuti tipp"
+        max_p = max(p_home, p_draw, p_away)
+        if max_p > 68.0:
+            scale_down = 68.0 / max_p
+            vals = [p_home * scale_down, p_draw * scale_down, p_away * scale_down]
+            leftover = 100.0 - sum(vals)
+            order = sorted(range(3), key=lambda i: vals[i])
+            vals[order[1]] += leftover * 0.45
+            vals[order[0]] += leftover * 0.55
+            p_home, p_draw, p_away = [round(v, 1) for v in vals]
+            s = p_home + p_draw + p_away
+            if abs(s - 100.0) > 0.2:
+                p_draw = round(p_draw + (100.0 - s), 1)
+
     top_scores = sorted(score_weights.items(), key=lambda kv: kv[1], reverse=True)[:8]
     most = top_scores[0][0]
     alt = top_scores[1][0] if len(top_scores) > 1 else most
 
-    # Double chance / DNB jellegű
-    p_home = pct(w_home)
-    p_draw = pct(w_draw)
-    p_away = pct(w_away)
+    xg_home = round(sum_h / w_total, 2) if w_total else 0.0
+    xg_away = round(sum_a / w_total, 2) if w_total else 0.0
 
-    # Expected goals (modell)
-    xg_home = round(sum_home_goals / w_total, 2) if w_total else 0.0
-    xg_away = round(sum_away_goals / w_total, 2) if w_total else 0.0
-    xg_total = round(sum_goals / w_total, 2) if w_total else 0.0
-
-    # „Confidence”: mennyire koncentrált a leggyakoribb kimenetel
-    conf = pct(top_scores[0][1]) if top_scores else 0.0
-    if conf >= 18:
-        conf_label = "Magasabb modellbizonyosság"
-    elif conf >= 12:
-        conf_label = "Közepes modellbizonyosság"
+    conf_pct = pct(top_scores[0][1]) if top_scores else 0.0
+    if phase == "live" and abs(home_score - away_score) >= 2 and minute >= 75:
+        conf_label = "Magasabb bizonyosság (állás + idő)"
+    elif conf_pct >= 16:
+        conf_label = "Közepes-magas koncentráció"
+    elif conf_pct >= 11:
+        conf_label = "Kiegyenlített / nyílt meccs"
     else:
-        conf_label = "Nyílt meccs – szórt kimenetelek"
+        conf_label = "Nagyon szórt kimenetelek"
 
     return {
         "n": n,
         "phase": phase,
         "lambda_home": round(lam_h, 3),
         "lambda_away": round(lam_a, 3),
+        "home_elo": round(home_elo, 0),
+        "away_elo": round(away_elo, 0),
         "p_home": p_home,
         "p_draw": p_draw,
         "p_away": p_away,
@@ -726,7 +792,7 @@ def monte_carlo_match_sim(
         "p_over35": pct(w_over35),
         "xg_home": xg_home,
         "xg_away": xg_away,
-        "xg_total": xg_total,
+        "xg_total": round(xg_home + xg_away, 2),
         "most_likely": f"{most[0]}-{most[1]}",
         "most_likely_pct": pct(top_scores[0][1]),
         "alternative": f"{alt[0]}-{alt[1]}",
@@ -751,63 +817,113 @@ def _format_monte_carlo_text(
     score_txt: str,
     sim: dict,
     narrative: str | None = None,
+    tactics: str | None = None,
+    scenarios: str | None = None,
 ) -> str:
     phase_label = {
-        "preview": "⚡ TURBO Monte Carlo – előzetes",
-        "live": f"⚡ TURBO élő szimu – {minute}. perc, állás {score_txt}",
-        "halftime": f"⚡ TURBO félidő – állás {score_txt}",
-        "finished": f"⚡ TURBO referencia-újrajátszás (tény: {score_txt})",
-    }.get(phase, "⚡ TURBO Monte Carlo")
+        "preview": "Előzetes elemzés",
+        "live": f"Élő elemzés – {minute}. perc, {score_txt}",
+        "halftime": f"Félidős elemzés – {score_txt}",
+        "finished": f"Utólagos értékelés – {score_txt}",
+    }.get(phase, "Elemzés")
 
     lines = [
-        phase_label,
-        f"{home} vs {away}",
-        f"{league}",
-        f"Futtatások: {sim['n']:,}".replace(",", " ") + f"  •  {sim['confidence']}",
+        f"⚽ {home} vs {away}",
+        f"📋 {league}",
+        f"⏱ {phase_label}",
         "",
-        "📊 1X2 valószínűség",
-        f"🟢 {home}",
-        f"   {_bar(sim['p_home'])} {sim['p_home']}%",
-        f"⚪ Döntetlen",
-        f"   {_bar(sim['p_draw'])} {sim['p_draw']}%",
-        f"🔴 {away}",
-        f"   {_bar(sim['p_away'])} {sim['p_away']}%",
-        "",
-        "🛡️ Double chance",
-        f"• 1X ({home} vagy döntetlen): {sim['p_1x']}%",
-        f"• 12 (nem döntetlen): {sim['p_12']}%",
-        f"• X2 ({away} vagy döntetlen): {sim['p_x2']}%",
-        "",
-        "📈 Gólpiacok",
-        f"• BTTS igen: {sim['p_btts']}%",
-        f"• Over 1.5: {sim['p_over15']}%  |  Over 2.5: {sim['p_over25']}%  |  Over 3.5: {sim['p_over35']}%",
-        "",
-        "🔥 Modell xG (várható gól)",
-        f"• {home}: {sim['xg_home']}   {away}: {sim['xg_away']}   Össz: {sim['xg_total']}",
-        "",
-        "🎯 Correct score TOP",
-        f"• #{1} {sim['most_likely']} ({sim['most_likely_pct']}%)",
-        f"• #{2} {sim['alternative']} ({sim['alternative_pct']}%)",
+        "━━━━━━━━━━━━━━━━━━━━",
+        "📊 VALÓSZÍNŰSÉGEK (Monte Carlo)",
+        f"🟢 {home}: {sim['p_home']}%",
+        f"⚪ Döntetlen: {sim['p_draw']}%",
+        f"🔴 {away}: {sim['p_away']}%",
+        f"Double chance → 1X {sim['p_1x']}% · 12 {sim['p_12']}% · X2 {sim['p_x2']}%",
+        f"Gólok → BTTS {sim['p_btts']}% · O2.5 {sim['p_over25']}% · O3.5 {sim['p_over35']}%",
+        f"Modell xG: {sim['xg_home']} – {sim['xg_away']} (össz {sim['xg_total']})",
+        f"Leggyakoribb állás: {sim['most_likely']} ({sim['most_likely_pct']}%) · alt: {sim['alternative']}",
+        f"({sim['n']:,} futtatás · {sim['confidence']})".replace(",", " "),
     ]
-    for i, t in enumerate(sim.get("top_scores", [])[2:6], start=3):
-        lines.append(f"• #{i} {t['score']} ({t['pct']}%)")
+
+    if tactics:
+        lines.extend(["", "━━━━━━━━━━━━━━━━━━━━", "🎯 JÁTÉKKÉP & TAKTIKA", tactics.strip()])
+
+    if scenarios:
+        lines.extend(["", "━━━━━━━━━━━━━━━━━━━━", "🎬 FORGATÓKÖNYVEK", scenarios.strip()])
+
+    if narrative:
+        lines.extend(["", "━━━━━━━━━━━━━━━━━━━━", "🧠 SZAKÉRTŐI OLVASAT", narrative.strip()])
 
     lines.extend([
         "",
-        "🧪 Motor: Poisson + Dixon–Coles súly + liga/hazai/név-bias + élő game-state",
-        "Ez modellbecslés, nem fogadási tanács.",
+        "━━━━━━━━━━━━━━━━━━━━",
+        "ℹ️ A százalékok modellbecslés (Elo-proxy + Poisson). Nem fogadási tanács.",
+    ])
+    return "\n".join(lines)
+
+
+def _build_local_tactics(home: str, away: str, league: str, phase: str, minute: int, score_txt: str, sim: dict) -> str:
+    """Gemini nélkül is értelmes, sokrétű szöveges blokk."""
+    hp, dp, ap = sim["p_home"], sim["p_draw"], sim["p_away"]
+    if hp >= ap + 12:
+        balance = f"A modell enyhén a {home} felé billen, de nem „tuti” meccs."
+    elif ap >= hp + 12:
+        balance = f"A {away} tűnik erősebbnek a papíron, a hazai pálya viszont árnyalja a képet."
+    else:
+        balance = "Kiegyenlített párharc – kis részletek (tempó, szabadrúgások, egyéni minőség) dönthetnek."
+
+    if sim["xg_total"] >= 2.8:
+        goals = "Nyíltabb, gólokban gazdagabb mérkőzés várható."
+    elif sim["xg_total"] <= 2.2:
+        goals = "Inkább kontrollált, szűkebb meccs lehet, kevesebb egyértelmű helyzettel."
+    else:
+        goals = "Átlagos gólkörnyezet – egy-egy kontra vagy standard helyzet felértékelődik."
+
+    if phase == "preview":
+        timing = "Kezdés előtt: az első 15 perc tempója sokat elárul a kontrollról."
+    elif phase == "live":
+        timing = f"Élőben ({minute}. perc, {score_txt}): a következő 10-15 perc kulcs a ritmus szempontjából."
+    elif phase == "halftime":
+        timing = f"Félidő ({score_txt}): a szünet utáni 10 perc gyakran felforgatja a pályát."
+    else:
+        timing = f"Lejátszott meccs ({score_txt}): a modell inkább referencia, nem „mi lett volna ha” jóslat."
+
+    btts = "Mindkét kapu veszélyben lehet." if sim["p_btts"] >= 52 else "Legalább az egyik védelem stabilabbnak tűnik."
+
+    return "\n".join([
+        f"• {balance}",
+        f"• {goals} {btts}",
+        f"• Kulcsterület: középpályás duels + szélek – innen jöhet a ritmusváltás.",
+        f"• {timing}",
+        f"• Liga-kontextus: {league} – ehhez igazodik a tempó és a kockázatvállalás.",
     ])
 
-    if narrative:
-        lines.extend(["", "🧠 AI kommentár", narrative.strip()])
 
+def _build_local_scenarios(home: str, away: str, phase: str, sim: dict) -> str:
+    top = sim.get("top_scores") or []
+    t1 = top[0]["score"] if top else sim["most_likely"]
+    t2 = top[1]["score"] if len(top) > 1 else sim["alternative"]
+    t3 = top[2]["score"] if len(top) > 2 else "2-1"
+
+    lines = [
+        f"• A forgatókönyv: {t1} – ehhez stabil védekezés és hatékony átmenet kell.",
+        f"• Alternatíva: {t2} – ha több lesz a hiba a középső harmadban.",
+        f"• Meglepetés-ív: {t3} / váratlan fordulat egy standard helyzetből.",
+    ]
+    if phase in ("live", "halftime"):
+        lines.append("• Élő logika: a jelenlegi állás „horgony”; a szimuláció a hátralévő játékidőt modellezi.")
+    else:
+        lines.append(f"• Esélylatolgatás: 1X {sim['p_1x']}%, X2 {sim['p_x2']}% – ha biztosabb kimenetelben gondolkodsz.")
     return "\n".join(lines)
 
 
 @app.get("/api/ai-analysis/{match_id}")
 def get_ai_analysis(match_id: str):
     """
-    TURBO Monte Carlo (mindig, ~ms) + opcionális Gemini narratíva.
+    Sokrétű AI elemzés:
+    1) Monte Carlo valószínűségek
+    2) Játékkép / taktika
+    3) Forgatókönyvek
+    4) Gemini szakértői olvasat (ha elérhető)
     """
     try:
         matches = get_matches()
@@ -851,7 +967,7 @@ def get_ai_analysis(match_id: str):
     else:
         phase = "preview"
 
-    cache_key = f"mc-turbo-v1|{match_id}|{phase}|{raw_status}|{minute}|{score_txt}"
+    cache_key = f"full-ai-v3|{match_id}|{phase}|{raw_status}|{minute}|{score_txt}"
     now = time.time()
     cached = _ai_analysis_cache.get(cache_key)
     if cached and (now - cached["ts"]) < AI_CACHE_TTL:
@@ -865,20 +981,38 @@ def get_ai_analysis(match_id: str):
         minute=minute,
         home_score=hs,
         away_score=as_,
-        n=12000,
+        n=15000,
     )
+
+    tactics = _build_local_tactics(home, away, league, phase, minute, score_txt, sim)
+    scenarios = _build_local_scenarios(home, away, phase, sim)
 
     narrative = None
     if GEMINI_KEY:
         try:
-            prompt = f"""Írj 3 rövid, ütős magyar mondatot ehhez a labdarúgó Monte Carlo szimulációhoz.
-Ne sorold fel újra az összes százalékot; értelmezz.
+            phase_hu = {
+                "preview": "előzetes",
+                "live": "élő",
+                "halftime": "félidős",
+                "finished": "utólagos",
+            }[phase]
+            prompt = f"""Te a SportApp vezető labdarúgó-szakértője vagy. Írj MAGYARUL, 5-7 mondatban.
+Ne ismételd tételesen a százalékokat; értelmezz, adj karaktert a meccsnek.
 
-{home} vs {away} | {league} | fázis={phase} | állás={score_txt} | perc={minute}
-1X2: {sim['p_home']}/{sim['p_draw']}/{sim['p_away']}
-xG: {sim['xg_home']}-{sim['xg_away']} | BTTS {sim['p_btts']}% | O2.5 {sim['p_over25']}%
-Top stand: {sim['most_likely']} ({sim['most_likely_pct']}%)
-{sim['confidence']}
+Meccs: {home} vs {away}
+Liga: {league} ({country})
+Fázis: {phase_hu} | állás: {score_txt} | perc: {minute}
+Modell 1X2: {sim['p_home']}% / {sim['p_draw']}% / {sim['p_away']}%
+xG: {sim['xg_home']} - {sim['xg_away']} | BTTS {sim['p_btts']}% | O2.5 {sim['p_over25']}%
+Top állás: {sim['most_likely']}
+
+Írj le:
+1) Milyen stílusú összecsapás várható / zajlik
+2) Hol dőlhet el (szélek, középpálya, standard)
+3) Egy figyelmeztető jel a nézőnek
+4) Rövid, ütős zárás
+
+Kerüld a sablont („papíron az esélyesebb”). Legyél konkrét a csapatnevekre.
 """
             for model_name in ("gemini-2.5-flash-lite", "gemini-2.0-flash", "gemini-2.5-flash"):
                 url = (
@@ -887,10 +1021,11 @@ Top stand: {sim['most_likely']} ({sim['most_likely_pct']}%)
                 )
                 payload = {
                     "contents": [{"parts": [{"text": prompt}]}],
-                    "generationConfig": {"temperature": 0.85, "maxOutputTokens": 280},
+                    "generationConfig": {"temperature": 0.9, "maxOutputTokens": 450},
                 }
-                resp = requests.post(url, json=payload, timeout=10)
+                resp = requests.post(url, json=payload, timeout=12)
                 if resp.status_code != 200:
+                    print(f"[AI narrative] {model_name} HTTP {resp.status_code}")
                     continue
                 data = resp.json()
                 text_out = ""
@@ -902,6 +1037,7 @@ Top stand: {sim['most_likely']} ({sim['most_likely_pct']}%)
                 text_out = text_out.strip()
                 if text_out:
                     narrative = text_out
+                    print(f"[AI narrative OK] {model_name}")
                     break
         except Exception as e:
             print(f"[AI narrative fail] {e}")
@@ -915,9 +1051,11 @@ Top stand: {sim['most_likely']} ({sim['most_likely_pct']}%)
         score_txt=score_txt,
         sim=sim,
         narrative=narrative,
+        tactics=tactics,
+        scenarios=scenarios,
     )
     _ai_analysis_cache[cache_key] = {"data": analysis, "ts": now}
-    print(f"[MC TURBO] match={match_id} phase={phase} narrative={bool(narrative)}")
+    print(f"[FULL AI] match={match_id} phase={phase} gemini={bool(narrative)}")
     return {"analysis": analysis}
 
 
