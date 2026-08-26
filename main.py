@@ -510,16 +510,11 @@ def _highlightly_video_payload(highlight: dict):
 @app.get("/api/ai-analysis/{match_id}")
 def get_ai_analysis(match_id: str):
     """
-    Prémium Gemini AI elemzés – gyors, állapothelyes, részletes.
-    Nem blokkol sok modell-fallbacken; 1 elsődleges + 1 tartalék modell.
+    Prémium AI elemzés – közvetlen Gemini REST API (stabilabb Renderen, mint az SDK).
     """
     if not GEMINI_KEY:
         return {"analysis": "Az AI elemző modul jelenleg nem érhető el (Hiányzó API kulcs)."}
 
-    if _gemini_client is None:
-        return {"analysis": "Az AI elemző modul jelenleg nem érhető el (SDK/API kulcs hiba)."}
-
-    # Meccsadatok – get_matches cache-elt útvonalon (Highlightly már nem blokkol hosszan)
     try:
         matches = get_matches()
     except Exception as e:
@@ -540,7 +535,6 @@ def get_ai_analysis(match_id: str):
     home_score = target_match.get("home_score")
     away_score = target_match.get("away_score")
     score_txt = f"{home_score if home_score is not None else 0}-{away_score if away_score is not None else 0}"
-
     home = target_match.get("home_team") or "Hazai"
     away = target_match.get("away_team") or "Vendég"
     league = target_match.get("league") or "Ismeretlen bajnokság"
@@ -556,19 +550,36 @@ def get_ai_analysis(match_id: str):
         phase = "finished"
         match_phase = "A mérkőzés VÉGET ért."
         score_line = f"Végeredmény: {score_txt}"
+        task = (
+            f"Utólagos értékelés, végeredmény: {score_txt}. "
+            "Mi döntött, melyik csapat érdemelte, rövid szakmai konklúzió. "
+            "NE írd, hogy a meccs még tart."
+        )
     elif status_upper == "HT":
         phase = "halftime"
         match_phase = "A mérkőzés FÉLIDŐBEN van."
         score_line = f"Állás félidőben: {score_txt}"
+        task = (
+            f"Félidős értékelés, állás: {score_txt}. "
+            "Első játékrész tanulságai, várható második félidő."
+        )
     elif status_upper in {"1H", "2H", "LIVE", "ET", "P"} or (minute > 0 and not looks_like_kickoff_time):
         phase = "live"
         match_phase = f"A mérkőzés ÉLŐBEN zajlik, kb. a {minute}. percben."
         score_line = f"Jelenlegi állás: {score_txt} ({minute}. perc)"
+        task = (
+            f"Élő elemzés a {minute}. perc környékén, állás: {score_txt}. "
+            "Ki dominál, mi változhat. NE írd, hogy a meccs nem kezdődött el."
+        )
     else:
         phase = "preview"
         kickoff = raw_status if looks_like_kickoff_time else (raw_status or "ismeretlen")
         match_phase = f"A mérkőzés MÉG NEM kezdődött el. Tervezett kezdés: {kickoff}."
         score_line = "Állás: még nincs (kezdés előtt)"
+        task = (
+            "ELŐZETES elemzés – a meccs még NEM kezdődött el. "
+            "Tilos perc/félidő/élő állás említése. Várható stílus, esélyek, kulcsmomentum."
+        )
 
     cache_key = f"{match_id}|{phase}|{raw_status}|{minute}|{score_txt}"
     now = time.time()
@@ -576,86 +587,85 @@ def get_ai_analysis(match_id: str):
     if cached and (now - cached["ts"]) < AI_CACHE_TTL:
         return {"analysis": cached["data"]}
 
-    if phase == "preview":
-        task = f"""Írj ELŐZETES elemzést (a meccs még NEM kezdődött el).
-Tilos olyan mondat, mintha már menne a meccs (perc, félidő, 'jelenleg az állás').
-Térj ki: várható játékstílus, esélyek, kulcsmomentum, rövid tipp."""
-    elif phase == "live":
-        task = f"""Írj ÉLŐ elemzést a {minute}. perc környékén, állás: {score_txt}.
-Ki dominál, mi változhat, mire figyeljen a néző a hátralévő játékban.
-NE írd azt, hogy a meccs még nem kezdődött el."""
-    elif phase == "halftime":
-        task = f"""Írj FÉLIDŐS értékelést, állás: {score_txt}.
-Első játékrész tanulságai, várható második félidő, kulcscsata."""
-    else:
-        task = f"""Írj UTólagos értékelést, végeredmény: {score_txt}.
-Mi döntött, melyik csapat érdemelte, rövid szakmai konklúzió.
-NE írd azt, hogy a meccs még tart."""
-
     prompt = f"""Te a SportApp vezető labdarúgó-szakértője vagy. Magyarul írj, élvezetesen, szakmailag hitelesen.
 
-MÉRKőZÉS:
+MÉRKŐZÉS:
 - Bajnokság: {league}
 - Ország: {country}
 - {home} vs {away}
 - Állapot: {match_phase}
 - {score_line}
 
-FELADAT:
-{task}
+FELADAT: {task}
 
-FORMÁTUM (pontosan ezt a szerkezetet használd):
+FORMÁTUM:
 1) Rövid felvezetés (1 mondat)
 2) Játékkép / kulcsmozzanatok (2-3 mondat)
 3) Esélyek vagy konklúzió (1-2 mondat)
-4) Zárás egy ütős mondattal
+4) Ütős záró mondat
 
-Szabályok:
-- Összesen 5-8 mondat, ne legyen hosszú esszé
-- Kerüld a sablonos frázisokat („papíron az esélyesebb” önmagában kevés)
-- Legyen konkrét a két csapat nevére
-- Ne használj markdown címsorokat, csak folyó szöveget vagy számozott pontokat
+Szabályok: 5-8 mondat, konkrét csapatnevek, ne markdown címsorok, ne sablonos frázisok.
 """
 
-    # Gyors modell preferencia: lite → flash → latest
+    # Közvetlen REST – nem függ a google-genai SDK verziójától
     models = [
         "gemini-2.5-flash-lite",
         "gemini-2.5-flash",
-        "gemini-flash-latest",
+        "gemini-2.0-flash",
     ]
-
     last_error = None
+
     for model_name in models:
         try:
-            response = _gemini_client.models.generate_content(
-                model=model_name,
-                contents=prompt,
+            url = (
+                "https://generativelanguage.googleapis.com/v1beta/models/"
+                f"{model_name}:generateContent?key={GEMINI_KEY}"
             )
-            text_out = (getattr(response, "text", None) or "").strip()
-            if not text_out:
-                last_error = f"{model_name}: empty"
+            payload = {
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {
+                    "temperature": 0.8,
+                    "maxOutputTokens": 512,
+                },
+            }
+            resp = requests.post(url, json=payload, timeout=20)
+            if resp.status_code != 200:
+                last_error = f"{model_name}: HTTP {resp.status_code} {resp.text[:200]}"
+                print(f"[AI ERROR] {last_error}")
+                # rossz modell / 404 → következő
+                if resp.status_code in (404, 400):
+                    continue
+                if resp.status_code in (401, 403):
+                    return {"analysis": "Az AI API kulcs érvénytelen vagy nincs jogosultsága."}
+                if resp.status_code == 429:
+                    return {"analysis": "Az AI kvóta ideiglenesen elfogyott. Próbáld újra pár perc múlva."}
                 continue
+
+            data = resp.json()
+            # candidates[0].content.parts[0].text
+            text_out = ""
+            for cand in data.get("candidates") or []:
+                content = cand.get("content") or {}
+                for part in content.get("parts") or []:
+                    if isinstance(part.get("text"), str):
+                        text_out += part["text"]
+            text_out = text_out.strip()
+            if not text_out:
+                last_error = f"{model_name}: empty response body={str(data)[:200]}"
+                continue
+
             _ai_analysis_cache[cache_key] = {"data": text_out, "ts": now}
             print(f"[AI OK] match={match_id} model={model_name} phase={phase}")
             return {"analysis": text_out}
         except Exception as e:
             last_error = f"{model_name}: {e}"
-            print(f"[AI ERROR] match={match_id} {last_error}")
-            # kvóta / auth esetén ne próbáljuk a többi modellt feleslegesen
-            err_u = str(e).upper()
-            if any(x in err_u for x in ("QUOTA", "429", "RESOURCE_EXHAUSTED", "API_KEY", "UNAUTHENTICATED", "PERMISSION")):
-                break
+            print(f"[AI ERROR] {last_error}")
             continue
 
-    err = str(last_error or "unknown")
-    print(f"[AI FAIL] match={match_id} {err}")
-    if "API_KEY" in err.upper() or "UNAUTHENTICATED" in err.upper() or "PERMISSION" in err.upper():
-        msg = "Az AI API kulcs érvénytelen vagy nincs jogosultsága."
-    elif "quota" in err.lower() or "429" in err or "RESOURCE_EXHAUSTED" in err.upper():
-        msg = "Az AI kvóta ideiglenesen elfogyott. Próbáld újra pár perc múlva."
-    else:
-        msg = "Az AI elemzés most nem sikerült. Próbáld újra – a szerver terhelése átmeneti lehet."
-    return {"analysis": msg}
+    print(f"[AI FAIL] match={match_id} last={last_error}")
+    return {
+        "analysis": "Az AI elemzés most nem sikerült. Próbáld újra – a Gemini szolgáltatás átmenetileg lassú vagy terhelt lehet."
+    }
 
 
 @app.get("/api/highlights/match/{highlight_match_id}")
