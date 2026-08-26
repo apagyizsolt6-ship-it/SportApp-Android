@@ -44,6 +44,28 @@ import java.util.Locale
 import org.json.JSONArray
 import org.json.JSONObject
 
+private fun isMatchFinished(status: String?): Boolean {
+    val s = status?.trim()?.uppercase()?.replace(".", "")?.replace(" ", "") ?: return false
+    return s in setOf(
+        "FT", "AET", "PEN", "PENS", "PSO", "FINISHED", "FULLTIME", "FULL-TIME",
+        "ENDED", "AFTEREXTRATIME"
+    )
+}
+
+private fun isMatchLive(status: String?, minute: Int?): Boolean {
+    if (isMatchFinished(status)) return false
+    val s = status?.trim()?.uppercase()?.replace(".", "") ?: ""
+    if (s in setOf("1H", "2H", "HT", "LIVE", "ET", "INPLAY")) return true
+    // státusz maga a perc (régi feed)
+    if (s.toIntOrNull() != null) return true
+    val min = minute ?: 0
+    if (min <= 0) return false
+    // kezdési idő (20:45) ne legyen élő
+    if (s.contains(":")) return false
+    if (s in setOf("NS", "TBD", "SCHEDULED")) return false
+    return true
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
@@ -274,9 +296,8 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
 
             val matchesTab = when (selectedTab) {
 
-                // ÉLŐ
-                1 -> match.status != "FT" &&
-                        (match.minute ?: 0) > 0
+                // ÉLŐ – FT/AET/PEN NEM élő
+                1 -> isMatchLive(match.status, match.minute)
 
                 // KEDVENC
                 2 -> isMatchFav || isLeagueFav
@@ -284,9 +305,9 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                 // MÉDIA – élő, befejezett, vagy van highlight
                 3 -> {
                     val hasHighlight = !match.highlightMatchId.isNullOrBlank()
-                    val isLive = match.status != "FT" && (match.minute ?: 0) > 0
-                    val isFinished = match.status == "FT"
-                    hasHighlight || isLive || isFinished
+                    val live = isMatchLive(match.status, match.minute)
+                    val finished = isMatchFinished(match.status)
+                    hasHighlight || live || finished
                 }
 
                 // ÖSSZES
@@ -401,6 +422,20 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                         fontWeight = FontWeight.Black,
                         color = primaryGreen
                     )
+
+                    IconButton(
+                        onClick = {
+                            viewModel.fetchMatches(showLoading = true)
+                        },
+                        modifier = Modifier
+                            .clip(CircleShape)
+                            .background(leagueBgColor)
+                            .size(36.dp)
+                    ) {
+                        Text(text = "🔄", fontSize = 16.sp)
+                    }
+
+                    Spacer(modifier = Modifier.width(8.dp))
 
                     IconButton(
                         onClick = {
@@ -1748,30 +1783,19 @@ fun PremiumMatchRow(
                 Alignment.Start
         ) {
 
-            val isLive =
-                match.status != "FT" &&
-                        (match.minute ?: 0) > 0
+            val isLive = isMatchLive(match.status, match.minute)
 
             val statusText =
-                when (match.status) {
-
-                    "FT" ->
-                        "Vége"
-
-                    "HT" ->
-                        "Félidő"
-
-                    "1H" ->
-                        "1. Félidő"
-
-                    "2H" ->
-                        "2. Félidő"
-
-                    "NS" ->
-                        "Kezdés"
-
-                    else ->
-                        match.status
+                when {
+                    match.status == "FT" -> "Vége"
+                    match.status == "AET" -> "Hossz. után"
+                    match.status == "PEN" || match.status == "Pen." -> "11-esek"
+                    match.status == "HT" -> "Félidő"
+                    match.status == "1H" -> "1. Félidő"
+                    match.status == "2H" -> "2. Félidő"
+                    match.status == "ET" -> "Hosszabbítás"
+                    match.status == "NS" -> "Kezdés"
+                    else -> match.status
                 }
 
             if (isLive) {
@@ -3061,7 +3085,7 @@ private fun MediaMatchCard(
     primaryGreen: Color,
     onClick: () -> Unit
 ) {
-    val isLive = match.status != "FT" && (match.minute ?: 0) > 0
+    val isLive = isMatchLive(match.status, match.minute)
     val hasHighlight = !match.highlightMatchId.isNullOrBlank()
 
     Row(
@@ -3125,7 +3149,7 @@ private fun MediaMatchCard(
                         fontWeight = FontWeight.Bold
                     )
                     Spacer(modifier = Modifier.width(8.dp))
-                } else if (match.status == "FT") {
+                } else if (isMatchFinished(match.status)) {
                     Text(
                         text = "VÉGE",
                         color = subTextColor,
