@@ -4,6 +4,8 @@ import requests
 import re
 import os
 import time
+import random
+import math
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
 try:
@@ -507,15 +509,193 @@ def _highlightly_video_payload(highlight: dict):
         "imgUrl": highlight.get("imgUrl")
     }
 
+def _league_strength_factor(league: str) -> float:
+    """Liga szint becslés a cím alapján (1.0 = átlag)."""
+    u = (league or "").upper()
+    if any(x in u for x in ("PREMIER LEAGUE", "LA LIGA", "SERIE A", "BUNDESLIGA", "LIGUE 1", "CHAMPIONS LEAGUE")):
+        return 1.15
+    if any(x in u for x in ("EUROPA", "CONFERENCE", "EFL CUP", "FA CUP", "COPA DEL", "DFB")):
+        return 1.05
+    if any(x in u for x in ("CHAMPIONSHIP", "LIGA PORTUGAL", "EREDIVISIE", "SUPER LIG", "PRO LEAGUE")):
+        return 1.0
+    if any(x in u for x in ("U21", "U19", "YOUTH", "RESERVE")):
+        return 0.85
+    return 0.95
+
+
+def _poisson_sample(lam: float) -> int:
+    """Egyszerű Poisson mintavétel (Knuth) – kis lambda-ra stabil."""
+    lam = max(0.05, min(float(lam), 6.0))
+    L = math.exp(-lam)
+    k = 0
+    p = 1.0
+    while p > L:
+        k += 1
+        p *= random.random()
+    return k - 1
+
+
+def monte_carlo_match_sim(
+    home: str,
+    away: str,
+    league: str,
+    phase: str,
+    minute: int,
+    home_score: int,
+    away_score: int,
+    n: int = 8000,
+) -> dict:
+    """
+    Valódi Monte Carlo szimuláció Poisson-gólmodellel.
+    Élő/félidő esetén a hátralévő percekre szimulál, majd hozzáadja a jelenlegi állást.
+    """
+    strength = _league_strength_factor(league)
+    # Alap várható gólok (hazai előny ~0.25-0.35)
+    base_home = 1.35 * strength
+    base_away = 1.10 * strength
+
+    # Kupa / alacsonyabb szint: kissé szűkebb, kiszámíthatatlanabb
+    u = (league or "").upper()
+    if "CUP" in u or "KUPA" in u or "COPA" in u:
+        base_home *= 0.95
+        base_away *= 0.95
+
+    if phase in ("live", "halftime"):
+        # Hátralévő játékidő aránya
+        if phase == "halftime":
+            remain_ratio = 0.50
+        else:
+            m = max(0, min(minute, 90))
+            remain_ratio = max(0.08, (90 - m) / 90.0)
+        lam_h = base_home * remain_ratio
+        lam_a = base_away * remain_ratio
+        # Ha valaki vezet, kissé visszafogottabb gólvárakozás a vezetőnél
+        if home_score > away_score:
+            lam_h *= 0.92
+            lam_a *= 1.05
+        elif away_score > home_score:
+            lam_a *= 0.92
+            lam_h *= 1.05
+    else:
+        # Előzetes vagy vége: teljes meccs (végénél inkább „fair” újraszim)
+        lam_h = base_home
+        lam_a = base_away
+
+    home_wins = draw = away_wins = 0
+    score_counts = {}
+    btts = over25 = 0
+
+    for _ in range(n):
+        if phase in ("live", "halftime"):
+            fh = home_score + _poisson_sample(lam_h)
+            fa = away_score + _poisson_sample(lam_a)
+        elif phase == "finished":
+            # Utólagos „újrajátszás” – teljes meccs szimu referenciának
+            fh = _poisson_sample(lam_h)
+            fa = _poisson_sample(lam_a)
+        else:
+            fh = _poisson_sample(lam_h)
+            fa = _poisson_sample(lam_a)
+
+        key = (fh, fa)
+        score_counts[key] = score_counts.get(key, 0) + 1
+        if fh > fa:
+            home_wins += 1
+        elif fh < fa:
+            away_wins += 1
+        else:
+            draw += 1
+        if fh > 0 and fa > 0:
+            btts += 1
+        if (fh + fa) >= 3:
+            over25 += 1
+
+    def pct(x):
+        return round(100.0 * x / n, 1)
+
+    top_scores = sorted(score_counts.items(), key=lambda kv: kv[1], reverse=True)[:5]
+    most_likely = top_scores[0][0]
+    alt = top_scores[1][0] if len(top_scores) > 1 else most_likely
+
+    return {
+        "n": n,
+        "phase": phase,
+        "lambda_home": round(lam_h, 3),
+        "lambda_away": round(lam_a, 3),
+        "p_home": pct(home_wins),
+        "p_draw": pct(draw),
+        "p_away": pct(away_wins),
+        "p_btts": pct(btts),
+        "p_over25": pct(over25),
+        "most_likely": f"{most_likely[0]}-{most_likely[1]}",
+        "most_likely_pct": pct(top_scores[0][1]),
+        "alternative": f"{alt[0]}-{alt[1]}",
+        "alternative_pct": pct(top_scores[1][1]) if len(top_scores) > 1 else 0.0,
+        "top_scores": [
+            {"score": f"{a}-{b}", "pct": pct(c)} for (a, b), c in top_scores
+        ],
+    }
+
+
+def _format_monte_carlo_text(
+    home: str,
+    away: str,
+    league: str,
+    phase: str,
+    minute: int,
+    score_txt: str,
+    sim: dict,
+    narrative: str | None = None,
+) -> str:
+    phase_label = {
+        "preview": "Előzetes Monte Carlo szimuláció",
+        "live": f"Élő Monte Carlo (a {minute}. perctől, állás {score_txt})",
+        "halftime": f"Félidős Monte Carlo (állás {score_txt})",
+        "finished": f"Referencia újrajátszás (tényleges eredmény: {score_txt})",
+    }.get(phase, "Monte Carlo szimuláció")
+
+    lines = [
+        f"🎲 {phase_label}",
+        f"{home} vs {away}",
+        f"Liga: {league}",
+        f"Futtatások: {sim['n']:,}".replace(",", " "),
+        "",
+        "📊 Kimenetel-valószínűségek",
+        f"• {home} győzelem: {sim['p_home']}%",
+        f"• Döntetlen: {sim['p_draw']}%",
+        f"• {away} győzelem: {sim['p_away']}%",
+        "",
+        "📈 Piaci jellegű jelzők",
+        f"• Both teams to score (BTTS): {sim['p_btts']}%",
+        f"• Over 2.5 gól: {sim['p_over25']}%",
+        "",
+        "🎯 Leggyakoribb állások",
+        f"• {sim['most_likely']} ({sim['most_likely_pct']}%)",
+        f"• Alternatíva: {sim['alternative']} ({sim['alternative_pct']}%)",
+    ]
+    if len(sim.get("top_scores") or []) > 2:
+        extra = ", ".join(f"{t['score']} ({t['pct']}%)" for t in sim["top_scores"][2:5])
+        if extra:
+            lines.append(f"• További: {extra}")
+
+    lines.extend([
+        "",
+        "ℹ️ Modell: Poisson-gól Monte Carlo, hazai előnnyel és liga-súlyozással.",
+        "Ez statisztikai becslés, nem fogadási tanács.",
+    ])
+
+    if narrative:
+        lines.extend(["", "🧠 Szakértői kommentár", narrative.strip()])
+
+    return "\n".join(lines)
+
+
 @app.get("/api/ai-analysis/{match_id}")
 def get_ai_analysis(match_id: str):
     """
-    Prémium AI: szimuláció, valószínűségek, forgatókönyvek, szakmai elemzés.
-    Közvetlen Gemini REST API.
+    Monte Carlo szimuláció (mindig) + opcionális Gemini narratíva.
+    Ha a Gemini nem elérhető, a szimuláció akkor is visszaadódik.
     """
-    if not GEMINI_KEY:
-        return {"analysis": "Az AI elemző modul jelenleg nem érhető el (Hiányzó API kulcs)."}
-
     try:
         matches = get_matches()
     except Exception as e:
@@ -535,14 +715,13 @@ def get_ai_analysis(match_id: str):
 
     home_score = target_match.get("home_score")
     away_score = target_match.get("away_score")
-    hs = home_score if home_score is not None else 0
-    as_ = away_score if away_score is not None else 0
+    hs = int(home_score) if home_score is not None else 0
+    as_ = int(away_score) if away_score is not None else 0
     score_txt = f"{hs}-{as_}"
     home = target_match.get("home_team") or "Hazai"
     away = target_match.get("away_team") or "Vendég"
     league = target_match.get("league") or "Ismeretlen bajnokság"
     country = target_match.get("country") or ""
-    value_bet = target_match.get("value_bet")
 
     status_upper = raw_status.upper()
     looks_like_kickoff_time = bool(
@@ -552,170 +731,87 @@ def get_ai_analysis(match_id: str):
 
     if status_upper in {"FT", "AET", "PEN", "FINISHED"}:
         phase = "finished"
-        match_phase = "A mérkőzés VÉGET ért."
-        score_line = f"Végeredmény: {score_txt}"
     elif status_upper == "HT":
         phase = "halftime"
-        match_phase = "A mérkőzés FÉLIDŐBEN van."
-        score_line = f"Állás félidőben: {score_txt}"
     elif status_upper in {"1H", "2H", "LIVE", "ET", "P"} or (minute > 0 and not looks_like_kickoff_time):
         phase = "live"
-        match_phase = f"A mérkőzés ÉLŐBEN zajlik, kb. a {minute}. percben."
-        score_line = f"Jelenlegi állás: {score_txt} ({minute}. perc)"
     else:
         phase = "preview"
-        kickoff = raw_status if looks_like_kickoff_time else (raw_status or "ismeretlen")
-        match_phase = f"A mérkőzés MÉG NEM kezdődött el. Tervezett kezdés: {kickoff}."
-        score_line = "Állás: még nincs (kezdés előtt)"
 
-    cache_key = f"sim-v2|{match_id}|{phase}|{raw_status}|{minute}|{score_txt}"
+    cache_key = f"mc-v1|{match_id}|{phase}|{raw_status}|{minute}|{score_txt}"
     now = time.time()
     cached = _ai_analysis_cache.get(cache_key)
     if cached and (now - cached["ts"]) < AI_CACHE_TTL:
         return {"analysis": cached["data"]}
 
-    extra_ctx = []
-    if value_bet is True:
-        extra_ctx.append("Inplay odds fut (value_bet jelzés aktív).")
-    if phase == "live":
-        goal_diff = hs - as_
-        if goal_diff > 0:
-            extra_ctx.append(f"Jelenleg a hazai vezet {goal_diff} góllal.")
-        elif goal_diff < 0:
-            extra_ctx.append(f"Jelenleg a vendég vezet {abs(goal_diff)} góllal.")
-        else:
-            extra_ctx.append("Jelenleg döntetlen az állás.")
-        if minute >= 75:
-            extra_ctx.append("A meccs a hajrában van (75+ perc).")
-        elif minute <= 15:
-            extra_ctx.append("Még a meccs elején járunk.")
-    extra_block = ("\n".join(f"- {x}" for x in extra_ctx)) if extra_ctx else "- Nincs további élő jelzés."
+    # 1) Valódi Monte Carlo – mindig lefut (~ms)
+    sim = monte_carlo_match_sim(
+        home=home,
+        away=away,
+        league=league,
+        phase=phase,
+        minute=minute,
+        home_score=hs,
+        away_score=as_,
+        n=8000,
+    )
 
-    if phase == "preview":
-        sim_block = f"""
-SZIMULÁCIÓS FELADAT (kezdés ELŐTT):
-- Futtass le fejben egy „1000 ismétléses” jellegű szimulációt a két csapat minősége, hazai pálya és kupa/bajnoki kontextus alapján.
-- Add meg becsült győzelmi valószínűségeket: {home} győzelem % / döntetlen % / {away} győzelem % (összeg 100%).
-- Adj 1 legvalószínűbb végeredményt (pl. 2-1) és 1 alternatív forgatókönyvet.
-- Írj 1 „xG jellegű” megérzést (melyik csapat lőhet többet, nem kell pontos modell).
-- TILOS úgy írni, mintha a meccs már menne.
-"""
-    elif phase == "live":
-        sim_block = f"""
-ÉLŐ SZIMULÁCIÓ (a meccs TART, {minute}. perc, állás {score_txt}):
-- A jelenlegi állásból indíts „hátralévő játékrész” szimulációt.
-- Becsüld meg a végső kimenetel valószínűségeit INNEN: {home} nyer / döntetlen / {away} nyer (összeg 100%).
-- Add meg a legvalószínűbb végeredményt a jelenlegi állásból nézve.
-- Mondj 1 fordulópont-forgatókönyvet (pl. gól, piros lap, időhúzás).
-- NE írd, hogy a meccs még nem kezdődött el.
-"""
-    elif phase == "halftime":
-        sim_block = f"""
-FÉLIDŐS SZIMULÁCIÓ (állás {score_txt}):
-- Értékeld az első játékrészt, majd szimuláld a második félidőt.
-- Második félidős kimenetel-valószínűségek és várható végeredmény.
-- Egy taktikai kulcs a szünet utánra.
-"""
-    else:
-        sim_block = f"""
-UTÓLAGOS ELEMZÉS (végeredmény {score_txt}):
-- Értékeld, mennyire volt „fair” az eredmény egy szimulációs logika szerint.
-- Mi volt a döntő momentum.
-- Alternatív forgatókönyv: mi kellett volna a másik kimenetelhez.
-"""
-
-    prompt = f"""Te a SportApp elit labdarúgó-adatelemzője és szimulációs szakértője vagy.
-Írj magyarul, magabiztosan, nézőbarát stílusban – de számokkal és forgatókönyvekkel.
-
-MÉRKŐZÉS ADATOK:
-- Bajnokság: {league}
-- Ország: {country}
-- Csapatok: {home} vs {away}
-- Állapot: {match_phase}
-- {score_line}
-További kontextus:
-{extra_block}
-
-{sim_block}
-
-KÖTELEZŐ KIMENETI SZERKEZET (ezt a sorrendet tartsd, rövid címsorokkal):
-
-📊 Szimuláció
-- Valószínűségek egy sorban százalékokkal
-- Legvalószínűbb állás + 1 alternatíva
-
-🎯 Játékkép
-- 2-3 mondat: tempó, presszing, szárnyak/középpálya, ki kontrollál
-
-⚡ Kulcsmomentum
-- 1-2 konkrét fordulópont vagy figyelt zóna
-
-🧠 Konklúzió
-- 1-2 ütős mondat, nézőnek szóló tanács
-
-SZABÁLYOK:
-- Összesen max ~12-14 sor, ne legyen esszé
-- A százalékok legyenek reálisak (ne legyen 99%)
-- Használd a csapatok nevét
-- Ne találj ki nem létező játékos-sérülést névvel, ha nincs róluk adat
-- Ha kevés az adat, mondd ki, hogy modellbecslés / szimuláció
-"""
-
-    models = [
-        "gemini-2.5-flash",
-        "gemini-2.5-flash-lite",
-        "gemini-2.0-flash",
-    ]
-    last_error = None
-
-    for model_name in models:
+    # 2) Opcionális Gemini narratíva (ha van kulcs és válaszol)
+    narrative = None
+    if GEMINI_KEY:
         try:
-            url = (
-                "https://generativelanguage.googleapis.com/v1beta/models/"
-                f"{model_name}:generateContent?key={GEMINI_KEY}"
-            )
-            payload = {
-                "contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": {
-                    "temperature": 0.85,
-                    "maxOutputTokens": 900,
-                    "topP": 0.95,
-                },
-            }
-            resp = requests.post(url, json=payload, timeout=25)
-            if resp.status_code != 200:
-                last_error = f"{model_name}: HTTP {resp.status_code} {resp.text[:220]}"
-                print(f"[AI ERROR] {last_error}")
-                if resp.status_code in (401, 403):
-                    return {"analysis": "Az AI API kulcs érvénytelen vagy nincs jogosultsága."}
-                if resp.status_code == 429:
-                    return {"analysis": "Az AI kvóta ideiglenesen elfogyott. Próbáld újra pár perc múlva."}
-                continue
+            prompt = f"""Írj 3-4 rövid magyar mondatos szakértői kommentárt ehhez a labdarúgó szimulációhoz.
+Ne ismételd a százalékokat tételesen, inkább értelmezd.
 
-            data = resp.json()
-            text_out = ""
-            for cand in data.get("candidates") or []:
-                content = cand.get("content") or {}
-                for part in content.get("parts") or []:
-                    if isinstance(part.get("text"), str):
-                        text_out += part["text"]
-            text_out = text_out.strip()
-            if not text_out:
-                last_error = f"{model_name}: empty"
-                continue
+Meccs: {home} vs {away} ({league}, {country})
+Fázis: {phase}, állás/perc: {score_txt} / {minute}
+Monte Carlo: {home} {sim['p_home']}%, döntetlen {sim['p_draw']}%, {away} {sim['p_away']}%
+Leggyakoribb állás: {sim['most_likely']} ({sim['most_likely_pct']}%)
+BTTS: {sim['p_btts']}%, Over2.5: {sim['p_over25']}%
 
-            _ai_analysis_cache[cache_key] = {"data": text_out, "ts": now}
-            print(f"[AI OK] match={match_id} model={model_name} phase={phase} sim=1")
-            return {"analysis": text_out}
+Legyél konkrét, nézőbarát, ne markdown címsor.
+"""
+            for model_name in ("gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-2.0-flash"):
+                url = (
+                    "https://generativelanguage.googleapis.com/v1beta/models/"
+                    f"{model_name}:generateContent?key={GEMINI_KEY}"
+                )
+                payload = {
+                    "contents": [{"parts": [{"text": prompt}]}],
+                    "generationConfig": {"temperature": 0.8, "maxOutputTokens": 350},
+                }
+                resp = requests.post(url, json=payload, timeout=12)
+                if resp.status_code != 200:
+                    print(f"[AI narrative] {model_name} HTTP {resp.status_code}")
+                    continue
+                data = resp.json()
+                text_out = ""
+                for cand in data.get("candidates") or []:
+                    content = cand.get("content") or {}
+                    for part in content.get("parts") or []:
+                        if isinstance(part.get("text"), str):
+                            text_out += part["text"]
+                text_out = text_out.strip()
+                if text_out:
+                    narrative = text_out
+                    print(f"[AI narrative OK] {model_name}")
+                    break
         except Exception as e:
-            last_error = f"{model_name}: {e}"
-            print(f"[AI ERROR] {last_error}")
-            continue
+            print(f"[AI narrative fail] {e}")
 
-    print(f"[AI FAIL] match={match_id} last={last_error}")
-    return {
-        "analysis": "Az AI szimuláció most nem futott le. Próbáld újra – a Gemini szolgáltatás átmenetileg terhelt lehet."
-    }
+    analysis = _format_monte_carlo_text(
+        home=home,
+        away=away,
+        league=league,
+        phase=phase,
+        minute=minute,
+        score_txt=score_txt,
+        sim=sim,
+        narrative=narrative,
+    )
+    _ai_analysis_cache[cache_key] = {"data": analysis, "ts": now}
+    print(f"[MC OK] match={match_id} phase={phase} narrative={bool(narrative)}")
+    return {"analysis": analysis}
 
 
 @app.get("/api/highlights/match/{highlight_match_id}")
