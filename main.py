@@ -444,31 +444,86 @@ def get_ai_analysis(match_id: str):
     if not GEMINI_KEY:
         return {"analysis": "Az AI elemző modul jelenleg nem érhető el (Hiányzó API kulcs)."}
 
-    now = time.time()
-    cached = _ai_analysis_cache.get(match_id)
-    if cached and (now - cached["ts"]) < AI_CACHE_TTL:
-        return {"analysis": cached["data"]}
-
     matches = get_matches()
     target_match = next((m for m in matches if str(m.get("id")) == str(match_id)), None)
 
     if not target_match:
         return {"analysis": "A mérkőzés adatai nem találhatók az AI elemzéshez."}
 
+    # Cache kulcs: meccs + állapot + perc + állás, hogy élőre váltáskor új elemzés készüljön
+    cache_key = (
+        f"{match_id}|"
+        f"{target_match.get('status')}|"
+        f"{target_match.get('minute')}|"
+        f"{target_match.get('home_score')}-"
+        f"{target_match.get('away_score')}"
+    )
+    now = time.time()
+    cached = _ai_analysis_cache.get(cache_key)
+    if cached and (now - cached["ts"]) < AI_CACHE_TTL:
+        return {"analysis": cached["data"]}
+
+    # --- Meccsállapot egyértelműen (ne keverjük a kezdési időt a perccel) ---
+    raw_status = str(target_match.get("status") or "").strip()
+    minute = target_match.get("minute") or 0
+    try:
+        minute = int(minute)
+    except (TypeError, ValueError):
+        minute = 0
+
+    home_score = target_match.get("home_score")
+    away_score = target_match.get("away_score")
+    score_txt = f"{home_score if home_score is not None else 0}-{away_score if away_score is not None else 0}"
+
+    status_upper = raw_status.upper()
+    looks_like_kickoff_time = bool(
+        len(raw_status) <= 5 and ":" in raw_status and status_upper not in {"HT", "FT", "1H", "2H", "NS", "LIVE"}
+    )
+
+    if status_upper in {"FT", "AET", "PEN", "FINISHED"}:
+        match_phase = "A mérkőzés VÉGET ért."
+        score_line = f"Végeredmény: {score_txt}"
+        instruction = (
+            "Foglald össze a lejátszott meccset, a győztes esélyeit visszatekintve, "
+            "és adj rövid szakmai értékelést. NE írd azt, hogy a meccs még tart."
+        )
+    elif status_upper in {"1H", "2H", "HT", "LIVE", "ET", "P"} or (minute > 0 and not looks_like_kickoff_time):
+        if status_upper == "HT":
+            match_phase = "A mérkőzés FÉLIDŐBEN van."
+            score_line = f"Jelenlegi állás: {score_txt} (félidő)"
+        else:
+            match_phase = f"A mérkőzés ÉLŐBEN zajlik, kb. a {minute}. percben."
+            score_line = f"Jelenlegi állás: {score_txt} ({minute}. perc)"
+        instruction = (
+            "Elemezd az aktuális állás alapján a meccs dinamikáját, ki dominál, "
+            "és mi várható a hátralévő játékrészben. NE írd azt, hogy a meccs még nem kezdődött el."
+        )
+    else:
+        # NS, kezdési idő (pl. 21:00), vagy egyéb nem élő státusz
+        kickoff = raw_status if looks_like_kickoff_time else (raw_status or "ismeretlen")
+        match_phase = f"A mérkőzés MÉG NEM kezdődött el. Tervezett kezdés: {kickoff}."
+        score_line = "Állás: még nincs (0-0 a kezdés előtt)"
+        instruction = (
+            "Ez egy ELŐZETES elemzés a kezdés előtt. Beszélj várható játékról, esélyekről, "
+            "csapatok stílusáról. TILOS olyan mondat, mintha a meccs már menne "
+            "(pl. '21. perc', 'jelenleg 0-0 az állás a pályán', 'félidőben')."
+        )
+
     prompt = f"""
-    Egy profi, szórakoztató sportelemző vagy a SportApp Android alkalmazásban. 
-    Elemezd az alábbi labdarúgó mérkőzést közérthetően, 3-4 rövid mondatban magyar nyelven!
+Egy profi, szórakoztató sportelemző vagy a SportApp Android alkalmazásban.
+Írj közérthető, 3-4 rövid mondatos magyar nyelvű elemzést.
 
-    Mérkőzés adatai:
-    - Bajnokság: {target_match.get('league')}
-    - Hazai csapat: {target_match.get('home_team')}
-    - Vendég csapat: {target_match.get('away_team')}
-    - Jelenlegi állás / Státusz: {target_match.get('home_score')} - {target_match.get('away_score')} ({target_match.get('status')})
+Mérkőzés adatai:
+- Bajnokság: {target_match.get('league')}
+- Hazai csapat: {target_match.get('home_team')}
+- Vendég csapat: {target_match.get('away_team')}
+- Meccs állapota: {match_phase}
+- {score_line}
 
-    Követelmény:
-    Mondd el a várható meccsdinamikát, a csapatok esélyeit és adj egy rövid szakmai konklúziót! 
-    Ne használj száraz szakzsargont, legyen lényegre törő és élvezetes.
-    """
+Követelmény:
+{instruction}
+Ne használj száraz szakzsargont, legyen lényegre törő és élvezetes.
+"""
 
     if _gemini_client is None:
         return {"analysis": "Az AI elemző modul jelenleg nem érhető el (SDK/API kulcs hiba)."}
@@ -493,8 +548,8 @@ def get_ai_analysis(match_id: str):
             if not text:
                 last_error = f"{model_name}: empty response"
                 continue
-            _ai_analysis_cache[match_id] = {"data": text, "ts": now}
-            print(f"[AI OK] match_id={match_id} model={model_name}")
+            _ai_analysis_cache[cache_key] = {"data": text, "ts": now}
+            print(f"[AI OK] match_id={match_id} model={model_name} key={cache_key}")
             return {"analysis": text}
         except Exception as e:
             last_error = f"{model_name}: {e}"
