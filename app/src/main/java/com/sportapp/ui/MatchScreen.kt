@@ -39,6 +39,8 @@ import com.sportapp.api.StandingTeam
 import kotlinx.coroutines.launch
 import java.text.Collator
 import java.util.Locale
+import org.json.JSONArray
+import org.json.JSONObject
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -82,6 +84,27 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
 
     var selectedVideo by remember { mutableStateOf<HighlightVideo?>(null) }
     var selectedMatchForMedia by remember { mutableStateOf<MatchResponse?>(null) }
+
+    val mediaPrefs = remember(context) {
+        context.getSharedPreferences(
+            "match_media_preferences",
+            android.content.Context.MODE_PRIVATE
+        )
+    }
+
+    var recentMediaItems by remember {
+        mutableStateOf(loadRecentMedia(mediaPrefs))
+    }
+
+    fun persistRecentMedia(items: List<RecentMediaItem>) {
+        recentMediaItems = items
+        saveRecentMedia(mediaPrefs, items)
+    }
+
+    fun pushRecentMedia(item: RecentMediaItem) {
+        val next = listOf(item) + recentMediaItems.filter { it.id != item.id }
+        persistRecentMedia(next.take(20))
+    }
     var highlightVideos by remember { mutableStateOf<List<HighlightVideo>>(emptyList()) }
     var showHighlightPicker by remember { mutableStateOf(false) }
     var isHighlightLoading by remember { mutableStateOf(false) }
@@ -612,6 +635,58 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                     )
                 }
 
+            } else if (selectedTab == 3) {
+
+                // ====================================================
+                // MÉDIA HUB
+                // ====================================================
+                MediaHubList(
+                    matches = filteredMatches,
+                    recentItems = recentMediaItems,
+                    isDarkMode = isDarkMode,
+                    cardBgColor = cardBgColor,
+                    textColor = textColor,
+                    subTextColor = subTextColor,
+                    primaryGreen = primaryGreen,
+                    onOpenMatchMedia = { match ->
+                        selectedMatchForMedia = match
+                        highlightVideos = emptyList()
+                        highlightError = null
+                        showHighlightPicker = true
+                        val highlightMatchId =
+                            match.highlightMatchId?.trim().orEmpty()
+                        if (highlightMatchId.isNotBlank()) {
+                            coroutineScope.launch {
+                                isHighlightLoading = true
+                                try {
+                                    val videos =
+                                        RetrofitInstance.api.getMatchHighlights(
+                                            highlightMatchId
+                                        )
+                                    highlightVideos =
+                                        videos.filter {
+                                            !it.embedUrl.isNullOrBlank() ||
+                                                    !it.url.isNullOrBlank()
+                                        }
+                                } catch (_: Exception) {
+                                } finally {
+                                    isHighlightLoading = false
+                                }
+                            }
+                        }
+                    },
+                    onOpenRecent = { item ->
+                        try {
+                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(item.url))
+                            context.startActivity(intent)
+                        } catch (_: Exception) {
+                        }
+                    },
+                    onClearRecent = {
+                        persistRecentMedia(emptyList())
+                    }
+                )
+
             } else {
 
                 LazyColumn(
@@ -1049,11 +1124,39 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
             errorMessage = highlightError,
             isDarkMode = isDarkMode,
             onVideoSelected = { video ->
+                val m = selectedMatchForMedia
+                val url = video.embedUrl ?: video.url
+                if (m != null && !url.isNullOrBlank()) {
+                    pushRecentMedia(
+                        RecentMediaItem(
+                            id = "hl-${video.id}",
+                            title = video.title?.takeIf { it.isNotBlank() }
+                                ?: "${m.homeTeam} vs ${m.awayTeam}",
+                            subtitle = video.category ?: (m.league ?: "Highlightly"),
+                            url = url,
+                            thumbUrl = video.imgUrl ?: m.homeLogoUrl,
+                            timestamp = System.currentTimeMillis()
+                        )
+                    )
+                }
                 selectedVideo = video
                 showHighlightPicker = false
             },
             onOpenExternalUrl = { url ->
                 try {
+                    val m = selectedMatchForMedia
+                    if (m != null) {
+                        pushRecentMedia(
+                            RecentMediaItem(
+                                id = "yt-${m.id}-${url.hashCode()}",
+                                title = "${m.homeTeam} vs ${m.awayTeam}",
+                                subtitle = m.league ?: "YouTube",
+                                url = url,
+                                thumbUrl = m.homeLogoUrl,
+                                timestamp = System.currentTimeMillis()
+                            )
+                        )
+                    }
                     val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
                     context.startActivity(intent)
                 } catch (e: Exception) {
@@ -2705,6 +2808,344 @@ fun HighlightlyVideoDialog(
                     )
                 }
             }
+        }
+    }
+}
+
+
+// ================================================================
+// MÉDIA HUB – legutóbb nézett + thumbnail kártyák
+// ================================================================
+
+data class RecentMediaItem(
+    val id: String,
+    val title: String,
+    val subtitle: String,
+    val url: String,
+    val thumbUrl: String?,
+    val timestamp: Long
+)
+
+private fun loadRecentMedia(
+    prefs: android.content.SharedPreferences
+): List<RecentMediaItem> {
+    return try {
+        val raw = prefs.getString("recent_media_json", null) ?: return emptyList()
+        val arr = JSONArray(raw)
+        buildList {
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                add(
+                    RecentMediaItem(
+                        id = o.optString("id"),
+                        title = o.optString("title"),
+                        subtitle = o.optString("subtitle"),
+                        url = o.optString("url"),
+                        thumbUrl = o.optString("thumbUrl").takeIf { it.isNotBlank() },
+                        timestamp = o.optLong("timestamp")
+                    )
+                )
+            }
+        }
+    } catch (_: Exception) {
+        emptyList()
+    }
+}
+
+private fun saveRecentMedia(
+    prefs: android.content.SharedPreferences,
+    items: List<RecentMediaItem>
+) {
+    val arr = JSONArray()
+    items.forEach { item ->
+        arr.put(
+            JSONObject()
+                .put("id", item.id)
+                .put("title", item.title)
+                .put("subtitle", item.subtitle)
+                .put("url", item.url)
+                .put("thumbUrl", item.thumbUrl ?: "")
+                .put("timestamp", item.timestamp)
+        )
+    }
+    prefs.edit().putString("recent_media_json", arr.toString()).apply()
+}
+
+@Composable
+private fun MediaHubList(
+    matches: List<MatchResponse>,
+    recentItems: List<RecentMediaItem>,
+    isDarkMode: Boolean,
+    cardBgColor: Color,
+    textColor: Color,
+    subTextColor: Color,
+    primaryGreen: Color,
+    onOpenMatchMedia: (MatchResponse) -> Unit,
+    onOpenRecent: (RecentMediaItem) -> Unit,
+    onClearRecent: () -> Unit
+) {
+    val mediaMatches = remember(matches) {
+        matches.sortedWith(
+            compareByDescending<MatchResponse> {
+                !it.highlightMatchId.isNullOrBlank()
+            }.thenByDescending {
+                (it.minute ?: 0) > 0 && it.status != "FT"
+            }.thenBy {
+                it.league.orEmpty()
+            }
+        )
+    }
+
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        item {
+            Text(
+                text = "🎬 Média központ",
+                color = primaryGreen,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.ExtraBold
+            )
+            Text(
+                text = "Összefoglalók, gólok, nemzetközi források",
+                color = subTextColor,
+                fontSize = 11.sp
+            )
+        }
+
+        if (recentItems.isNotEmpty()) {
+            item {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "🕐 Legutóbb nézett",
+                        color = Color(0xFF40C4FF),
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "Törlés",
+                        color = subTextColor,
+                        fontSize = 11.sp,
+                        modifier = Modifier.clickable { onClearRecent() }
+                    )
+                }
+            }
+
+            items(recentItems.take(8), key = { it.id }) { item ->
+                RecentMediaCard(
+                    item = item,
+                    cardBgColor = cardBgColor,
+                    textColor = textColor,
+                    subTextColor = subTextColor,
+                    onClick = { onOpenRecent(item) }
+                )
+            }
+        }
+
+        item {
+            Text(
+                text = "📺 Ajánlott meccsek",
+                color = Color(0xFFFFD54F),
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(top = 6.dp)
+            )
+        }
+
+        if (mediaMatches.isEmpty()) {
+            item {
+                Text(
+                    text = "Most nincs megjeleníthető média-tartalom. Nézz vissza élő vagy befejezett meccseknél.",
+                    color = subTextColor,
+                    fontSize = 12.sp,
+                    modifier = Modifier.padding(vertical = 16.dp)
+                )
+            }
+        } else {
+            items(mediaMatches, key = { it.id }) { match ->
+                MediaMatchCard(
+                    match = match,
+                    cardBgColor = cardBgColor,
+                    textColor = textColor,
+                    subTextColor = subTextColor,
+                    primaryGreen = primaryGreen,
+                    onClick = { onOpenMatchMedia(match) }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun RecentMediaCard(
+    item: RecentMediaItem,
+    cardBgColor: Color,
+    textColor: Color,
+    subTextColor: Color,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(cardBgColor)
+            .clickable(onClick = onClick)
+            .padding(10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .size(52.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(Color(0xFF263238)),
+            contentAlignment = Alignment.Center
+        ) {
+            if (!item.thumbUrl.isNullOrBlank()) {
+                AsyncImage(
+                    model = item.thumbUrl,
+                    contentDescription = null,
+                    modifier = Modifier.size(52.dp)
+                )
+            } else {
+                Text("▶️", fontSize = 20.sp)
+            }
+        }
+        Spacer(modifier = Modifier.width(10.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = item.title,
+                color = textColor,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = item.subtitle,
+                color = subTextColor,
+                fontSize = 11.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        Text(text = "↗", color = Color(0xFF40C4FF), fontSize = 16.sp)
+    }
+}
+
+@Composable
+private fun MediaMatchCard(
+    match: MatchResponse,
+    cardBgColor: Color,
+    textColor: Color,
+    subTextColor: Color,
+    primaryGreen: Color,
+    onClick: () -> Unit
+) {
+    val isLive = match.status != "FT" && (match.minute ?: 0) > 0
+    val hasHighlight = !match.highlightMatchId.isNullOrBlank()
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(cardBgColor)
+            .clickable(onClick = onClick)
+            .padding(10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        // Thumbnail: hazai + vendég logó
+        Box(
+            modifier = Modifier
+                .size(56.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(Color(0xFF1B2228))
+        ) {
+            AsyncImage(
+                model = match.homeLogoUrl,
+                contentDescription = null,
+                modifier = Modifier
+                    .size(30.dp)
+                    .align(Alignment.TopStart)
+                    .padding(4.dp)
+            )
+            AsyncImage(
+                model = match.awayLogoUrl,
+                contentDescription = null,
+                modifier = Modifier
+                    .size(30.dp)
+                    .align(Alignment.BottomEnd)
+                    .padding(4.dp)
+            )
+        }
+
+        Spacer(modifier = Modifier.width(10.dp))
+
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = "${match.homeTeam} vs ${match.awayTeam}",
+                color = textColor,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = match.league ?: "",
+                color = subTextColor,
+                fontSize = 11.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (isLive) {
+                    Text(
+                        text = "ÉLŐ ${match.minute}'",
+                        color = primaryGreen,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                } else if (match.status == "FT") {
+                    Text(
+                        text = "VÉGE",
+                        color = subTextColor,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                }
+                Text(
+                    text = "${match.homeScore ?: 0} - ${match.awayScore ?: 0}",
+                    color = textColor,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Medium
+                )
+                if (hasHighlight) {
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Highlightly",
+                        color = Color(0xFFFFD54F),
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+        }
+
+        Box(
+            modifier = Modifier
+                .clip(RoundedCornerShape(8.dp))
+                .background(Color(0xFF2979FF))
+                .padding(horizontal = 10.dp, vertical = 8.dp)
+        ) {
+            Text(text = "🎥", fontSize = 14.sp)
         }
     }
 }
