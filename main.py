@@ -462,13 +462,28 @@ def get_ai_analysis(match_id: str):
     """
 
     try:
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        # gemini-1.5-flash 2025. szept. 29-én leállt.
+        # Aktuális, stabil Flash modell:
+        model = genai.GenerativeModel("gemini-2.5-flash")
         response = model.generate_content(prompt)
-        text = response.text.strip()
+        text = (response.text or "").strip()
+        if not text:
+            return {"analysis": "Az AI üres választ adott. Próbáld újra később!"}
         _ai_analysis_cache[match_id] = {"data": text, "ts": now}
         return {"analysis": text}
-    except Exception:
-        return {"analysis": "Az AI elemzés jelenleg nem érhető el. Próbáld újra később!"}
+    except Exception as e:
+        err = str(e)
+        print(f"[AI ERROR] match_id={match_id} error={err}")
+        # Felhasználóbarát, de diagnosztizálható üzenet
+        if "API_KEY" in err.upper() or "API KEY" in err.upper() or "PERMISSION" in err.upper():
+            msg = "Az AI API kulcs érvénytelen vagy nincs jogosultsága. Ellenőrizd a GEMINI_KEY-t."
+        elif "404" in err or "not found" in err.lower() or "not supported" in err.lower():
+            msg = "Az AI modell nem elérhető. Frissítsd a modellnevet a szerveren."
+        elif "quota" in err.lower() or "rate" in err.lower() or "429" in err:
+            msg = "Az AI kvóta ideiglenesen elfogyott. Próbáld újra később!"
+        else:
+            msg = "Az AI elemzés jelenleg nem érhető el. Próbáld újra később!"
+        return {"analysis": msg}
 
 @app.get("/api/highlights/match/{highlight_match_id}")
 def get_match_highlights(highlight_match_id: str):
