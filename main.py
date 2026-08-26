@@ -238,6 +238,51 @@ def adjust_time(time_str):
     except:
         return time_str
 
+
+def normalize_match_status(raw_status, minute_val=0):
+    """
+    Egységes státusz a kliensnek.
+    Befejezett: FT / AET / PEN
+    Élő: 1H / 2H / HT / LIVE / ET vagy perc-szám
+    """
+    s = str(raw_status or "").strip()
+    su = s.upper().replace(".", "").replace(" ", "")
+    try:
+        minute_val = int(minute_val or 0)
+    except (TypeError, ValueError):
+        minute_val = 0
+
+    if su in ("FT", "FINISHED", "FULLTIME", "FULL-TIME", "ENDED", "AFTERFT"):
+        return "FT"
+    if su in ("AET", "AFTEREXTRATIME", "AETIME"):
+        return "AET"
+    if su in ("PEN", "PENS", "PENALTIES", "PSO", "PENALTY"):
+        return "PEN"
+    if su in ("HT", "HALFTIME", "HALF-TIME", "PAUSE"):
+        return "HT"
+    if su in ("1H", "FIRSTHALF", "H1"):
+        return "1H"
+    if su in ("2H", "SECONDHALF", "H2"):
+        return "2H"
+    if su in ("ET", "EXTRATIME", "AETLIVE"):
+        return "ET"
+    if su in ("LIVE", "INPLAY", "INPROGRESS"):
+        return "LIVE"
+    if su in ("NS", "NOTSTARTED", "SCHEDULED", "TBD"):
+        return "NS"
+    if su in ("SUSP", "SUSPENDED", "POSTP", "POSTPONED", "CANC", "CANCELLED", "ABAN", "ABANDONED"):
+        return s  # megtartjuk olvasható formában
+
+    # Ha a státusz maga egy perc (pl. "69")
+    if su.isdigit():
+        return "LIVE"
+
+    # Kezdési idő HH:MM – hagyd meg (adjust_time után)
+    if ":" in s and len(s) <= 5:
+        return s
+
+    return s
+
 def ensure_list(value):
     if value is None:
         return []
@@ -1299,6 +1344,7 @@ def get_matches():
 
                 raw_status = m.get("status", "live")
                 adjusted_status = adjust_time(raw_status)
+                adjusted_status = normalize_match_status(adjusted_status, minute_val)
 
                 matches_list.append({
                     "id": str(m.get("main_id", "")),
