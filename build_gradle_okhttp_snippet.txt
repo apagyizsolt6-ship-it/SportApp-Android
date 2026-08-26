@@ -1,0 +1,2 @@
+// Tedd az app/build.gradle.kts dependencies blokkjába, ha még nincs:
+implementation("com.squareup.okhttp3:okhttp:4.12.0")
