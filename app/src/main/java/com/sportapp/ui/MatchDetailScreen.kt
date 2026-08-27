@@ -67,12 +67,14 @@ fun MatchDetailDialog(
     onDismiss: () -> Unit,
     onVideoClick: (HighlightVideo) -> Unit
 ) {
-    val bg = if (isDarkMode) Color(0xFF101214) else Color(0xFFF4F6F8)
-    val card = if (isDarkMode) Color(0xFF1A1D21) else Color.White
-    val text = if (isDarkMode) Color(0xFFE8EAED) else Color(0xFF1A1D21)
-    val sub = if (isDarkMode) Color(0xFF9AA0A6) else Color(0xFF5F6368)
-    val green = Color(0xFF00E676)
-    val accent = Color(0xFF2979FF)
+    // Kék üveg paletta – egyezik a MatchScreen-nel
+    val bg = if (isDarkMode) Color(0xFF0B1426) else Color(0xFFE8F1FF)
+    val card = if (isDarkMode) Color(0xCC152238) else Color(0xB3FFFFFF)
+    val text = if (isDarkMode) Color(0xFFF0F6FF) else Color(0xFF0D1B2A)
+    val sub = if (isDarkMode) Color(0xFF9BB0C9) else Color(0xFF5A6F8A)
+    val green = Color(0xFF00E5A8)
+    val accent = Color(0xFF4DA3FF)
+    val glassBorder = if (isDarkMode) Color(0x33A0C4FF) else Color(0x55FFFFFF)
 
     var selectedTab by remember { mutableIntStateOf(0) }
     val tabs = listOf("Összefoglaló", "Események", "Statisztika", "Összeállítás", "Videók", "Tabella")
@@ -215,17 +217,41 @@ fun MatchDetailDialog(
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
         Surface(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(bg),
-            color = bg
+            modifier = Modifier.fillMaxSize(),
+            color = Color.Transparent
         ) {
-            Column(modifier = Modifier.fillMaxSize()) {
+            Box(modifier = Modifier.fillMaxSize()) {
+                // Gradiens háttér
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(
+                            brush = if (isDarkMode) {
+                                Brush.verticalGradient(
+                                    listOf(
+                                        Color(0xFF0A1628),
+                                        Color(0xFF122445),
+                                        Color(0xFF0D1B33)
+                                    )
+                                )
+                            } else {
+                                Brush.verticalGradient(
+                                    listOf(
+                                        Color(0xFFD6E8FF),
+                                        Color(0xFFEEF5FF),
+                                        Color(0xFFD0E4FF)
+                                    )
+                                )
+                            }
+                        )
+                )
+                Column(modifier = Modifier.fillMaxSize()) {
                 // Header
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .background(card)
+                        .border(0.5.dp, glassBorder)
                         .padding(horizontal = 12.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -450,8 +476,9 @@ fun MatchDetailDialog(
                     )
                 }
             }
-        }
-    }
+            } // Box (gradiens + tartalom)
+        } // Surface
+    } // Dialog
 
         if (showAi) {
             AlertDialog(
@@ -850,7 +877,7 @@ private fun OddsChip(label: String, value: Double?, text: Color, green: Color, m
     Column(
         modifier = modifier
             .clip(RoundedCornerShape(8.dp))
-            .background(Color(0xFF263238))
+            .background(Color(0xFF1A2D4D))
             .padding(vertical = 8.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {

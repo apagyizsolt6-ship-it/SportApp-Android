@@ -9,6 +9,7 @@ import android.webkit.WebViewClient
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -22,6 +23,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
@@ -140,37 +142,42 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
 
     val coroutineScope = rememberCoroutineScope()
 
+    // --- Kék üveg (glassmorphism) paletta ---
     val bgColor by animateColorAsState(
-        if (isDarkMode) Color(0xFF101214) else Color(0xFFF4F6F8),
+        if (isDarkMode) Color(0xFF0B1426) else Color(0xFFE8F1FF),
         label = "bg"
     )
 
+    // Kártya: áttetsző „üveg”
     val cardBgColor by animateColorAsState(
-        if (isDarkMode) Color(0xFF1A1D21) else Color(0xFFFFFFFF),
+        if (isDarkMode) Color(0xCC152238) else Color(0xB3FFFFFF),
         label = "card"
     )
 
     val headerBgColor by animateColorAsState(
-        if (isDarkMode) Color(0xFF16181C) else Color(0xFFFFFFFF),
+        if (isDarkMode) Color(0xD9111E33) else Color(0xCCF5F9FF),
         label = "header"
     )
 
     val leagueBgColor by animateColorAsState(
-        if (isDarkMode) Color(0xFF22262C) else Color(0xFFE9ECEF),
+        if (isDarkMode) Color(0x991A2D4D) else Color(0x99D6E6FF),
         label = "league"
     )
 
     val textColor by animateColorAsState(
-        if (isDarkMode) Color(0xFFFFFFFF) else Color(0xFF101214),
+        if (isDarkMode) Color(0xFFF0F6FF) else Color(0xFF0D1B2A),
         label = "text"
     )
 
     val subTextColor by animateColorAsState(
-        if (isDarkMode) Color(0xFF8C939D) else Color(0xFF6C757D),
+        if (isDarkMode) Color(0xFF9BB0C9) else Color(0xFF5A6F8A),
         label = "subtext"
     )
 
-    val primaryGreen = Color(0xFF00E676)
+    // Akcent: élénk aqua / zöld a sötét kéken
+    val primaryGreen = Color(0xFF00E5A8)
+    val glassBorder = if (isDarkMode) Color(0x33A0C4FF) else Color(0x55FFFFFF)
+    val accentBlue = Color(0xFF4DA3FF)
 
     // ============================================================
     // ELŐRE KIEMELT LIGÁK
@@ -189,67 +196,108 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
     // mert az például a "Premier League 2" ligát
     // tévesen kiemelné.
     //
-    val topFiveLeagueNames = remember {
-        setOf(
-            "PREMIER LEAGUE",
-            "BUNDESLIGA",
-            "SERIE A",
-            "LA LIGA",
-            "LIGUE 1"
-        )
+    // TOP 5 = csak az 5 nagy európai első osztály (ország-kötött).
+    // Algír / örmény / brazil stb. "Ligue 1" / "Serie A" NEM kerül bele.
+    val isTopFiveLeague: (String, String?) -> Boolean = { leagueName, countryCode ->
+        topFiveRank(leagueName, countryCode) != null
     }
 
-    val isTopFiveLeague: (String, String?) -> Boolean = { leagueName, countryCode ->
+    /** 0..4 = TOP sorrend, null = nem TOP. */
+    fun topFiveRank(leagueName: String?, countryCode: String?): Int? {
+        if (leagueName.isNullOrBlank()) return null
 
         val normalized = leagueName
             .trim()
             .uppercase()
-            .replace("Á", "A")
-            .replace("É", "E")
+            .replace('Á', 'A')
+            .replace('É', 'E')
+            .replace('Ó', 'O')
+            .replace('Ö', 'O')
+            .replace('Ő', 'O')
+            .replace('Ü', 'U')
+            .replace('Ű', 'U')
+            .replace('Í', 'I')
 
-        // Ha a liga neve ország-előtaggal érkezik,
-        // csak a liga tényleges részét nézzük.
-        //
-        // Például:
-        // "ANGLIA: PREMIER LEAGUE"
-        // -> "PREMIER LEAGUE"
-        //
-        // "ANGLIA: PREMIER LEAGUE 2"
-        // -> "PREMIER LEAGUE 2"
-        //
-        // Így a Premier League 2 nem kerül bele.
         val leagueOnly = normalized
             .substringAfterLast(":")
             .trim()
+            // "LA LIGA EA SPORTS" / "LALIGA" stb.
+            .replace(Regex("""\s+"""), " ")
 
-        val country = countryCode
-            ?.trim()
-            ?.uppercase()
-            .orEmpty()
+        val country = countryCode?.trim()?.uppercase().orEmpty()
 
-        when (leagueOnly) {
-
-            // A Premier League esetében az országot is ellenőrizzük,
-            // hogy például az Örmény Premier League SOHA ne legyen TOP 5.
-            "PREMIER LEAGUE" -> {
-                country == "GB" ||
-                        country == "UK" ||
-                        country == "EN" ||
-                        country == "ENG" ||
-                        normalized.contains("ANGLIA") ||
-                        normalized.contains("ENGLAND")
-            }
-
-            "BUNDESLIGA" -> true
-
-            "SERIE A" -> true
-
-            "LA LIGA" -> true
-
-            "LIGUE 1" -> true
-
-            else -> false
+        fun isCountry(codes: Set<String>, nameHints: Set<String>): Boolean {
+            if (country in codes) return true
+            return nameHints.any { normalized.contains(it) }
         }
+
+        // Másodosztály / ifi / női – soha ne legyen TOP
+        val secondTier = listOf(
+            "LIGUE 2", "SERIE B", "SEGUNDA", "CHAMPIONSHIP",
+            "PREMIER LEAGUE 2", "2. BUNDESLIGA", "BUNDESLIGA 2",
+            "BUNDESLIGA II", "LA LIGA 2", "LALIGA2", "PRIMERA FEDERACION",
+            "U19", "U21", "U23", "YOUTH", "WOMEN", "FEMININE", "NŐI"
+        )
+        if (secondTier.any { leagueOnly.contains(it) || normalized.contains(it) }) {
+            return null
+        }
+
+        // 0 Premier League – csak Anglia
+        val isPremier = leagueOnly == "PREMIER LEAGUE" ||
+                (leagueOnly.startsWith("PREMIER LEAGUE") && !leagueOnly.contains("2"))
+        if (isPremier && isCountry(
+                setOf("GB", "UK", "EN", "ENG", "GB-ENG"),
+                setOf("ANGLIA", "ENGLAND")
+            )
+        ) return 0
+
+        // 1 La Liga – csak Spanyolország (több névváltozat)
+        val isLaLiga = leagueOnly == "LA LIGA" ||
+                leagueOnly == "LALIGA" ||
+                leagueOnly.startsWith("LA LIGA ") ||
+                leagueOnly.startsWith("LALIGA ") ||
+                leagueOnly == "PRIMERA DIVISION" ||
+                leagueOnly == "PRIMERA DIVISIÓN" ||
+                leagueOnly.contains("LA LIGA") && !leagueOnly.contains("2") && !leagueOnly.contains("SEGUNDA")
+        if (isLaLiga && isCountry(
+                setOf("ES", "ESP", "SP"),
+                setOf("SPANYOL", "SPAIN", "ESPANA", "ESPAÑA")
+            )
+        ) return 1
+
+        // 2 Serie A – csak Olaszország (ne brazil)
+        val isSerieA = leagueOnly == "SERIE A" ||
+                (leagueOnly.startsWith("SERIE A") && !leagueOnly.contains("B"))
+        if (isSerieA && isCountry(
+                setOf("IT", "ITA"),
+                setOf("OLASZ", "ITALY", "ITALIA")
+            )
+        ) return 2
+
+        // 3 Bundesliga – csak Németország (ne osztrák)
+        val isBundes = leagueOnly == "BUNDESLIGA" ||
+                (leagueOnly.startsWith("BUNDESLIGA") && !leagueOnly.contains("2") && !leagueOnly.contains("II"))
+        if (isBundes && isCountry(
+                setOf("DE", "DEU", "GER"),
+                setOf("NEMET", "NÉMET", "GERMANY", "DEUTSCH")
+            )
+        ) return 3
+        // normalized already stripped accents so NEMET
+        if (isBundes && (normalized.contains("NEMET") || normalized.contains("GERMANY") || country in setOf("DE", "DEU", "GER"))) {
+            return 3
+        }
+
+        // 4 Ligue 1 – csak Franciaország (NE Algír, Marokkó, stb.)
+        val isLigue1 = leagueOnly == "LIGUE 1" ||
+                leagueOnly == "LIGUE1" ||
+                (leagueOnly.startsWith("LIGUE 1") && !leagueOnly.contains("2"))
+        if (isLigue1 && isCountry(
+                setOf("FR", "FRA"),
+                setOf("FRANCIA", "FRANCE")
+            )
+        ) return 4
+
+        return null
     }
 
     // ============================================================
@@ -342,16 +390,6 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
     // A TOP ligák fix sorrendben maradnak legelöl. Minden más liga
     // magyar ABC szerint követi őket. A kedvenc státusz nem írhatja
     // felül ezt a sorrendet.
-    val topLeagueRanks = remember {
-        mapOf(
-            "ANGLIA: PREMIER LEAGUE" to 0,
-            "SPANYOLORSZÁG: LA LIGA" to 1,
-            "OLASZORSZÁG: SERIE A" to 2,
-            "NÉMETORSZÁG: BUNDESLIGA" to 3,
-            "FRANCIAORSZÁG: LIGUE 1" to 4
-        )
-    }
-
     val groupedMatchesList = remember(
         filteredMatches,
         favoriteLeagueNames,
@@ -365,8 +403,12 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
             val aName = a.key.trim()
             val bName = b.key.trim()
 
-            val aRank = topLeagueRanks[aName.uppercase()]
-            val bRank = topLeagueRanks[bName.uppercase()]
+            // Országkód: a csoport első meccséből
+            val aCountry = a.value.firstOrNull()?.countryCode
+            val bCountry = b.value.firstOrNull()?.countryCode
+
+            val aRank = topFiveRank(aName, aCountry)
+            val bRank = topFiveRank(bName, bCountry)
 
             when {
                 aRank != null && bRank != null ->
@@ -390,10 +432,47 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                 collapsedLeagueNames.contains(it.key)
             }
 
-    Surface(
-        modifier = Modifier.fillMaxSize(),
-        color = bgColor
-    ) {
+    Box(modifier = Modifier.fillMaxSize()) {
+        // Mély kék gradiens háttér (üveg alatt)
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(
+                    brush = if (isDarkMode) {
+                        Brush.verticalGradient(
+                            colors = listOf(
+                                Color(0xFF0A1628),
+                                Color(0xFF122445),
+                                Color(0xFF0D1B33),
+                                Color(0xFF0A1424)
+                            )
+                        )
+                    } else {
+                        Brush.verticalGradient(
+                            colors = listOf(
+                                Color(0xFFD6E8FF),
+                                Color(0xFFEEF5FF),
+                                Color(0xFFE3EFFF),
+                                Color(0xFFD0E4FF)
+                            )
+                        )
+                    }
+                )
+        )
+        // Finom „fényfolt” fent
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(220.dp)
+                .background(
+                    brush = Brush.radialGradient(
+                        colors = listOf(
+                            if (isDarkMode) Color(0x334DA3FF) else Color(0x664DA3FF),
+                            Color.Transparent
+                        )
+                    )
+                )
+        )
 
         Column(
             modifier = Modifier.fillMaxSize()
@@ -407,6 +486,7 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(headerBgColor)
+                    .border(width = 0.5.dp, color = glassBorder)
                     .padding(
                         horizontal = 20.dp,
                         vertical = 14.dp
@@ -763,16 +843,16 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                             val leagueHeaderColor = when {
 
                                 isTopFive && isDarkMode ->
-                                    Color(0xFF5A4700)
+                                    Color(0xFF2A3F6A)
 
                                 isTopFive ->
-                                    Color(0xFFFFE8A3)
+                                    Color(0xFFB8D4FF)
 
                                 isUserHighlighted && isDarkMode ->
-                                    Color(0xFF3B3020)
+                                    Color(0xFF1E3A5F)
 
                                 isUserHighlighted ->
-                                    Color(0xFFFFF2D2)
+                                    Color(0xFFC5DDFF)
 
                                 else ->
                                     leagueBgColor
@@ -780,15 +860,8 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
 
                             val leagueHeaderTextColor =
                                 if (isTopFive) {
-
-                                    if (isDarkMode) {
-                                        Color(0xFFFFD54F)
-                                    } else {
-                                        Color(0xFF6D4C00)
-                                    }
-
+                                    if (isDarkMode) Color(0xFF9EC9FF) else Color(0xFF1A4A8A)
                                 } else {
-
                                     textColor
                                 }
 
@@ -1761,7 +1834,10 @@ fun PremiumMatchRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .padding(horizontal = 8.dp, vertical = 3.dp)
+            .clip(RoundedCornerShape(14.dp))
             .background(cardBgColor)
+            .border(1.dp, Color(0x28A0C4FF), RoundedCornerShape(14.dp))
             .clickable { onMatchClick(match) }
             .padding(
                 horizontal = 12.dp,
