@@ -68,6 +68,104 @@ private fun isMatchLive(status: String?, minute: Int?): Boolean {
     return true
 }
 
+/** 0..4 = TOP sorrend, null = nem TOP. */
+private fun topFiveRank(leagueName: String?, countryCode: String?): Int? {
+    if (leagueName.isNullOrBlank()) return null
+
+    val normalized = leagueName
+        .trim()
+        .uppercase()
+        .replace('Á', 'A')
+        .replace('É', 'E')
+        .replace('Ó', 'O')
+        .replace('Ö', 'O')
+        .replace('Ő', 'O')
+        .replace('Ü', 'U')
+        .replace('Ű', 'U')
+        .replace('Í', 'I')
+
+    val leagueOnly = normalized
+        .substringAfterLast(":")
+        .trim()
+        // "LA LIGA EA SPORTS" / "LALIGA" stb.
+        .replace(Regex("""\s+"""), " ")
+
+    val country = countryCode?.trim()?.uppercase().orEmpty()
+
+    fun isCountry(codes: Set<String>, nameHints: Set<String>): Boolean {
+        if (country in codes) return true
+        return nameHints.any { normalized.contains(it) }
+    }
+
+    // Másodosztály / ifi / női – soha ne legyen TOP
+    val secondTier = listOf(
+        "LIGUE 2", "SERIE B", "SEGUNDA", "CHAMPIONSHIP",
+        "PREMIER LEAGUE 2", "2. BUNDESLIGA", "BUNDESLIGA 2",
+        "BUNDESLIGA II", "LA LIGA 2", "LALIGA2", "PRIMERA FEDERACION",
+        "U19", "U21", "U23", "YOUTH", "WOMEN", "FEMININE", "NŐI"
+    )
+    if (secondTier.any { leagueOnly.contains(it) || normalized.contains(it) }) {
+        return null
+    }
+
+    // 0 Premier League – csak Anglia
+    val isPremier = leagueOnly == "PREMIER LEAGUE" ||
+            (leagueOnly.startsWith("PREMIER LEAGUE") && !leagueOnly.contains("2"))
+    if (isPremier && isCountry(
+            setOf("GB", "UK", "EN", "ENG", "GB-ENG"),
+            setOf("ANGLIA", "ENGLAND")
+        )
+    ) return 0
+
+    // 1 La Liga – csak Spanyolország (több névváltozat)
+    val isLaLiga = leagueOnly == "LA LIGA" ||
+            leagueOnly == "LALIGA" ||
+            leagueOnly.startsWith("LA LIGA ") ||
+            leagueOnly.startsWith("LALIGA ") ||
+            leagueOnly == "PRIMERA DIVISION" ||
+            leagueOnly == "PRIMERA DIVISIÓN" ||
+            leagueOnly.contains("LA LIGA") && !leagueOnly.contains("2") && !leagueOnly.contains("SEGUNDA")
+    if (isLaLiga && isCountry(
+            setOf("ES", "ESP", "SP"),
+            setOf("SPANYOL", "SPAIN", "ESPANA", "ESPAÑA")
+        )
+    ) return 1
+
+    // 2 Serie A – csak Olaszország (ne brazil)
+    val isSerieA = leagueOnly == "SERIE A" ||
+            (leagueOnly.startsWith("SERIE A") && !leagueOnly.contains("B"))
+    if (isSerieA && isCountry(
+            setOf("IT", "ITA"),
+            setOf("OLASZ", "ITALY", "ITALIA")
+        )
+    ) return 2
+
+    // 3 Bundesliga – csak Németország (ne osztrák)
+    val isBundes = leagueOnly == "BUNDESLIGA" ||
+            (leagueOnly.startsWith("BUNDESLIGA") && !leagueOnly.contains("2") && !leagueOnly.contains("II"))
+    if (isBundes && isCountry(
+            setOf("DE", "DEU", "GER"),
+            setOf("NEMET", "NÉMET", "GERMANY", "DEUTSCH")
+        )
+    ) return 3
+    // normalized already stripped accents so NEMET
+    if (isBundes && (normalized.contains("NEMET") || normalized.contains("GERMANY") || country in setOf("DE", "DEU", "GER"))) {
+        return 3
+    }
+
+    // 4 Ligue 1 – csak Franciaország (NE Algír, Marokkó, stb.)
+    val isLigue1 = leagueOnly == "LIGUE 1" ||
+            leagueOnly == "LIGUE1" ||
+            (leagueOnly.startsWith("LIGUE 1") && !leagueOnly.contains("2"))
+    if (isLigue1 && isCountry(
+            setOf("FR", "FRA"),
+            setOf("FRANCIA", "FRANCE")
+        )
+    ) return 4
+
+    return null
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
@@ -202,103 +300,7 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
         topFiveRank(leagueName, countryCode) != null
     }
 
-    /** 0..4 = TOP sorrend, null = nem TOP. */
-    fun topFiveRank(leagueName: String?, countryCode: String?): Int? {
-        if (leagueName.isNullOrBlank()) return null
 
-        val normalized = leagueName
-            .trim()
-            .uppercase()
-            .replace('Á', 'A')
-            .replace('É', 'E')
-            .replace('Ó', 'O')
-            .replace('Ö', 'O')
-            .replace('Ő', 'O')
-            .replace('Ü', 'U')
-            .replace('Ű', 'U')
-            .replace('Í', 'I')
-
-        val leagueOnly = normalized
-            .substringAfterLast(":")
-            .trim()
-            // "LA LIGA EA SPORTS" / "LALIGA" stb.
-            .replace(Regex("""\s+"""), " ")
-
-        val country = countryCode?.trim()?.uppercase().orEmpty()
-
-        fun isCountry(codes: Set<String>, nameHints: Set<String>): Boolean {
-            if (country in codes) return true
-            return nameHints.any { normalized.contains(it) }
-        }
-
-        // Másodosztály / ifi / női – soha ne legyen TOP
-        val secondTier = listOf(
-            "LIGUE 2", "SERIE B", "SEGUNDA", "CHAMPIONSHIP",
-            "PREMIER LEAGUE 2", "2. BUNDESLIGA", "BUNDESLIGA 2",
-            "BUNDESLIGA II", "LA LIGA 2", "LALIGA2", "PRIMERA FEDERACION",
-            "U19", "U21", "U23", "YOUTH", "WOMEN", "FEMININE", "NŐI"
-        )
-        if (secondTier.any { leagueOnly.contains(it) || normalized.contains(it) }) {
-            return null
-        }
-
-        // 0 Premier League – csak Anglia
-        val isPremier = leagueOnly == "PREMIER LEAGUE" ||
-                (leagueOnly.startsWith("PREMIER LEAGUE") && !leagueOnly.contains("2"))
-        if (isPremier && isCountry(
-                setOf("GB", "UK", "EN", "ENG", "GB-ENG"),
-                setOf("ANGLIA", "ENGLAND")
-            )
-        ) return 0
-
-        // 1 La Liga – csak Spanyolország (több névváltozat)
-        val isLaLiga = leagueOnly == "LA LIGA" ||
-                leagueOnly == "LALIGA" ||
-                leagueOnly.startsWith("LA LIGA ") ||
-                leagueOnly.startsWith("LALIGA ") ||
-                leagueOnly == "PRIMERA DIVISION" ||
-                leagueOnly == "PRIMERA DIVISIÓN" ||
-                leagueOnly.contains("LA LIGA") && !leagueOnly.contains("2") && !leagueOnly.contains("SEGUNDA")
-        if (isLaLiga && isCountry(
-                setOf("ES", "ESP", "SP"),
-                setOf("SPANYOL", "SPAIN", "ESPANA", "ESPAÑA")
-            )
-        ) return 1
-
-        // 2 Serie A – csak Olaszország (ne brazil)
-        val isSerieA = leagueOnly == "SERIE A" ||
-                (leagueOnly.startsWith("SERIE A") && !leagueOnly.contains("B"))
-        if (isSerieA && isCountry(
-                setOf("IT", "ITA"),
-                setOf("OLASZ", "ITALY", "ITALIA")
-            )
-        ) return 2
-
-        // 3 Bundesliga – csak Németország (ne osztrák)
-        val isBundes = leagueOnly == "BUNDESLIGA" ||
-                (leagueOnly.startsWith("BUNDESLIGA") && !leagueOnly.contains("2") && !leagueOnly.contains("II"))
-        if (isBundes && isCountry(
-                setOf("DE", "DEU", "GER"),
-                setOf("NEMET", "NÉMET", "GERMANY", "DEUTSCH")
-            )
-        ) return 3
-        // normalized already stripped accents so NEMET
-        if (isBundes && (normalized.contains("NEMET") || normalized.contains("GERMANY") || country in setOf("DE", "DEU", "GER"))) {
-            return 3
-        }
-
-        // 4 Ligue 1 – csak Franciaország (NE Algír, Marokkó, stb.)
-        val isLigue1 = leagueOnly == "LIGUE 1" ||
-                leagueOnly == "LIGUE1" ||
-                (leagueOnly.startsWith("LIGUE 1") && !leagueOnly.contains("2"))
-        if (isLigue1 && isCountry(
-                setOf("FR", "FRA"),
-                setOf("FRANCIA", "FRANCE")
-            )
-        ) return 4
-
-        return null
-    }
 
     // ============================================================
     // LIGA NYITÁS / ZÁRÁS
