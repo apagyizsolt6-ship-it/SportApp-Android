@@ -538,8 +538,8 @@ private fun formatStatValue(name: String?, raw: Any?): String {
 
 private fun huStatName(raw: String?): String {
     if (raw.isNullOrBlank()) return "—"
-    val key = raw.trim().lowercase()
-    val map = mapOf(
+    val key = raw.trim().lowercase().replace(Regex("""\s+"""), " ")
+    val map = linkedMapOf(
         "shots accuracy" to "Lövéspontosság",
         "shot accuracy" to "Lövéspontosság",
         "shots on target" to "Kapura lövés",
@@ -547,6 +547,7 @@ private fun huStatName(raw: String?): String {
         "blocked shots" to "Blokkolt lövés",
         "shots blocked" to "Blokkolt lövés",
         "total shots" to "Összes lövés",
+        "shots total" to "Összes lövés",
         "shots" to "Lövések",
         "fouls" to "Szabálytalanság",
         "corners" to "Szöglet",
@@ -558,27 +559,58 @@ private fun huStatName(raw: String?): String {
         "red cards" to "Piros lap",
         "goalkeeper saves" to "Kapus védés",
         "saves" to "Védések",
-        "passes" to "Passzok",
+        "total passes" to "Összes passz",
+        "passes total" to "Összes passz",
         "accurate passes" to "Pontos passz",
+        "passes accurate" to "Pontos passz",
         "pass accuracy" to "Passzpontosság",
+        "key passes" to "Kulcspassz",
+        "passes" to "Passzok",
         "expected goals" to "Várható gól (xG)",
+        "expected goals (xg)" to "Várható gól (xG)",
         "xg" to "Várható gól (xG)",
+        "expected assists" to "Várható gólpassz (xA)",
+        "expected assists (xa)" to "Várható gólpassz (xA)",
+        "xa" to "Várható gólpassz (xA)",
         "attacks" to "Támadás",
         "dangerous attacks" to "Veszélyes támadás",
         "throw-ins" to "Bedobás",
+        "throw ins" to "Bedobás",
         "free kicks" to "Szabadrúgás",
         "goal kicks" to "Kapusrúgás",
+        "total tackles" to "Összes szerelés",
+        "tackles won" to "Nyert szerelés",
         "tackles" to "Szerelés",
         "interceptions" to "Labdaszerzés",
         "clearances" to "Kiszabadítás",
+        "accurate crosses" to "Pontos beadás",
+        "crosses accurate" to "Pontos beadás",
+        "total crosses" to "Összes beadás",
         "crosses" to "Beadás",
-        "big chances" to "Nagy helyzet",
+        "counter attacks" to "Kontratámadás",
+        "hits woodwork" to "Kapufák",
         "big chances missed" to "Elpuskázott nagy helyzet",
+        "big chances created" to "Kialakított nagy helyzet",
+        "big chances" to "Nagy helyzet",
         "duels won" to "Nyert párharc",
-        "aerials won" to "Fejpárbaj"
+        "duels" to "Párharc",
+        "aerials won" to "Fejpárbaj",
+        "aerials" to "Fejpárbaj",
+        "successful dribbles" to "Sikeres csel",
+        "dribbles successful" to "Sikeres csel",
+        "dribbles succeeded" to "Sikeres csel",
+        "dribbles attempted" to "Próbált csel",
+        "dribbles" to "Cselt",
+        "substitutions" to "Csere",
+        "passes in final third" to "Passz a 16-osban",
+        "long balls" to "Hosszú labda",
+        "accurate long balls" to "Pontos hosszú labda"
     )
     map[key]?.let { return it }
-    map.entries.firstOrNull { key.contains(it.key) }?.value?.let { return it }
+    // csak hosszú (>=8) kulcs részleges egyezése, hossz szerint csökkenő
+    map.keys.sortedByDescending { it.length }
+        .firstOrNull { it.length >= 8 && key.contains(it) }
+        ?.let { return map[it]!! }
     return raw.trim()
 }
 
