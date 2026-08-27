@@ -4,35 +4,16 @@ import requests
 import re
 import os
 import time
-import random
-import math
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
-try:
-    from google import genai as google_genai
-except ImportError:
-    google_genai = None
 
 app = FastAPI()
 
 STATPAL_KEY = os.getenv("STATPAL_KEY")
 HIGHLIGHTLY_KEY = os.getenv("HIGHLIGHTLY_KEY")
-GEMINI_KEY = os.getenv("GEMINI_KEY")
-
-# Új Google Gen AI SDK kliens (google-genai csomag)
-_gemini_client = None
-if GEMINI_KEY and google_genai is not None:
-    try:
-        _gemini_client = google_genai.Client(api_key=GEMINI_KEY)
-    except Exception as e:
-        print(f"[AI INIT ERROR] {e}")
-        _gemini_client = None
 
 STATPAL_CACHE_TTL = 20
-HIGHLIGHTLY_CACHE_TTL = 300  # 5 perc – ne blokkolja a meccslistát gyakran
+HIGHLIGHTLY_CACHE_TTL = 90
 TEAM_IMAGE_CACHE_TTL = 21600
-AI_CACHE_TTL = 43200
-
 IMAGE_PROXY_BASE_URL = os.getenv(
     "IMAGE_PROXY_BASE_URL",
     "https://sportapp-android.onrender.com"
@@ -42,7 +23,293 @@ _statpal_cache = {"data": None, "ts": 0.0}
 _highlightly_cache = {"data": None, "ts": 0.0}
 _team_image_cache = {}
 _highlightly_match_cache = {}
-_ai_analysis_cache = {}
+
+
+_detail_cache = {}
+_lineups_cache = {}
+_stats_cache = {}
+DETAIL_CACHE_TTL = 20
+LINEUPS_CACHE_TTL = 120
+STATS_CACHE_TTL = 30
+
+
+def _normalize_statpal_events(events):
+    """StatPal event list -> egységes, mobilbarát formátum."""
+    result = []
+    for ev in events or []:
+        if not isinstance(ev, dict):
+            continue
+        raw_type = str(ev.get("type") or "").strip().lower()
+        team = str(ev.get("team") or "").strip().lower()
+        if team not in ("home", "away"):
+            # néha "1"/"2" vagy csapatnév jön
+            if team in ("1", "h"):
+                team = "home"
+            elif team in ("2", "a"):
+                team = "away"
+        minute = ev.get("minute")
+        try:
+            minute_int = int(str(minute).replace("'", "").split("+")[0]) if minute is not None else None
+        except Exception:
+            minute_int = None
+        minute_display = str(minute).strip() if minute is not None else ""
+        player = ev.get("player") or ev.get("player_name") or ""
+        assist = ev.get("assist_player") or ev.get("assist") or ""
+        result_score = ev.get("result") or ""
+
+        # típus normalizálás
+        if "goal" in raw_type and "own" in raw_type:
+            norm_type = "own_goal"
+        elif "goal" in raw_type:
+            norm_type = "goal"
+        elif "yellow" in raw_type:
+            norm_type = "yellowcard"
+        elif "red" in raw_type:
+            norm_type = "redcard"
+        elif "sub" in raw_type:
+            norm_type = "substitution"
+        elif "var" in raw_type:
+            norm_type = "var"
+        elif "pen" in raw_type and "miss" in raw_type:
+            norm_type = "missed_penalty"
+        elif "pen" in raw_type:
+            norm_type = "penalty"
+        else:
+            norm_type = raw_type or "event"
+
+        result.append({
+            "type": norm_type,
+            "team": team if team in ("home", "away") else "",
+            "minute": minute_int,
+            "minute_display": minute_display,
+            "player": str(player).strip() if player else None,
+            "assist": str(assist).strip() if assist else None,
+            "result": str(result_score).strip() if result_score else None,
+        })
+    return result
+
+
+def _find_statpal_raw_match(match_id: str):
+    """StatPal cache-ből megkeresi a raw meccset main_id alapján."""
+    data = fetch_statpal_matches()
+    if not isinstance(data, dict):
+        return None, None
+    live_matches_data = (
+        data.get("live_matches")
+        or data.get("matches")
+        or {}
+    )
+    if not isinstance(live_matches_data, dict):
+        return None, None
+    leagues = ensure_list(live_matches_data.get("league"))
+    target = str(match_id).strip()
+    for league in leagues:
+        if not isinstance(league, dict):
+            continue
+        for m in ensure_list(league.get("match")):
+            if not isinstance(m, dict):
+                continue
+            mid = str(m.get("main_id") or "").strip()
+            if mid == target:
+                return m, league
+    return None, None
+
+
+def _highlightly_headers():
+    return {"x-rapidapi-key": HIGHLIGHTLY_KEY}
+
+
+def fetch_highlightly_match_detail(highlight_match_id: str):
+    """Highlightly GET /matches/{id} – events, stats, venue, stb."""
+    if not HIGHLIGHTLY_KEY or not highlight_match_id:
+        return None
+    cache_key = str(highlight_match_id).strip()
+    now = time.time()
+    cached = _detail_cache.get(cache_key)
+    if cached and (now - cached["ts"]) < DETAIL_CACHE_TTL:
+        return cached["data"]
+    try:
+        resp = requests.get(
+            f"https://soccer.highlightly.net/matches/{cache_key}",
+            headers=_highlightly_headers(),
+            timeout=10,
+        )
+        if resp.status_code != 200:
+            return None
+        payload = resp.json()
+        # válasz lehet lista vagy dict
+        if isinstance(payload, list) and payload:
+            data = payload[0]
+        elif isinstance(payload, dict):
+            data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+        else:
+            data = None
+        if isinstance(data, dict):
+            _detail_cache[cache_key] = {"data": data, "ts": now}
+            return data
+    except Exception:
+        pass
+    return None
+
+
+def fetch_highlightly_lineups(highlight_match_id: str):
+    if not HIGHLIGHTLY_KEY or not highlight_match_id:
+        return None
+    cache_key = str(highlight_match_id).strip()
+    now = time.time()
+    cached = _lineups_cache.get(cache_key)
+    if cached and (now - cached["ts"]) < LINEUPS_CACHE_TTL:
+        return cached["data"]
+    try:
+        resp = requests.get(
+            f"https://soccer.highlightly.net/lineups/{cache_key}",
+            headers=_highlightly_headers(),
+            timeout=10,
+        )
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        if isinstance(data, dict):
+            _lineups_cache[cache_key] = {"data": data, "ts": now}
+            return data
+    except Exception:
+        pass
+    return None
+
+
+def fetch_highlightly_statistics(highlight_match_id: str):
+    """Először match detail statistics mező, fallback /statistics/{id}."""
+    if not HIGHLIGHTLY_KEY or not highlight_match_id:
+        return []
+    cache_key = str(highlight_match_id).strip()
+    now = time.time()
+    cached = _stats_cache.get(cache_key)
+    if cached and (now - cached["ts"]) < STATS_CACHE_TTL:
+        return cached["data"]
+
+    stats = []
+    detail = fetch_highlightly_match_detail(cache_key)
+    if isinstance(detail, dict):
+        raw = detail.get("statistics")
+        if isinstance(raw, list):
+            stats = raw
+    if not stats:
+        try:
+            resp = requests.get(
+                f"https://soccer.highlightly.net/statistics/{cache_key}",
+                headers=_highlightly_headers(),
+                timeout=10,
+            )
+            if resp.status_code == 200:
+                payload = resp.json()
+                if isinstance(payload, list):
+                    stats = payload
+                elif isinstance(payload, dict):
+                    inner = payload.get("data") or payload.get("statistics")
+                    if isinstance(inner, list):
+                        stats = inner
+        except Exception:
+            pass
+    _stats_cache[cache_key] = {"data": stats, "ts": now}
+    return stats
+
+
+def _normalize_lineups(raw):
+    """Highlightly lineups válasz → egyszerű home/away struktúra."""
+    if not isinstance(raw, dict):
+        return {"home": None, "away": None}
+
+    def side(key):
+        block = raw.get(key) or raw.get(key.capitalize()) or {}
+        if not isinstance(block, dict):
+            return None
+        formation = block.get("formation") or block.get("Formation")
+        initial = block.get("initialLineup") or block.get("lineup") or []
+        bench = block.get("bench") or block.get("substitutes") or []
+        team = block.get("team") if isinstance(block.get("team"), dict) else {}
+        players = []
+        # initialLineup gyakran list of rows (list of lists)
+        if isinstance(initial, list):
+            for row in initial:
+                if isinstance(row, list):
+                    for p in row:
+                        if isinstance(p, dict):
+                            players.append({
+                                "name": p.get("name") or p.get("playerName"),
+                                "number": p.get("number") or p.get("shirtNumber"),
+                                "position": p.get("position"),
+                                "is_bench": False,
+                            })
+                elif isinstance(row, dict):
+                    players.append({
+                        "name": row.get("name") or row.get("playerName"),
+                        "number": row.get("number") or row.get("shirtNumber"),
+                        "position": row.get("position"),
+                        "is_bench": False,
+                    })
+        if isinstance(bench, list):
+            for p in bench:
+                if isinstance(p, dict):
+                    players.append({
+                        "name": p.get("name") or p.get("playerName"),
+                        "number": p.get("number") or p.get("shirtNumber"),
+                        "position": p.get("position"),
+                        "is_bench": True,
+                    })
+        return {
+            "team_name": team.get("name") or block.get("teamName"),
+            "formation": formation,
+            "players": players,
+        }
+
+    return {
+        "home": side("home"),
+        "away": side("away"),
+    }
+
+
+def _normalize_statistics(raw_list):
+    """Highlightly statistics → párosított home/away értékek."""
+    if not isinstance(raw_list, list) or not raw_list:
+        return []
+    # Formátum A: [{team: {...}, statistics: [{displayName, value}]}]
+    by_name = {}
+    teams_order = []
+    for block in raw_list:
+        if not isinstance(block, dict):
+            continue
+        team = block.get("team") if isinstance(block.get("team"), dict) else {}
+        team_name = team.get("name") or "Team"
+        if team_name not in teams_order:
+            teams_order.append(team_name)
+        for s in block.get("statistics") or []:
+            if not isinstance(s, dict):
+                continue
+            name = s.get("displayName") or s.get("name") or ""
+            if not name:
+                continue
+            val = s.get("value")
+            by_name.setdefault(name, {})[team_name] = val
+    result = []
+    if len(teams_order) >= 2:
+        home_name, away_name = teams_order[0], teams_order[1]
+        for name, vals in by_name.items():
+            result.append({
+                "name": name,
+                "home": vals.get(home_name),
+                "away": vals.get(away_name),
+            })
+    elif by_name:
+        only = teams_order[0] if teams_order else ""
+        for name, vals in by_name.items():
+            result.append({
+                "name": name,
+                "home": vals.get(only),
+                "away": None,
+            })
+    return result
+
+
 
 TOP_LEAGUES_ORDER = [
     "ANGLIA: Premier League",
@@ -51,6 +318,7 @@ TOP_LEAGUES_ORDER = [
     "NÉMETORSZÁG: Bundesliga",
     "FRANCIAORSZÁG: Ligue 1"
 ]
+
 
 TRANSLATIONS = {
     "england": "Anglia",
@@ -108,6 +376,7 @@ TRANSLATIONS = {
     "faroe islands": "Feröer-szigetek",
     "uzbekistan": "Üzbegisztán",
     "venezuela": "Venezuela",
+
     "canada": "Kanada",
     "chile": "Chile",
     "china": "Kína",
@@ -153,6 +422,8 @@ TRANSLATIONS = {
     "zambia": "Zambia",
     "zimbabwe": "Zimbabwe",
     "mauritius": "Mauritius",
+
+    # További országok – zászló + magyar ország név
     "armenia": "Örményország",
     "belarus": "Fehéroroszország",
     "north macedonia": "Észak-Macedónia",
@@ -170,6 +441,7 @@ TRANSLATIONS = {
     "thailand": "Thaiföld",
     "philippines": "Fülöp-szigetek",
     "indonesia": "Indonézia",
+    "south sudan": "Dél-Szudán",
     "uganda": "Uganda",
     "senegal": "Szenegál",
     "cameroon": "Kamerun",
@@ -196,14 +468,18 @@ TRANSLATIONS = {
     "syria": "Szíria",
     "albania": "Albánia",
     "montenegro": "Montenegró",
-    "moldova": "Moldova"
+    "moldova": "Moldova",
+    "bulgaria": "Bulgária"
 }
+
 
 def translate_text(text):
     if not text:
         return ""
+
     clean = str(text).replace("_", " ").strip()
     key = " ".join(clean.lower().split())
+
     aliases = {
         "bosnia-herzegovina": "bosnia and herzegovina",
         "bosnia & herzegovina": "bosnia and herzegovina",
@@ -215,22 +491,30 @@ def translate_text(text):
         "czech republic": "czech republic",
         "saudiarabia": "saudi arabia",
     }
+
     key = aliases.get(key, key)
+
     return TRANSLATIONS.get(key, clean.title())
+
 
 def format_league_title(raw_country, raw_league):
     country_hu = translate_text(raw_country).upper()
     league_clean = str(raw_league or "Egyéb Bajnokság").strip()
+
     if ":" in league_clean:
         parts = league_clean.split(":")
         league_clean = parts[-1].strip()
+
     if country_hu and country_hu not in league_clean.upper():
         return f"{country_hu}: {league_clean}"
+
     return league_clean
+
 
 def adjust_time(time_str):
     if not time_str or ":" not in str(time_str):
         return time_str
+
     try:
         dt = datetime.strptime(str(time_str).strip(), "%H:%M")
         dt_adj = dt + timedelta(hours=2)
@@ -239,310 +523,534 @@ def adjust_time(time_str):
         return time_str
 
 
-def normalize_match_status(raw_status, minute_val=0):
-    """
-    Egységes státusz a kliensnek.
-    Befejezett: FT / AET / PEN
-    Élő: 1H / 2H / HT / LIVE / ET vagy perc-szám
-    """
-    s = str(raw_status or "").strip()
-    su = s.upper().replace(".", "").replace(" ", "")
-    try:
-        minute_val = int(minute_val or 0)
-    except (TypeError, ValueError):
-        minute_val = 0
-
-    if su in ("FT", "FINISHED", "FULLTIME", "FULL-TIME", "ENDED", "AFTERFT"):
-        return "FT"
-    if su in ("AET", "AFTEREXTRATIME", "AETIME"):
-        return "AET"
-    if su in ("PEN", "PENS", "PENALTIES", "PSO", "PENALTY"):
-        return "PEN"
-    if su in ("HT", "HALFTIME", "HALF-TIME", "PAUSE"):
-        return "HT"
-    if su in ("1H", "FIRSTHALF", "H1"):
-        return "1H"
-    if su in ("2H", "SECONDHALF", "H2"):
-        return "2H"
-    if su in ("ET", "EXTRATIME", "AETLIVE"):
-        return "ET"
-    if su in ("LIVE", "INPLAY", "INPROGRESS"):
-        return "LIVE"
-    if su in ("NS", "NOTSTARTED", "SCHEDULED", "TBD"):
-        return "NS"
-    if su in ("SUSP", "SUSPENDED", "POSTP", "POSTPONED", "CANC", "CANCELLED", "ABAN", "ABANDONED"):
-        return s  # megtartjuk olvasható formában
-
-    # Ha a státusz maga egy perc (pl. "69")
-    if su.isdigit():
-        return "LIVE"
-
-    # Kezdési idő HH:MM – hagyd meg (adjust_time után)
-    if ":" in s and len(s) <= 5:
-        return s
-
-    return s
-
 def ensure_list(value):
     if value is None:
         return []
+
     if isinstance(value, list):
         return value
+
     if isinstance(value, dict):
         return [value]
+
     return []
 
+
 def _find_image_url(value):
+    """
+    Kinyeri a StatPal válaszából a csapat/league kép URL-jét,
+    ha az API az adott válaszban biztosít ilyen mezőt.
+    Nem gyártunk saját URL-t.
+    """
     if isinstance(value, dict):
         preferred_keys = (
-            "logo_url", "logo", "image_url", "image", "crest_url",
-            "crest", "team_logo_url", "team_logo", "icon_url", "icon",
-            "badge_url", "badge"
+            "logo_url",
+            "logo",
+            "image_url",
+            "image",
+            "crest_url",
+            "crest",
+            "team_logo_url",
+            "team_logo",
+            "icon_url",
+            "icon",
+            "badge_url",
+            "badge"
         )
+
         for key in preferred_keys:
             candidate = value.get(key)
-            if isinstance(candidate, str) and candidate.strip().startswith(("http://", "https://")):
+
+            if (
+                isinstance(candidate, str)
+                and candidate.strip().startswith(("http://", "https://"))
+            ):
                 return candidate.strip()
+
         for nested_key in ("team", "club", "data", "info"):
             found = _find_image_url(value.get(nested_key))
+
             if found:
                 return found
+
     elif isinstance(value, list):
         for item in value:
             found = _find_image_url(item)
+
             if found:
                 return found
+
     return None
 
+
 def _country_code(raw_country):
+    """
+    Magyar országnevekhez tartozó ISO 3166-1 alpha-2 kód.
+
+    A mobil kliens ez alapján rajzol zászlót. Ha egy ország itt hiányzik,
+    a felületen földgömb jelenik meg, ezért a gyakori StatPal elnevezéseket
+    és a mai meccslistán előforduló országokat is kezeljük.
+    """
     if not raw_country:
         return ""
-    key = " ".join(str(raw_country).replace("_", " ").strip().lower().split())
+
+    key = " ".join(
+        str(raw_country)
+        .replace("_", " ")
+        .replace("-", " ")
+        .replace("&", " and ")
+        .strip()
+        .lower()
+        .split()
+    )
+
     aliases = {
-        "england": "gb", "scotland": "gb", "wales": "gb", "northern ireland": "gb",
-        "spain": "es", "italy": "it", "germany": "de", "france": "fr", "hungary": "hu",
-        "argentina": "ar", "armenia": "am", "australia": "au", "austria": "at",
-        "belarus": "by", "belgium": "be", "bolivia": "bo", "bosnia and herzegovina": "ba",
-        "bosnia & herzegovina": "ba", "brazil": "br", "brazilia": "br", "bulgaria": "bg",
-        "canada": "ca", "chile": "cl", "china": "cn", "china pr": "cn", "colombia": "co",
-        "costa rica": "cr", "croatia": "hr", "cyprus": "cy", "czechia": "cz",
-        "czech republic": "cz", "denmark": "dk", "dominican republic": "do",
-        "ecuador": "ec", "equador": "ec", "egypt": "eg", "el salvador": "sv",
-        "estonia": "ee", "ethiopia": "et", "faroe islands": "fo", "fiji": "fj",
-        "finland": "fi", "georgia": "ge", "ghana": "gh", "gibraltar": "gi",
-        "greece": "gr", "guatemala": "gt", "honduras": "hn", "hong kong": "hk",
-        "iceland": "is", "india": "in", "indonesia": "id", "iran": "ir", "iraq": "iq",
-        "ireland": "ie", "israel": "il", "ivory coast": "ci", "cote d'ivoire": "ci",
-        "jamaica": "jm", "japan": "jp", "jordan": "jo", "kazakhstan": "kz", "kenya": "ke",
-        "korea": "kr", "korea republic": "kr", "kosovo": "xk", "kyrgyzstan": "kg",
-        "kuwait": "kw", "latvia": "lv", "lebanon": "lb", "lithuania": "lt",
-        "luxembourg": "lu", "malaysia": "my", "malta": "mt", "mauritius": "mu",
-        "mexico": "mx", "moldova": "md", "montenegro": "me", "morocco": "ma",
-        "mozambique": "mz", "netherlands": "nl", "new caledonia": "nc", "new zealand": "nz",
-        "nicaragua": "ni", "nigeria": "ng", "north macedonia": "mk", "macedonia": "mk",
-        "norway": "no", "oman": "om", "panama": "pa", "paraguay": "py", "peru": "pe",
-        "philippines": "ph", "poland": "pl", "portugal": "pt", "qatar": "qa",
-        "romania": "ro", "russia": "ru", "saudi arabia": "sa", "saudiarabia": "sa",
-        "senegal": "sn", "serbia": "rs", "singapore": "sg", "slovakia": "sk",
-        "slovenia": "si", "south africa": "za", "south korea": "kr", "south sudan": "ss",
-        "sri lanka": "lk", "sweden": "se", "switzerland": "ch", "taiwan": "tw",
-        "tanzania": "tz", "thailand": "th", "togo": "tg", "trinidad and tobago": "tt",
-        "tunisia": "tn", "turkey": "tr", "uganda": "ug", "ukraine": "ua",
-        "united arab emirates": "ae", "uae": "ae", "uruguay": "uy", "usa": "us",
-        "uzbekistan": "uz", "venezuela": "ve", "vietnam": "vn", "world": "", "europe": "",
-        "zambia": "zm", "zimbabwe": "zw"
+        "england": "gb",
+        "scotland": "gb",
+        "wales": "gb",
+        "northern ireland": "gb",
+
+        "spain": "es",
+        "italy": "it",
+        "germany": "de",
+        "france": "fr",
+        "hungary": "hu",
+
+        "argentina": "ar",
+        "armenia": "am",
+        "australia": "au",
+        "austria": "at",
+        "belarus": "by",
+        "belgium": "be",
+        "bolivia": "bo",
+        "bosnia and herzegovina": "ba",
+        "bosnia & herzegovina": "ba",
+        "brazil": "br",
+        "brazilia": "br",
+        "bulgaria": "bg",
+        "canada": "ca",
+        "chile": "cl",
+        "china": "cn",
+        "china pr": "cn",
+        "colombia": "co",
+        "costa rica": "cr",
+        "croatia": "hr",
+        "cyprus": "cy",
+        "czechia": "cz",
+        "czech republic": "cz",
+        "denmark": "dk",
+        "dominican republic": "do",
+        "ecuador": "ec",
+        "equador": "ec",
+        "egypt": "eg",
+        "el salvador": "sv",
+        "estonia": "ee",
+        "ethiopia": "et",
+        "faroe islands": "fo",
+        "fiji": "fj",
+        "finland": "fi",
+        "georgia": "ge",
+        "germany": "de",
+        "ghana": "gh",
+        "gibraltar": "gi",
+        "greece": "gr",
+        "guatemala": "gt",
+        "honduras": "hn",
+        "hong kong": "hk",
+        "iceland": "is",
+        "india": "in",
+        "indonesia": "id",
+        "iran": "ir",
+        "iraq": "iq",
+        "ireland": "ie",
+        "israel": "il",
+        "ivory coast": "ci",
+        "cote d'ivoire": "ci",
+        "jamaica": "jm",
+        "japan": "jp",
+        "jordan": "jo",
+        "kazakhstan": "kz",
+        "kenya": "ke",
+        "korea": "kr",
+        "korea republic": "kr",
+        "kosovo": "xk",
+        "kyrgyzstan": "kg",
+        "kuwait": "kw",
+        "latvia": "lv",
+        "lebanon": "lb",
+        "lithuania": "lt",
+        "luxembourg": "lu",
+        "malaysia": "my",
+        "malta": "mt",
+        "mauritius": "mu",
+        "mexico": "mx",
+        "moldova": "md",
+        "montenegro": "me",
+        "morocco": "ma",
+        "mozambique": "mz",
+        "netherlands": "nl",
+        "new caledonia": "nc",
+        "new zealand": "nz",
+        "nicaragua": "ni",
+        "nigeria": "ng",
+        "north macedonia": "mk",
+        "macedonia": "mk",
+        "norway": "no",
+        "oman": "om",
+        "panama": "pa",
+        "paraguay": "py",
+        "peru": "pe",
+        "philippines": "ph",
+        "poland": "pl",
+        "portugal": "pt",
+        "qatar": "qa",
+        "romania": "ro",
+        "russia": "ru",
+        "saudi arabia": "sa",
+        "saudiarabia": "sa",
+        "scotland": "gb",
+        "senegal": "sn",
+        "serbia": "rs",
+        "singapore": "sg",
+        "slovakia": "sk",
+        "slovenia": "si",
+        "south africa": "za",
+        "south korea": "kr",
+        "south sudan": "ss",
+        "spain": "es",
+        "sri lanka": "lk",
+        "srilanka": "lk",
+        "sweden": "se",
+        "switzerland": "ch",
+        "taiwan": "tw",
+        "tanzania": "tz",
+        "tanzania united republic of": "tz",
+        "thailand": "th",
+        "togo": "tg",
+        "trinidad and tobago": "tt",
+        "tunisia": "tn",
+        "turkey": "tr",
+        "uganda": "ug",
+        "ukraine": "ua",
+        "united arab emirates": "ae",
+        "uae": "ae",
+        "uruguay": "uy",
+        "usa": "us",
+        "uzbekistan": "uz",
+        "venezuela": "ve",
+        "vietnam": "vn",
+        "wales": "gb",
+        "world": "",
+        "europe": "",
+        "zambia": "zm",
+        "zimbabwe": "zw"
     }
+
     return aliases.get(key, "")
 
 def _hungarian_sort_key(value):
+    """
+    Magyar ábécé szerinti rendezési kulcs.
+
+    Fontos: Python alapból Unicode-kódpont szerint rendez, ezért például
+    az Üzbegisztán a lista végére kerülne. A magyar többjegyű betűk
+    (Cs, Dz, Dzs, Gy, Ly, Ny, Sz, Ty, Zs) sorrendjét is kezeljük.
+    """
     text = str(value or "").strip().casefold()
-    multigraphs = ("dzs", "cs", "dz", "gy", "ly", "ny", "sz", "ty", "zs")
+
+    # Hosszabb magyar betűk kerüljenek előbb a tokenizáláskor.
+    multigraphs = (
+        "dzs", "cs", "dz", "gy", "ly", "ny", "sz", "ty", "zs"
+    )
+
     alphabet = {
-        "a": 1, "á": 2, "b": 3, "c": 4, "cs": 5, "d": 6, "dz": 7, "dzs": 8,
-        "e": 9, "é": 10, "f": 11, "g": 12, "gy": 13, "h": 14, "i": 15, "í": 16,
-        "j": 17, "k": 18, "l": 19, "ly": 20, "m": 21, "n": 22, "ny": 23,
-        "o": 24, "ó": 25, "ö": 26, "ő": 27, "p": 28, "q": 29, "r": 30,
-        "s": 31, "sz": 32, "t": 33, "ty": 34, "u": 35, "ú": 36, "ü": 37, "ű": 38,
-        "v": 39, "w": 40, "x": 41, "y": 42, "z": 43, "zs": 44,
+        "a": 1, "á": 2,
+        "b": 3,
+        "c": 4, "cs": 5,
+        "d": 6, "dz": 7, "dzs": 8,
+        "e": 9, "é": 10,
+        "f": 11,
+        "g": 12, "gy": 13,
+        "h": 14,
+        "i": 15, "í": 16,
+        "j": 17,
+        "k": 18,
+        "l": 19, "ly": 20,
+        "m": 21,
+        "n": 22, "ny": 23,
+        "o": 24, "ó": 25, "ö": 26, "ő": 27,
+        "p": 28,
+        "q": 29,
+        "r": 30,
+        "s": 31, "sz": 32,
+        "t": 33, "ty": 34,
+        "u": 35, "ú": 36, "ü": 37, "ű": 38,
+        "v": 39,
+        "w": 40,
+        "x": 41,
+        "y": 42,
+        "z": 43, "zs": 44,
     }
+
     tokens = []
     i = 0
+
     while i < len(text):
         matched = None
+
         for token in multigraphs:
             if text.startswith(token, i):
                 matched = token
                 break
+
         if matched is not None:
             tokens.append(alphabet[matched])
             i += len(matched)
             continue
+
         char = text[i]
         tokens.append(alphabet.get(char, 100 + ord(char)))
         i += 1
+
     return tuple(tokens)
 
+
 def _get_team_id(team_data):
+    """StatPal csapat azonosító kinyerése több lehetséges mezőből."""
     if not isinstance(team_data, dict):
         return ""
+
     for key in ("id", "team_id", "teamId", "main_id"):
         value = team_data.get(key)
+
         if value is not None and str(value).strip():
             return str(value).strip()
+
     for nested_key in ("team", "data"):
         nested = team_data.get(nested_key)
+
         if isinstance(nested, dict):
             value = _get_team_id(nested)
+
             if value:
                 return value
+
     return ""
 
+
 def _team_image_url(team_id):
+    """A saját backend proxy URL-je, amely a StatPal képendpointját használja."""
     if not team_id:
         return None
+
     return f"{IMAGE_PROXY_BASE_URL.rstrip('/')}/api/team-image/{team_id}"
+
 
 def fetch_statpal_matches():
     now = time.time()
-    if _statpal_cache["data"] is not None and (now - _statpal_cache["ts"]) < STATPAL_CACHE_TTL:
+
+    if (
+        _statpal_cache["data"] is not None
+        and (now - _statpal_cache["ts"]) < STATPAL_CACHE_TTL
+    ):
         return _statpal_cache["data"]
+
     headers = {"Accept": "application/json"}
-    url = f"https://statpal.io/api/v2/soccer/matches/today?access_key={STATPAL_KEY}"
-    response = requests.get(url, headers=headers, timeout=10)
+
+    url = (
+        "https://statpal.io/api/v2/soccer/matches/today"
+        f"?access_key={STATPAL_KEY}"
+    )
+
+    response = requests.get(
+        url,
+        headers=headers,
+        timeout=10
+    )
+
     if response.status_code != 200:
-        url = f"https://statpal.io/api/v2/soccer/matches/live?access_key={STATPAL_KEY}"
-        response = requests.get(url, headers=headers, timeout=10)
+        url = (
+            "https://statpal.io/api/v2/soccer/matches/live"
+            f"?access_key={STATPAL_KEY}"
+        )
+
+        response = requests.get(
+            url,
+            headers=headers,
+            timeout=10
+        )
+
     data = response.json()
+
     _statpal_cache["data"] = data
     _statpal_cache["ts"] = now
+
     return data
-
-_highlightly_refreshing = {"busy": False}
-
-
-def _highlightly_fetch_pages_fast():
-    """Max 2 gyors kérés párhuzamosan – ne fogja le a /api/matches-et."""
-    if not HIGHLIGHTLY_KEY:
-        return []
-    base_url = "https://soccer.highlightly.net/highlights"
-    headers = {"x-rapidapi-key": HIGHLIGHTLY_KEY}
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
-
-    def one(day, offset=0):
-        try:
-            resp = requests.get(
-                base_url,
-                headers=headers,
-                params={"date": day, "limit": 40, "offset": offset},
-                timeout=2.5,
-            )
-            if resp.status_code != 200:
-                return []
-            payload = resp.json()
-            page = payload.get("data") if isinstance(payload, dict) else None
-            return page if isinstance(page, list) else []
-        except Exception:
-            return []
-
-    all_highlights = []
-    with ThreadPoolExecutor(max_workers=2) as ex:
-        futures = [ex.submit(one, today, 0), ex.submit(one, yesterday, 0)]
-        for fut in futures:
-            try:
-                all_highlights.extend(fut.result())
-            except Exception:
-                pass
-
-    seen = set()
-    unique = []
-    for hl in all_highlights:
-        if not isinstance(hl, dict):
-            continue
-        hid = hl.get("id") or id(hl)
-        if hid in seen:
-            continue
-        seen.add(hid)
-        unique.append(hl)
-    return unique
-
-
-def _refresh_highlightly_background():
-    if _highlightly_refreshing["busy"]:
-        return
-    _highlightly_refreshing["busy"] = True
-    try:
-        data = _highlightly_fetch_pages_fast()
-        # Üres választ ne írjuk felül a jó cache-re
-        if data or _highlightly_cache["data"] is None:
-            _highlightly_cache["data"] = data
-            _highlightly_cache["ts"] = time.time()
-    finally:
-        _highlightly_refreshing["busy"] = False
 
 
 def fetch_highlightly_highlights():
     """
-    Gyors útvonal a meccslistához:
-    - ha van cache (akár lejárt), azonnal visszaadja
-    - háttérben frissít, nem blokkol 10-30 másodpercet
+    A Highlightly mai highlight-listáját tölti le.
+
+    FONTOS:
+    Nem egy adott meccshez kérünk külön API-lekérést.
+    A /highlights válaszban minden elem tartalmazhat egy
+    match.id értéket, ezért ebből a listából párosítunk.
     """
+
     if not HIGHLIGHTLY_KEY:
         return []
+
     now = time.time()
-    cached = _highlightly_cache.get("data")
-    ts = float(_highlightly_cache.get("ts") or 0)
 
-    # Friss cache
-    if cached is not None and (now - ts) < HIGHLIGHTLY_CACHE_TTL:
-        return cached
+    if (
+        _highlightly_cache["data"] is not None
+        and (now - _highlightly_cache["ts"]) < HIGHLIGHTLY_CACHE_TTL
+    ):
+        return _highlightly_cache["data"]
 
-    # Van régi cache → azonnal vissza, háttérfrissítés
-    if cached is not None:
-        if not _highlightly_refreshing["busy"]:
-            ThreadPoolExecutor(max_workers=1).submit(_refresh_highlightly_background)
-        return cached
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-    # Első indítás: egy rövid próbálkozás, max ~2.5s
-    data = _highlightly_fetch_pages_fast()
-    _highlightly_cache["data"] = data
+    base_url = "https://soccer.highlightly.net/highlights"
+
+    headers = {
+        "x-rapidapi-key": HIGHLIGHTLY_KEY
+    }
+
+    all_highlights = []
+
+    try:
+        # A dokumentációban a limit akár 100 is lehet.
+        # Több oldalt töltünk le, hogy a mai meccsek nagyobb eséllyel
+        # bekerüljenek a listába.
+        for offset in (0, 40, 80, 120):
+
+            resp = requests.get(
+                base_url,
+                headers=headers,
+                params={
+                    "date": today,
+                    "limit": 40,
+                    "offset": offset
+                },
+                timeout=8
+            )
+
+            if resp.status_code != 200:
+                break
+
+            payload = resp.json()
+
+            page = (
+                payload.get("data")
+                if isinstance(payload, dict)
+                else None
+            )
+
+            if not isinstance(page, list) or not page:
+                break
+
+            all_highlights.extend(page)
+
+            if len(page) < 100:
+                break
+
+    except Exception:
+        pass
+
+    _highlightly_cache["data"] = all_highlights
     _highlightly_cache["ts"] = now
-    return data
+
+    return all_highlights
+
 
 def fetch_highlightly_match_highlights(highlight_match_id: str):
+    """
+    Egy adott Highlightly match.id összes videóját keresi ki
+    a már letöltött /highlights listából.
+
+    FONTOS JAVÍTÁS:
+    Nem küldünk új kérést a Highlightly /highlights végpontjára
+    ?matchId=... paraméterrel.
+
+    Ehelyett a /highlights válaszban található:
+
+        highlight["match"]["id"]
+
+    alapján szűrünk.
+    """
+
     if not HIGHLIGHTLY_KEY or not highlight_match_id:
         return []
+
     requested_id = str(highlight_match_id).strip()
+
     if not requested_id:
         return []
+
     cache_key = requested_id
     now = time.time()
+
     cached = _highlightly_match_cache.get(cache_key)
-    if cached and (now - cached["ts"]) < HIGHLIGHTLY_CACHE_TTL:
+
+    if (
+        cached
+        and (now - cached["ts"]) < HIGHLIGHTLY_CACHE_TTL
+    ):
         return cached["data"]
 
     all_highlights = fetch_highlightly_highlights()
+
     matched_highlights = []
+
     for highlight in all_highlights:
+
         if not isinstance(highlight, dict):
             continue
+
         match_obj = highlight.get("match") or {}
+
         if not isinstance(match_obj, dict):
             continue
+
         raw_match_id = match_obj.get("id")
+
         if raw_match_id is None:
             continue
-        if str(raw_match_id).strip() != requested_id:
+
+        current_match_id = str(raw_match_id).strip()
+
+        if current_match_id != requested_id:
             continue
+
+        # Csak olyan elemet tartunk meg, amely ténylegesen
+        # tartalmaz használható videóhivatkozást.
         embed_url = highlight.get("embedUrl")
         normal_url = highlight.get("url")
-        if (isinstance(embed_url, str) and embed_url.strip()) or (isinstance(normal_url, str) and normal_url.strip()):
+
+        if (
+            isinstance(embed_url, str)
+            and embed_url.strip()
+        ) or (
+            isinstance(normal_url, str)
+            and normal_url.strip()
+        ):
             matched_highlights.append(highlight)
 
-    _highlightly_match_cache[cache_key] = {"data": matched_highlights, "ts": now}
+    _highlightly_match_cache[cache_key] = {
+        "data": matched_highlights,
+        "ts": now
+    }
+
     return matched_highlights
 
+
 def _highlightly_video_payload(highlight: dict):
+    """
+    Csak a mobil kliens számára szükséges, biztonságos mezőket
+    adja vissza.
+    """
+
     return {
         "id": str(highlight.get("id", "")),
         "title": highlight.get("title"),
@@ -554,884 +1062,976 @@ def _highlightly_video_payload(highlight: dict):
         "imgUrl": highlight.get("imgUrl")
     }
 
-def _league_tier(league: str) -> int:
-    """1 = top, 5 = semi-pro/ifjúsági."""
-    u = (league or "").upper()
-    if any(x in u for x in ("CHAMPIONS LEAGUE",)):
-        return 1
-    if any(x in u for x in (
-        "PREMIER LEAGUE", "LA LIGA", "SERIE A", "BUNDESLIGA", "LIGUE 1",
-    )) and "U21" not in u and "U19" not in u and "CUP" not in u:
-        return 1
-    if any(x in u for x in ("EUROPA LEAGUE", "CONFERENCE LEAGUE")):
-        return 2
-    if any(x in u for x in (
-        "CHAMPIONSHIP", "LIGA PORTUGAL", "EREDIVISIE", "SUPER LIG",
-        "SCOTTISH PREMIERSHIP", "BELGIUM", "PRO LEAGUE",
-    )):
-        return 2
-    if any(x in u for x in ("LEAGUE ONE", "LEAGUE TWO", "SERIE B", "LIGUE 2", "2. BUNDESLIGA")):
-        return 3
-    if any(x in u for x in ("EFL CUP", "FA CUP", "LEAGUE CUP", "DFB", "COPPA", "COPA DEL")):
-        return 2  # kupa – vegyes mezőny
-    if any(x in u for x in ("U21", "U19", "U23", "YOUTH", "RESERVE")):
-        return 5
-    return 3
-
-
-def _team_elo_proxy(name: str, league: str) -> float:
-    """
-    Elo-proxy: realisztikus favorit/underdog, de nem 90%+ abszurdum.
-    Kupa esetén a PL/top klubok erősebben elválnak az alacsonyabb osztálytól.
-    """
-    base_by_tier = {1: 1600, 2: 1510, 3: 1460, 4: 1420, 5: 1380}
-    tier = _league_tier(league)
-    elo = float(base_by_tier.get(tier, 1460))
-    u = (name or "").upper()
-    is_cup = any(x in (league or "").upper() for x in ("CUP", "COPA", "COPPA", "POKAL", "TROPHY"))
-
-    elite = (
-        "MANCHESTER CITY", "MAN CITY", "REAL MADRID", "BARCELONA", "BAYERN",
-        "LIVERPOOL", "ARSENAL", "PSG", "PARIS SAINT", "INTER ", "JUVENTUS",
-    )
-    # Premier / top5 "erős" – kupában is érezhető előny
-    pl_level = (
-        "MANCHESTER UNITED", "MAN UNITED", "CHELSEA", "TOTTENHAM", "NEWCASTLE",
-        "ASTON VILLA", "WEST HAM", "BRIGHTON", "FULHAM", "BRENTFORD",
-        "CRYSTAL PALACE", "WOLVES", "WOLVERHAMPTON", "BOURNEMOUTH", "EVERTON",
-        "NOTTINGHAM", "FOREST", "LEICESTER", "SOUTHAMPTON", "IPSWICH",
-        "ATLETICO", "ATLÉTICO", "DORTMUND", "MILAN", "NAPOLI", "LEVERKUSEN",
-        "BENFICA", "PORTO", "AJAX", "CELTIC", "GALATASARAY", "FENERBAHCE",
-        "BESIKTAS", "BEŞIKTAŞ", "ROMA", "LAZIO", "SEVILLA", "VILLARREAL",
-    )
-    championship_level = (
-        "BURNLEY", "LEEDS", "SHEFFIELD UNITED", "SHEFFIELD WED", "MIDDLESBROUGH",
-        "WEST BROM", "NORWICH", "WATFORD", "SUNDERLAND", "COVENTRY",
-        "CHARLTON", "BLACKBURN", "PRESTON", "STOKE", "QPR", "SWANSEA",
-        "BRISTOL CITY", "CARDIFF", "HULL", "DERBY", "BOLTON",
-    )
-
-    for e in elite:
-        if e in u:
-            elo += 110 if is_cup else 95
-            break
-    else:
-        for s in pl_level:
-            if s in u:
-                elo += 85 if is_cup else 60
-                break
-        else:
-            for s in championship_level:
-                if s in u:
-                    elo += 20 if is_cup else 15
-                    break
-
-    if any(x in u for x in (" U21", " U19", " U23", "RESERVE")):
-        elo -= 90
-    if u.endswith(" II") or " II " in u:
-        elo -= 40
-
-    return max(1340.0, min(1750.0, elo))
-
-
-def _expected_goals_from_elo(home_elo: float, away_elo: float, league: str) -> tuple:
-    """
-    Elo → xG. Meredekebb, mint a nyers logistic, hogy a favorit-underdog
-    arány közelebb legyen a valós piaci oddsokhoz.
-    """
-    home_adv_elo = 50.0
-    diff = (home_elo + home_adv_elo) - away_elo
-
-    tier = _league_tier(league)
-    if tier == 1:
-        base_total = 2.70
-    elif tier == 2:
-        base_total = 2.50
-    elif tier == 5:
-        base_total = 2.85
-    else:
-        base_total = 2.45
-
-    # Meredekebb skála: 280 elo-pont ~ erős favorit
-    share = 1.0 / (1.0 + math.pow(10.0, -diff / 280.0))
-    # Közép: ~0.52-0.55 hazai gólrészarány enyhe hazai előnnyel
-    home_ratio = 0.28 + 0.48 * share  # diff=0, +50 homeadv → share~0.54 → ratio~0.54
-    home_xg = base_total * home_ratio
-    away_xg = base_total * (1.0 - home_ratio)
-
-    # Extra gólkülönbség nagy Elo-résnél (kupa meglepetés ellen is)
-    if abs(diff) > 80:
-        boost = min(0.35, (abs(diff) - 80) / 400.0)
-        if diff > 0:
-            home_xg += boost
-            away_xg = max(0.40, away_xg - boost * 0.6)
-        else:
-            away_xg += boost
-            home_xg = max(0.40, home_xg - boost * 0.6)
-
-    home_xg = max(0.50, min(2.40, home_xg))
-    away_xg = max(0.40, min(2.20, away_xg))
-    return home_xg, away_xg
-
-
-def _poisson_sample(lam: float) -> int:
-    lam = max(0.08, min(float(lam), 4.5))
-    L = math.exp(-lam)
-    k = 0
-    p = 1.0
-    while p > L:
-        k += 1
-        p *= random.random()
-    return k - 1
-
-
-def _dixon_coles_adjust(fh: int, fa: int, lam_h: float, lam_a: float, rho: float = -0.10):
-    if fh == 0 and fa == 0:
-        return max(0.7, 1.0 + rho * lam_h * lam_a)
-    if fh == 0 and fa == 1:
-        return max(0.7, 1.0 - rho * lam_h)
-    if fh == 1 and fa == 0:
-        return max(0.7, 1.0 - rho * lam_a)
-    if fh == 1 and fa == 1:
-        return max(0.7, 1.0 + rho)
-    return 1.0
-
-
-def monte_carlo_match_sim(
-    home: str,
-    away: str,
-    league: str,
-    phase: str,
-    minute: int,
-    home_score: int,
-    away_score: int,
-    n: int = 15000,
-) -> dict:
-    home_elo = _team_elo_proxy(home, league)
-    away_elo = _team_elo_proxy(away, league)
-    base_home_xg, base_away_xg = _expected_goals_from_elo(home_elo, away_elo, league)
-
-    if phase in ("live", "halftime"):
-        if phase == "halftime":
-            remain = 0.50
-            tempo = 1.05
-        else:
-            m = max(0, min(int(minute), 95))
-            remain = max(0.07, (90 - min(m, 90)) / 90.0)
-            # Késői gólok enyhén gyakoribbak
-            tempo = 1.10 if m >= 80 else (1.04 if m >= 65 else 1.0)
-        lam_h = base_home_xg * remain * tempo
-        lam_a = base_away_xg * remain * tempo
-        # Game state: vezető kicsit óvatosabb, vesztes nyitottabb
-        diff = home_score - away_score
-        if diff >= 2:
-            lam_h *= 0.90
-            lam_a *= 1.08
-        elif diff == 1:
-            lam_h *= 0.95
-            lam_a *= 1.04
-        elif diff == -1:
-            lam_h *= 1.05
-            lam_a *= 0.95
-        elif diff <= -2:
-            lam_h *= 1.10
-            lam_a *= 0.90
-    else:
-        lam_h = base_home_xg
-        lam_a = base_away_xg
-
-    w_home = w_draw = w_away = 0.0
-    w_btts = w_over15 = w_over25 = w_over35 = 0.0
-    w_total = 0.0
-    score_weights = {}
-    sum_h = sum_a = 0.0
-
-    for _ in range(n):
-        if phase in ("live", "halftime"):
-            gh = _poisson_sample(lam_h)
-            ga = _poisson_sample(lam_a)
-            fh = home_score + gh
-            fa = away_score + ga
-            w = _dixon_coles_adjust(gh, ga, lam_h, lam_a)
-        else:
-            fh = _poisson_sample(lam_h)
-            fa = _poisson_sample(lam_a)
-            w = _dixon_coles_adjust(fh, fa, lam_h, lam_a)
-
-        w = max(0.15, w)
-        w_total += w
-        score_weights[(fh, fa)] = score_weights.get((fh, fa), 0.0) + w
-        if fh > fa:
-            w_home += w
-        elif fh < fa:
-            w_away += w
-        else:
-            w_draw += w
-        total = fh + fa
-        sum_h += fh * w
-        sum_a += fa * w
-        if fh > 0 and fa > 0:
-            w_btts += w
-        if total >= 2:
-            w_over15 += w
-        if total >= 3:
-            w_over25 += w
-        if total >= 4:
-            w_over35 += w
-
-    def pct(x):
-        return round(100.0 * x / w_total, 1) if w_total else 0.0
-
-    # Valószínűségek finom simítása – kerüli a szélsőséges 85%+ favoritot előzetesben
-    p_home = pct(w_home)
-    p_draw = pct(w_draw)
-    p_away = pct(w_away)
-    if phase == "preview":
-        # Soft cap: max 68% – reális favorit, nem "tuti tipp"
-        max_p = max(p_home, p_draw, p_away)
-        if max_p > 68.0:
-            scale_down = 68.0 / max_p
-            vals = [p_home * scale_down, p_draw * scale_down, p_away * scale_down]
-            leftover = 100.0 - sum(vals)
-            order = sorted(range(3), key=lambda i: vals[i])
-            vals[order[1]] += leftover * 0.45
-            vals[order[0]] += leftover * 0.55
-            p_home, p_draw, p_away = [round(v, 1) for v in vals]
-            s = p_home + p_draw + p_away
-            if abs(s - 100.0) > 0.2:
-                p_draw = round(p_draw + (100.0 - s), 1)
-
-    top_scores = sorted(score_weights.items(), key=lambda kv: kv[1], reverse=True)[:8]
-    most = top_scores[0][0]
-    alt = top_scores[1][0] if len(top_scores) > 1 else most
-
-    xg_home = round(sum_h / w_total, 2) if w_total else 0.0
-    xg_away = round(sum_a / w_total, 2) if w_total else 0.0
-
-    conf_pct = pct(top_scores[0][1]) if top_scores else 0.0
-    if phase == "live" and abs(home_score - away_score) >= 2 and minute >= 75:
-        conf_label = "Magasabb bizonyosság (állás + idő)"
-    elif conf_pct >= 16:
-        conf_label = "Közepes-magas koncentráció"
-    elif conf_pct >= 11:
-        conf_label = "Kiegyenlített / nyílt meccs"
-    else:
-        conf_label = "Nagyon szórt kimenetelek"
-
-    return {
-        "n": n,
-        "phase": phase,
-        "lambda_home": round(lam_h, 3),
-        "lambda_away": round(lam_a, 3),
-        "home_elo": round(home_elo, 0),
-        "away_elo": round(away_elo, 0),
-        "p_home": p_home,
-        "p_draw": p_draw,
-        "p_away": p_away,
-        "p_1x": round(p_home + p_draw, 1),
-        "p_12": round(p_home + p_away, 1),
-        "p_x2": round(p_draw + p_away, 1),
-        "p_btts": pct(w_btts),
-        "p_over15": pct(w_over15),
-        "p_over25": pct(w_over25),
-        "p_over35": pct(w_over35),
-        "xg_home": xg_home,
-        "xg_away": xg_away,
-        "xg_total": round(xg_home + xg_away, 2),
-        "most_likely": f"{most[0]}-{most[1]}",
-        "most_likely_pct": pct(top_scores[0][1]),
-        "alternative": f"{alt[0]}-{alt[1]}",
-        "alternative_pct": pct(top_scores[1][1]) if len(top_scores) > 1 else 0.0,
-        "top_scores": [{"score": f"{a}-{b}", "pct": pct(c)} for (a, b), c in top_scores],
-        "confidence": conf_label,
-    }
-
-
-def _bar(pct_val: float, width: int = 12) -> str:
-    filled = int(round((pct_val / 100.0) * width))
-    filled = max(0, min(width, filled))
-    return "█" * filled + "░" * (width - filled)
-
-
-def _format_monte_carlo_text(
-    home: str,
-    away: str,
-    league: str,
-    phase: str,
-    minute: int,
-    score_txt: str,
-    sim: dict,
-    narrative: str | None = None,
-    tactics: str | None = None,
-    scenarios: str | None = None,
-) -> str:
-    phase_label = {
-        "preview": "Előzetes elemzés",
-        "live": f"Élő elemzés – {minute}. perc, {score_txt}",
-        "halftime": f"Félidős elemzés – {score_txt}",
-        "finished": f"Utólagos értékelés – {score_txt}",
-    }.get(phase, "Elemzés")
-
-    lines = [
-        f"⚽ {home} vs {away}",
-        f"📋 {league}",
-        f"⏱ {phase_label}",
-        "",
-        "━━━━━━━━━━━━━━━━━━━━",
-        "📊 VALÓSZÍNŰSÉGEK (Monte Carlo)",
-        f"🟢 {home}: {sim['p_home']}%",
-        f"⚪ Döntetlen: {sim['p_draw']}%",
-        f"🔴 {away}: {sim['p_away']}%",
-        f"Double chance → 1X {sim['p_1x']}% · 12 {sim['p_12']}% · X2 {sim['p_x2']}%",
-        f"Gólok → BTTS {sim['p_btts']}% · O2.5 {sim['p_over25']}% · O3.5 {sim['p_over35']}%",
-        f"Modell xG: {sim['xg_home']} – {sim['xg_away']} (össz {sim['xg_total']})",
-        f"Leggyakoribb állás: {sim['most_likely']} ({sim['most_likely_pct']}%) · alt: {sim['alternative']}",
-        f"({sim['n']:,} futtatás · {sim['confidence']})".replace(",", " "),
-    ]
-
-    if tactics:
-        lines.extend(["", "━━━━━━━━━━━━━━━━━━━━", "🎯 JÁTÉKKÉP & TAKTIKA", tactics.strip()])
-
-    if scenarios:
-        lines.extend(["", "━━━━━━━━━━━━━━━━━━━━", "🎬 FORGATÓKÖNYVEK", scenarios.strip()])
-
-    if narrative:
-        lines.extend(["", "━━━━━━━━━━━━━━━━━━━━", "🧠 SZAKÉRTŐI OLVASAT", narrative.strip()])
-
-    lines.extend([
-        "",
-        "━━━━━━━━━━━━━━━━━━━━",
-        "ℹ️ A százalékok modellbecslés (Elo-proxy + Poisson). Nem fogadási tanács.",
-    ])
-    return "\n".join(lines)
-
-
-def _build_local_tactics(home: str, away: str, league: str, phase: str, minute: int, score_txt: str, sim: dict) -> str:
-    """Gemini nélkül is értelmes, sokrétű szöveges blokk."""
-    hp, dp, ap = sim["p_home"], sim["p_draw"], sim["p_away"]
-    if hp >= ap + 12:
-        balance = f"A modell enyhén a {home} felé billen, de nem „tuti” meccs."
-    elif ap >= hp + 12:
-        balance = f"A {away} tűnik erősebbnek a papíron, a hazai pálya viszont árnyalja a képet."
-    else:
-        balance = "Kiegyenlített párharc – kis részletek (tempó, szabadrúgások, egyéni minőség) dönthetnek."
-
-    if sim["xg_total"] >= 2.8:
-        goals = "Nyíltabb, gólokban gazdagabb mérkőzés várható."
-    elif sim["xg_total"] <= 2.2:
-        goals = "Inkább kontrollált, szűkebb meccs lehet, kevesebb egyértelmű helyzettel."
-    else:
-        goals = "Átlagos gólkörnyezet – egy-egy kontra vagy standard helyzet felértékelődik."
-
-    if phase == "preview":
-        timing = "Kezdés előtt: az első 15 perc tempója sokat elárul a kontrollról."
-    elif phase == "live":
-        timing = f"Élőben ({minute}. perc, {score_txt}): a következő 10-15 perc kulcs a ritmus szempontjából."
-    elif phase == "halftime":
-        timing = f"Félidő ({score_txt}): a szünet utáni 10 perc gyakran felforgatja a pályát."
-    else:
-        timing = f"Lejátszott meccs ({score_txt}): a modell inkább referencia, nem „mi lett volna ha” jóslat."
-
-    btts = "Mindkét kapu veszélyben lehet." if sim["p_btts"] >= 52 else "Legalább az egyik védelem stabilabbnak tűnik."
-
-    return "\n".join([
-        f"• {balance}",
-        f"• {goals} {btts}",
-        f"• Kulcsterület: középpályás duels + szélek – innen jöhet a ritmusváltás.",
-        f"• {timing}",
-        f"• Liga-kontextus: {league} – ehhez igazodik a tempó és a kockázatvállalás.",
-    ])
-
-
-def _build_local_scenarios(home: str, away: str, phase: str, sim: dict) -> str:
-    top = sim.get("top_scores") or []
-    t1 = top[0]["score"] if top else sim["most_likely"]
-    t2 = top[1]["score"] if len(top) > 1 else sim["alternative"]
-    t3 = top[2]["score"] if len(top) > 2 else "2-1"
-
-    lines = [
-        f"• A forgatókönyv: {t1} – ehhez stabil védekezés és hatékony átmenet kell.",
-        f"• Alternatíva: {t2} – ha több lesz a hiba a középső harmadban.",
-        f"• Meglepetés-ív: {t3} / váratlan fordulat egy standard helyzetből.",
-    ]
-    if phase in ("live", "halftime"):
-        lines.append("• Élő logika: a jelenlegi állás „horgony”; a szimuláció a hátralévő játékidőt modellezi.")
-    else:
-        lines.append(f"• Esélylatolgatás: 1X {sim['p_1x']}%, X2 {sim['p_x2']}% – ha biztosabb kimenetelben gondolkodsz.")
-    return "\n".join(lines)
-
-
-@app.get("/api/ai-analysis/{match_id}")
-def get_ai_analysis(match_id: str):
-    """
-    Sokrétű AI elemzés:
-    1) Monte Carlo valószínűségek
-    2) Játékkép / taktika
-    3) Forgatókönyvek
-    4) Gemini szakértői olvasat (ha elérhető)
-    """
-    try:
-        matches = get_matches()
-    except Exception as e:
-        print(f"[AI] get_matches failed: {e}")
-        return {"analysis": "A mérkőzéslista ideiglenesen nem érhető el. Próbáld újra."}
-
-    target_match = next((m for m in matches if str(m.get("id")) == str(match_id)), None)
-    if not target_match:
-        return {"analysis": "A mérkőzés adatai nem találhatók az AI elemzéshez."}
-
-    raw_status = str(target_match.get("status") or "").strip()
-    minute = target_match.get("minute") or 0
-    try:
-        minute = int(minute)
-    except (TypeError, ValueError):
-        minute = 0
-
-    home_score = target_match.get("home_score")
-    away_score = target_match.get("away_score")
-    hs = int(home_score) if home_score is not None else 0
-    as_ = int(away_score) if away_score is not None else 0
-    score_txt = f"{hs}-{as_}"
-    home = target_match.get("home_team") or "Hazai"
-    away = target_match.get("away_team") or "Vendég"
-    league = target_match.get("league") or "Ismeretlen bajnokság"
-    country = target_match.get("country") or ""
-
-    status_upper = raw_status.upper()
-    looks_like_kickoff_time = bool(
-        len(raw_status) <= 5 and ":" in raw_status
-        and status_upper not in {"HT", "FT", "1H", "2H", "NS", "LIVE"}
-    )
-
-    if status_upper in {"FT", "AET", "PEN", "FINISHED"}:
-        phase = "finished"
-    elif status_upper == "HT":
-        phase = "halftime"
-    elif status_upper in {"1H", "2H", "LIVE", "ET", "P"} or (minute > 0 and not looks_like_kickoff_time):
-        phase = "live"
-    else:
-        phase = "preview"
-
-    cache_key = f"full-ai-v3|{match_id}|{phase}|{raw_status}|{minute}|{score_txt}"
-    now = time.time()
-    cached = _ai_analysis_cache.get(cache_key)
-    if cached and (now - cached["ts"]) < AI_CACHE_TTL:
-        return {"analysis": cached["data"]}
-
-    sim = monte_carlo_match_sim(
-        home=home,
-        away=away,
-        league=league,
-        phase=phase,
-        minute=minute,
-        home_score=hs,
-        away_score=as_,
-        n=15000,
-    )
-
-    tactics = _build_local_tactics(home, away, league, phase, minute, score_txt, sim)
-    scenarios = _build_local_scenarios(home, away, phase, sim)
-
-    narrative = None
-    if GEMINI_KEY:
-        try:
-            phase_hu = {
-                "preview": "előzetes",
-                "live": "élő",
-                "halftime": "félidős",
-                "finished": "utólagos",
-            }[phase]
-            prompt = f"""Te a SportApp vezető labdarúgó-szakértője vagy. Írj MAGYARUL, 5-7 mondatban.
-Ne ismételd tételesen a százalékokat; értelmezz, adj karaktert a meccsnek.
-
-Meccs: {home} vs {away}
-Liga: {league} ({country})
-Fázis: {phase_hu} | állás: {score_txt} | perc: {minute}
-Modell 1X2: {sim['p_home']}% / {sim['p_draw']}% / {sim['p_away']}%
-xG: {sim['xg_home']} - {sim['xg_away']} | BTTS {sim['p_btts']}% | O2.5 {sim['p_over25']}%
-Top állás: {sim['most_likely']}
-
-Írj le:
-1) Milyen stílusú összecsapás várható / zajlik
-2) Hol dőlhet el (szélek, középpálya, standard)
-3) Egy figyelmeztető jel a nézőnek
-4) Rövid, ütős zárás
-
-Kerüld a sablont („papíron az esélyesebb”). Legyél konkrét a csapatnevekre.
-"""
-            for model_name in ("gemini-2.5-flash-lite", "gemini-2.0-flash", "gemini-2.5-flash"):
-                url = (
-                    "https://generativelanguage.googleapis.com/v1beta/models/"
-                    f"{model_name}:generateContent?key={GEMINI_KEY}"
-                )
-                payload = {
-                    "contents": [{"parts": [{"text": prompt}]}],
-                    "generationConfig": {"temperature": 0.9, "maxOutputTokens": 450},
-                }
-                resp = requests.post(url, json=payload, timeout=12)
-                if resp.status_code != 200:
-                    print(f"[AI narrative] {model_name} HTTP {resp.status_code}")
-                    continue
-                data = resp.json()
-                text_out = ""
-                for cand in data.get("candidates") or []:
-                    content = cand.get("content") or {}
-                    for part in content.get("parts") or []:
-                        if isinstance(part.get("text"), str):
-                            text_out += part["text"]
-                text_out = text_out.strip()
-                if text_out:
-                    narrative = text_out
-                    print(f"[AI narrative OK] {model_name}")
-                    break
-        except Exception as e:
-            print(f"[AI narrative fail] {e}")
-
-    analysis = _format_monte_carlo_text(
-        home=home,
-        away=away,
-        league=league,
-        phase=phase,
-        minute=minute,
-        score_txt=score_txt,
-        sim=sim,
-        narrative=narrative,
-        tactics=tactics,
-        scenarios=scenarios,
-    )
-    _ai_analysis_cache[cache_key] = {"data": analysis, "ts": now}
-    print(f"[FULL AI] match={match_id} phase={phase} gemini={bool(narrative)}")
-    return {"analysis": analysis}
-
 
 @app.get("/api/highlights/match/{highlight_match_id}")
 def get_match_highlights(highlight_match_id: str):
+    """
+    Egy adott Highlightly mérkőzés összes videóját adja vissza.
+
+    A Highlightly saját match.id azonosítóját várja,
+    nem a StatPal main_id-t.
+
+    A válaszban a goal-clip és match-highlights elemek
+    egyaránt megmaradnak.
+    """
+
     if not HIGHLIGHTLY_KEY or not highlight_match_id:
         return []
-    highlights = fetch_highlightly_match_highlights(highlight_match_id)
+
+    highlights = fetch_highlightly_match_highlights(
+        highlight_match_id
+    )
+
     result = []
+
     for highlight in highlights:
+
         if not isinstance(highlight, dict):
             continue
+
         item = _highlightly_video_payload(highlight)
-        if item["id"] and (item["embedUrl"] or item["url"]):
+
+        if (
+            item["id"]
+            and (
+                item["embedUrl"]
+                or item["url"]
+            )
+        ):
             result.append(item)
-    result.sort(key=lambda item: (not str(item.get("category") or "").lower() == "goal-clip", str(item.get("title") or "").lower()))
+
+    # Goal clip legyen elöl.
+    result.sort(
+        key=lambda item: (
+            not str(
+                item.get("category") or ""
+            ).lower() == "goal-clip",
+            str(
+                item.get("title") or ""
+            ).lower()
+        )
+    )
+
     return result
+
 
 @app.get("/api/team-image/{team_id}")
 def get_team_image(team_id: str):
-    if not STATPAL_KEY or not team_id or not str(team_id).isdigit():
+    """
+    StatPal csapatkép proxy.
+
+    A StatPal dokumentáció szerint az images endpoint PNG-t ad vissza,
+    és a kérés egy 5 percig érvényes képlinkre redirectel.
+
+    A backend követi a redirectet, majd a PNG-t saját rövid idejű
+    cache-ből szolgálja ki, így az access_key nem kerül az Android
+    alkalmazásba.
+    """
+
+    if (
+        not STATPAL_KEY
+        or not team_id
+        or not str(team_id).isdigit()
+    ):
         return Response(status_code=404)
+
     cache_key = str(team_id)
     now = time.time()
+
     cached = _team_image_cache.get(cache_key)
-    if cached and (now - cached["ts"]) < TEAM_IMAGE_CACHE_TTL:
-        return Response(content=cached["content"], media_type="image/png", headers={"Cache-Control": "public, max-age=21600"})
+
+    if (
+        cached
+        and (now - cached["ts"]) < TEAM_IMAGE_CACHE_TTL
+    ):
+        return Response(
+            content=cached["content"],
+            media_type="image/png",
+            headers={
+                "Cache-Control": "public, max-age=21600"
+            }
+        )
+
     try:
         url = "https://statpal.io/api/v2/soccer/images"
-        response = requests.get(url, params={"type": "team", "id": team_id, "access_key": STATPAL_KEY}, headers={"Accept": "image/png, application/json"}, timeout=10, allow_redirects=True)
-        if response.status_code != 200 or not response.content:
-            return Response(status_code=response.status_code or 404)
-        content_type = response.headers.get("content-type", "image/png").split(";")[0].strip()
+
+        response = requests.get(
+            url,
+            params={
+                "type": "team",
+                "id": team_id,
+                "access_key": STATPAL_KEY
+            },
+            headers={
+                "Accept": "image/png, application/json"
+            },
+            timeout=10,
+            allow_redirects=True
+        )
+
+        if (
+            response.status_code != 200
+            or not response.content
+        ):
+            return Response(
+                status_code=response.status_code or 404
+            )
+
+        content_type = (
+            response.headers
+            .get("content-type", "image/png")
+            .split(";")[0]
+            .strip()
+        )
+
         if content_type != "image/png":
             content_type = "image/png"
-        _team_image_cache[cache_key] = {"content": response.content, "ts": now}
-        return Response(content=response.content, media_type=content_type, headers={"Cache-Control": "public, max-age=21600"})
+
+        _team_image_cache[cache_key] = {
+            "content": response.content,
+            "ts": now
+        }
+
+        return Response(
+            content=response.content,
+            media_type=content_type,
+            headers={
+                "Cache-Control": "public, max-age=21600"
+            }
+        )
+
     except Exception:
         return Response(status_code=404)
 
-def _normalize_team_name(name: str) -> str:
-    """Csapatnév normalizálása párosításhoz."""
-    if not name:
-        return ""
-    s = str(name).lower()
-    # ékezetek egyszerűsítése
-    for a, b in (
-        ("á", "a"), ("é", "e"), ("í", "i"), ("ó", "o"), ("ö", "o"), ("ő", "o"),
-        ("ú", "u"), ("ü", "u"), ("ű", "u"), ("ç", "c"), ("ñ", "n"),
-    ):
-        s = s.replace(a, b)
-    # gyakori toldalékok / zaj
-    for token in (
-        " fc", " cf", " sc", " afc", " united", " city", " club",
-        " reserve", " reserves", " u21", " u23", " u19", " ii", " 2",
-    ):
-        s = s.replace(token, " ")
-    s = "".join(ch if ch.isalnum() or ch.isspace() else " " for ch in s)
-    return " ".join(s.split())
-
-
-def _team_tokens(name: str) -> set:
-    stop = {"fc", "cf", "sc", "afc", "the", "de", "la", "el", "and", "vs"}
-    return {t for t in _normalize_team_name(name).split() if len(t) > 2 and t not in stop}
-
-
-def _build_highlight_match_index(highlights_data):
-    """
-    Index több kulccsal:
-    - pontos normalizált névpár
-    - fordított sorrend
-    - első jelentős token pár (lazább illesztés)
-    """
-    index = {}
-    fuzzy = []  # (home_tokens, away_tokens, payload)
-    if not isinstance(highlights_data, list):
-        return index, fuzzy
-    for hl in highlights_data:
-        if not isinstance(hl, dict):
-            continue
-        match_obj = hl.get("match") or {}
-        if not isinstance(match_obj, dict):
-            continue
-        home_obj = match_obj.get("homeTeam") or match_obj.get("home") or {}
-        away_obj = match_obj.get("awayTeam") or match_obj.get("away") or {}
-        if not isinstance(home_obj, dict):
-            home_obj = {}
-        if not isinstance(away_obj, dict):
-            away_obj = {}
-        home_raw = home_obj.get("name") or home_obj.get("team_name") or ""
-        away_raw = away_obj.get("name") or away_obj.get("team_name") or ""
-        home = _normalize_team_name(home_raw)
-        away = _normalize_team_name(away_raw)
-        if not home or not away:
-            continue
-        match_id = match_obj.get("id") or match_obj.get("match_id")
-        if match_id is None:
-            continue
-        video_url = hl.get("embedUrl") or hl.get("url")
-        if not video_url:
-            continue
-        payload = {
-            "match_id": str(match_id),
-            "url": video_url,
-            "home": home_raw,
-            "away": away_raw,
-        }
-        index.setdefault((home, away), payload)
-        index.setdefault((away, home), payload)
-        # első tokenes kulcs
-        ht = home.split()[0] if home.split() else home
-        at = away.split()[0] if away.split() else away
-        if ht and at:
-            index.setdefault((ht, at), payload)
-            index.setdefault((at, ht), payload)
-        fuzzy.append((_team_tokens(home_raw), _team_tokens(away_raw), payload))
-    return index, fuzzy
-
-
-def _lookup_highlight(home_name: str, away_name: str, index, fuzzy):
-    """Pontos, majd token-alapú fuzzy keresés."""
-    home = _normalize_team_name(home_name)
-    away = _normalize_team_name(away_name)
-    if not home or not away:
-        return None
-
-    exact = index.get((home, away)) or index.get((away, home))
-    if exact:
-        return exact
-
-    ht = home.split()[0] if home.split() else home
-    at = away.split()[0] if away.split() else away
-    token_hit = index.get((ht, at)) or index.get((at, ht))
-    if token_hit:
-        return token_hit
-
-    home_toks = _team_tokens(home_name)
-    away_toks = _team_tokens(away_name)
-    if not home_toks or not away_toks:
-        return None
-
-    best = None
-    best_score = 0
-    for fh, fa, payload in fuzzy:
-        # mindkét oldalon legyen átfedés
-        sh = len(home_toks & fh)
-        sa = len(away_toks & fa)
-        # fordított hazai/vendég is
-        sh2 = len(home_toks & fa)
-        sa2 = len(away_toks & fh)
-        score = max(
-            (sh + sa) if sh and sa else 0,
-            (sh2 + sa2) if sh2 and sa2 else 0,
-        )
-        if score > best_score:
-            best_score = score
-            best = payload
-    # legalább 2 token egyezés összesen
-    if best_score >= 2:
-        return best
-    return None
 
 @app.get("/api/matches")
 def get_matches():
+
     if not STATPAL_KEY:
-        return [{"id": "0", "league_id": "0", "league": "Hiba", "home_team": "StatPal Kulcs Hiányzik", "away_team": "Render Environment-ben", "home_score": 0, "away_score": 0, "status": "error", "minute": 0}]
+        return [{
+            "id": "0",
+            "league_id": "0",
+            "league": "Hiba",
+            "home_team": "StatPal Kulcs Hiányzik",
+            "away_team": "Render Environment-ben",
+            "home_score": 0,
+            "away_score": 0,
+            "status": "error",
+            "minute": 0
+        }]
+
     try:
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            statpal_future = executor.submit(fetch_statpal_matches)
-            highlights_future = executor.submit(fetch_highlightly_highlights)
-            data = statpal_future.result()
-            # Highlightly max 3 mp – utána üres/cache, ne akassza meg a listát
-            try:
-                highlights_data = highlights_future.result(timeout=3)
-            except Exception:
-                highlights_data = _highlightly_cache.get("data") or []
+        data = fetch_statpal_matches()
 
         matches_list = []
-        live_matches_data = data.get("live_matches") or data.get("matches") or {}
+
+        live_matches_data = (
+            data.get("live_matches")
+            or data.get("matches")
+            or {}
+        )
+
         if not isinstance(live_matches_data, dict):
             live_matches_data = {}
 
-        leagues = ensure_list(live_matches_data.get("league"))
-        highlight_index, highlight_fuzzy = _build_highlight_match_index(highlights_data)
+        leagues = ensure_list(
+            live_matches_data.get("league")
+        )
+
+        # A Highlightly lista egyszer töltődik le,
+        # utána ebből párosítjuk a meccseket.
+        highlights_data = fetch_highlightly_highlights()
 
         for league in leagues:
+
             if not isinstance(league, dict):
                 continue
-            league_id = str(league.get("id", ""))
-            raw_country = league.get("country", "")
-            raw_league = league.get("name", "Egyéb Bajnokság")
-            full_league_title = format_league_title(raw_country, raw_league)
-            matches = ensure_list(league.get("match"))
+
+            league_id = str(
+                league.get("id", "")
+            )
+
+            raw_country = league.get(
+                "country",
+                ""
+            )
+
+            raw_league = league.get(
+                "name",
+                "Egyéb Bajnokság"
+            )
+
+            full_league_title = format_league_title(
+                raw_country,
+                raw_league
+            )
+
+            matches = ensure_list(
+                league.get("match")
+            )
 
             for m in matches:
+
                 if not isinstance(m, dict):
                     continue
+
                 home_data = m.get("home") or {}
                 away_data = m.get("away") or {}
-                home_name = translate_text(home_data.get("name", "Hazai"))
-                away_name = translate_text(away_data.get("name", "Vendég"))
-                home_team_id = _get_team_id(home_data)
-                away_team_id = _get_team_id(away_data)
-                home_logo_url = _team_image_url(home_team_id)
-                away_logo_url = _team_image_url(away_team_id)
+
+                home_name = translate_text(
+                    home_data.get(
+                        "name",
+                        "Hazai"
+                    )
+                )
+
+                away_name = translate_text(
+                    away_data.get(
+                        "name",
+                        "Vendég"
+                    )
+                )
+
+                home_team_id = _get_team_id(
+                    home_data
+                )
+
+                away_team_id = _get_team_id(
+                    away_data
+                )
+
+                home_logo_url = _team_image_url(
+                    home_team_id
+                )
+
+                away_logo_url = _team_image_url(
+                    away_team_id
+                )
+
+                league_logo_url = None
 
                 highlight_url = None
                 highlight_match_id = None
-                # Nyers + fordított név is (translate előtt/után)
-                home_raw_name = home_data.get("name", "") or home_name
-                away_raw_name = away_data.get("name", "") or away_name
-                exact_match = (
-                    _lookup_highlight(home_name, away_name, highlight_index, highlight_fuzzy)
-                    or _lookup_highlight(home_raw_name, away_raw_name, highlight_index, highlight_fuzzy)
-                )
-                if exact_match is not None:
-                    highlight_match_id = exact_match.get("match_id")
-                    highlight_url = exact_match.get("url")
+
+                if isinstance(
+                    highlights_data,
+                    list
+                ):
+
+                    normalized_home = " ".join(
+                        home_name.lower().split()
+                    )
+
+                    normalized_away = " ".join(
+                        away_name.lower().split()
+                    )
+
+                    exact_match = None
+
+                    # ====================================================
+                    # 1. PONTOS CSAPATPÁROSÍTÁS
+                    # ====================================================
+
+                    for hl in highlights_data:
+
+                        if not isinstance(
+                            hl,
+                            dict
+                        ):
+                            continue
+
+                        match_obj = (
+                            hl.get("match")
+                            or {}
+                        )
+
+                        hl_home = " ".join(
+                            str(
+                                (
+                                    match_obj.get(
+                                        "homeTeam"
+                                    )
+                                    or {}
+                                ).get(
+                                    "name",
+                                    ""
+                                )
+                            ).lower().split()
+                        )
+
+                        hl_away = " ".join(
+                            str(
+                                (
+                                    match_obj.get(
+                                        "awayTeam"
+                                    )
+                                    or {}
+                                ).get(
+                                    "name",
+                                    ""
+                                )
+                            ).lower().split()
+                        )
+
+                        if (
+                            hl_home == normalized_home
+                            and hl_away == normalized_away
+                        ) or (
+                            hl_home == normalized_away
+                            and hl_away == normalized_home
+                        ):
+                            exact_match = hl
+                            break
+
+                    # ====================================================
+                    # 2. FALLBACK
+                    # ====================================================
+
+                    if exact_match is None:
+
+                        for hl in highlights_data:
+
+                            if not isinstance(
+                                hl,
+                                dict
+                            ):
+                                continue
+
+                            match_obj = (
+                                hl.get("match")
+                                or {}
+                            )
+
+                            hl_home = " ".join(
+                                str(
+                                    (
+                                        match_obj.get(
+                                            "homeTeam"
+                                        )
+                                        or {}
+                                    ).get(
+                                        "name",
+                                        ""
+                                    )
+                                ).lower().split()
+                            )
+
+                            hl_away = " ".join(
+                                str(
+                                    (
+                                        match_obj.get(
+                                            "awayTeam"
+                                        )
+                                        or {}
+                                    ).get(
+                                        "name",
+                                        ""
+                                    )
+                                ).lower().split()
+                            )
+
+                            title = " ".join(
+                                str(
+                                    hl.get(
+                                        "title",
+                                        ""
+                                    )
+                                ).lower().split()
+                            )
+
+                            if (
+                                (
+                                    normalized_home
+                                    in title
+                                    and normalized_away
+                                    in title
+                                )
+                                or (
+                                    normalized_home
+                                    in hl_home
+                                    and normalized_away
+                                    in hl_away
+                                )
+                                or (
+                                    normalized_home
+                                    in hl_away
+                                    and normalized_away
+                                    in hl_home
+                                )
+                            ):
+                                exact_match = hl
+                                break
+
+                    # ====================================================
+                    # 3. HIGHLIGHTLY SAJÁT MATCH.ID
+                    # ====================================================
+
+                    if exact_match is not None:
+
+                        match_obj = (
+                            exact_match.get(
+                                "match"
+                            )
+                            or {}
+                        )
+
+                        raw_hl_match_id = (
+                            match_obj.get("id")
+                        )
+
+                        if raw_hl_match_id is not None:
+                            highlight_match_id = str(
+                                raw_hl_match_id
+                            )
+
+                        highlight_url = (
+                            exact_match.get(
+                                "embedUrl"
+                            )
+                            or exact_match.get(
+                                "url"
+                            )
+                        )
+
+                # ========================================================
+                # GÓLOK
+                # ========================================================
 
                 try:
-                    home_score = int(home_data.get("goals", 0))
+                    home_score = int(
+                        home_data.get(
+                            "goals",
+                            0
+                        )
+                    )
                 except:
                     home_score = 0
 
                 try:
-                    away_score = int(away_data.get("goals", 0))
+                    away_score = int(
+                        away_data.get(
+                            "goals",
+                            0
+                        )
+                    )
                 except:
                     away_score = 0
 
+                # ========================================================
+                # PERC
+                # ========================================================
+
                 minute_val = 0
-                events_container = m.get("events") or {}
-                if not isinstance(events_container, dict):
+
+                events_container = (
+                    m.get("events")
+                    or {}
+                )
+
+                if not isinstance(
+                    events_container,
+                    dict
+                ):
                     events_container = {}
-                events = ensure_list(events_container.get("event"))
+
+                events = ensure_list(
+                    events_container.get(
+                        "event"
+                    )
+                )
+
                 if events:
+
                     try:
                         last_event = events[-1]
-                        minute_val = int(last_event.get("minute", 0)) if isinstance(last_event, dict) else 0
+
+                        minute_val = int(
+                            last_event.get(
+                                "minute",
+                                0
+                            )
+                        ) if isinstance(
+                            last_event,
+                            dict
+                        ) else 0
+
                     except:
                         minute_val = 0
 
-                raw_status = m.get("status", "live")
-                adjusted_status = adjust_time(raw_status)
-                adjusted_status = normalize_match_status(adjusted_status, minute_val)
+                # ========================================================
+                # STÁTUSZ
+                # ========================================================
+
+                raw_status = m.get(
+                    "status",
+                    "live"
+                )
+
+                adjusted_status = adjust_time(
+                    raw_status
+                )
+
+                # ========================================================
+                # MECCS
+                # ========================================================
 
                 matches_list.append({
-                    "id": str(m.get("main_id", "")),
+                    "id": str(
+                        m.get(
+                            "main_id",
+                            ""
+                        )
+                    ),
+
                     "league_id": league_id,
+
                     "league": full_league_title,
-                    "country": translate_text(raw_country),
-                    "country_code": _country_code(raw_country),
-                    "league_logo_url": None,
+
+                    "country": translate_text(
+                        raw_country
+                    ),
+
+                    "country_code": _country_code(
+                        raw_country
+                    ),
+
+                    "league_logo_url": league_logo_url,
+
                     "home_team": home_name,
+
                     "away_team": away_name,
+
                     "home_logo_url": home_logo_url,
+
                     "away_logo_url": away_logo_url,
+
                     "home_score": home_score,
+
                     "away_score": away_score,
+
                     "status": adjusted_status,
+
                     "minute": minute_val,
+
                     "highlight_url": highlight_url,
+
                     "highlight_match_id": highlight_match_id,
-                    "value_bet": True if m.get("inplay_odds_running") == "True" else False
+
+                    "value_bet": (
+                        True
+                        if m.get(
+                            "inplay_odds_running"
+                        ) == "True"
+                        else False
+                    ),
+
+                    "events": _normalize_statpal_events(
+                        events
+                    )
                 })
 
         if not matches_list:
-            return [{"id": "0", "league_id": "0", "league": "Információ", "home_team": "Jelenleg nincs", "away_team": "aktív mérkőzés", "home_score": None, "away_score": None, "status": "info", "minute": 0}]
+
+            return [{
+                "id": "0",
+                "league_id": "0",
+                "league": "Információ",
+                "home_team": "Jelenleg nincs",
+                "away_team": "aktív mérkőzés",
+                "home_score": None,
+                "away_score": None,
+                "status": "info",
+                "minute": 0
+            }]
+
+        # ================================================================
+        # KIEMELT LIGÁK SORRENDJE
+        # ================================================================
 
         def get_league_sort_key(item):
-            league_title = str(item.get("league") or "").strip()
-            if league_title in TOP_LEAGUES_ORDER:
-                return (0, TOP_LEAGUES_ORDER.index(league_title))
-            return (1, _hungarian_sort_key(league_title))
 
-        matches_list.sort(key=get_league_sort_key)
+            league_title = str(
+                item.get("league") or ""
+            ).strip()
+
+            if league_title in TOP_LEAGUES_ORDER:
+                return (
+                    0,
+                    TOP_LEAGUES_ORDER.index(
+                        league_title
+                    )
+                )
+
+            # A kiemelt 5 liga után minden más bajnokság
+            # magyar ábécé szerint következik.
+            return (
+                1,
+                _hungarian_sort_key(league_title)
+            )
+
+        matches_list.sort(
+            key=get_league_sort_key
+        )
+
         return matches_list
 
     except Exception as e:
-        return [{"id": "err", "league_id": "0", "league": "Szerver hiba", "home_team": "API Hiba", "away_team": str(e)[:20], "home_score": None, "away_score": None, "status": "error", "minute": 0}]
+
+        return [{
+            "id": "err",
+            "league_id": "0",
+            "league": "Szerver hiba",
+            "home_team": "API Hiba",
+            "away_team": str(e)[:20],
+            "home_score": None,
+            "away_score": None,
+            "status": "error",
+            "minute": 0
+        }]
+
 
 @app.get("/api/standings/{league_id}")
 def get_standings(league_id: str):
+
     if not STATPAL_KEY or not league_id:
         return []
+
     try:
-        url = f"https://statpal.io/api/v2/soccer/leagues/{league_id}/standings?access_key={STATPAL_KEY}"
-        res = requests.get(url, timeout=10)
+
+        url = (
+            f"https://statpal.io/api/v2/soccer/leagues/"
+            f"{league_id}/standings"
+            f"?access_key={STATPAL_KEY}"
+        )
+
+        res = requests.get(
+            url,
+            timeout=10
+        )
+
         if res.status_code != 200:
             return []
+
         data = res.json()
-        standings_data = data.get("standings", {})
-        tournament = standings_data.get("tournament", {})
-        if isinstance(tournament, list) and len(tournament) > 0:
+
+        standings_data = (
+            data.get("standings", {})
+        )
+
+        tournament = (
+            standings_data.get(
+                "tournament",
+                {}
+            )
+        )
+
+        if (
+            isinstance(tournament, list)
+            and len(tournament) > 0
+        ):
             tournament = tournament[0]
-        team_list = ensure_list(tournament.get("team"))
+
+        team_list = ensure_list(
+            tournament.get("team")
+        )
+
         standings = []
+
         for t in team_list:
-            if not isinstance(t, dict):
+
+            if not isinstance(
+                t,
+                dict
+            ):
                 continue
-            overall = t.get("overall", {})
-            total = t.get("total", {})
+
+            overall = t.get(
+                "overall",
+                {}
+            )
+
+            total = t.get(
+                "total",
+                {}
+            )
+
             standings.append({
-                "position": int(t.get("position", 0)),
-                "team": translate_text(t.get("name", "Csapat")),
-                "played": int(overall.get("games_played", 0)),
-                "wins": int(overall.get("wins", 0)),
-                "draws": int(overall.get("draws", 0)),
-                "losses": int(overall.get("losses", 0)),
-                "goalsScored": int(overall.get("goals_scored", 0)),
-                "goalsAllowed": int(overall.get("goals_allowed", 0)),
-                "goalDifference": str(total.get("goal_difference", "0")),
-                "points": int(total.get("points", 0))
+
+                "position": int(
+                    t.get(
+                        "position",
+                        0
+                    )
+                ),
+
+                "team": translate_text(
+                    t.get(
+                        "name",
+                        "Csapat"
+                    )
+                ),
+
+                "played": int(
+                    overall.get(
+                        "games_played",
+                        0
+                    )
+                ),
+
+                "wins": int(
+                    overall.get(
+                        "wins",
+                        0
+                    )
+                ),
+
+                "draws": int(
+                    overall.get(
+                        "draws",
+                        0
+                    )
+                ),
+
+                "losses": int(
+                    overall.get(
+                        "losses",
+                        0
+                    )
+                ),
+
+                "goalsScored": int(
+                    overall.get(
+                        "goals_scored",
+                        0
+                    )
+                ),
+
+                "goalsAllowed": int(
+                    overall.get(
+                        "goals_allowed",
+                        0
+                    )
+                ),
+
+                "goalDifference": str(
+                    total.get(
+                        "goal_difference",
+                        "0"
+                    )
+                ),
+
+                "points": int(
+                    total.get(
+                        "points",
+                        0
+                    )
+                )
             })
-        standings.sort(key=lambda x: x["position"])
+
+        standings.sort(
+            key=lambda x: x["position"]
+        )
+
         return standings
+
     except Exception:
         return []
 
+
+
+
+@app.get("/api/matches/highlightly/{highlight_match_id}/detail")
+def get_highlightly_match_detail(highlight_match_id: str):
+    """Highlightly teljes meccs részlet (events, stats, venue, predictions)."""
+    data = fetch_highlightly_match_detail(highlight_match_id)
+    if not data:
+        return {"error": "not_found"}
+    events = data.get("events") or []
+    norm_events = []
+    for ev in events if isinstance(events, list) else []:
+        if not isinstance(ev, dict):
+            continue
+        team_obj = ev.get("team") if isinstance(ev.get("team"), dict) else {}
+        norm_events.append({
+            "type": str(ev.get("type") or "").lower(),
+            "team_name": team_obj.get("name"),
+            "minute_display": str(ev.get("time") or ""),
+            "player": ev.get("player"),
+            "assist": ev.get("assist"),
+            "substituted": ev.get("substituted"),
+        })
+    state = data.get("state") if isinstance(data.get("state"), dict) else {}
+    score = state.get("score") if isinstance(state.get("score"), dict) else {}
+    return {
+        "id": data.get("id"),
+        "round": data.get("round"),
+        "date": data.get("date"),
+        "venue": data.get("venue"),
+        "referee": data.get("referee"),
+        "forecast": data.get("forecast"),
+        "state": state,
+        "score_current": score.get("current"),
+        "clock": state.get("clock"),
+        "status_description": state.get("description"),
+        "events": norm_events,
+        "statistics": _normalize_statistics(data.get("statistics") or []),
+        "predictions": data.get("predictions"),
+        "home_team": (data.get("homeTeam") or {}).get("name") if isinstance(data.get("homeTeam"), dict) else None,
+        "away_team": (data.get("awayTeam") or {}).get("name") if isinstance(data.get("awayTeam"), dict) else None,
+    }
+
+
+@app.get("/api/matches/highlightly/{highlight_match_id}/lineups")
+def get_match_lineups(highlight_match_id: str):
+    """Highlightly összeállítás (kezdő + pad)."""
+    raw = fetch_highlightly_lineups(highlight_match_id)
+    if not raw:
+        return {"home": None, "away": None, "available": False}
+    normalized = _normalize_lineups(raw)
+    normalized["available"] = bool(
+        (normalized.get("home") and normalized["home"].get("players"))
+        or (normalized.get("away") and normalized["away"].get("players"))
+    )
+    return normalized
+
+
+@app.get("/api/matches/highlightly/{highlight_match_id}/statistics")
+def get_match_statistics(highlight_match_id: str):
+    """Highlightly meccs statisztika (birtoklás, lövések, stb.)."""
+    raw = fetch_highlightly_statistics(highlight_match_id)
+    return {
+        "items": _normalize_statistics(raw),
+        "available": bool(raw),
+    }
+
+
+@app.get("/api/matches/{match_id}")
+def get_match_detail(match_id: str):
+    """
+    StatPal meccs részlet main_id alapján.
+    Events + alap score/status a live/today cache-ből.
+    """
+    if not match_id or match_id in ("0", "err"):
+        return {"error": "invalid_match_id"}
+
+    now = time.time()
+    cache_key = f"statpal:{match_id}"
+    cached = _detail_cache.get(cache_key)
+    if cached and (now - cached["ts"]) < DETAIL_CACHE_TTL:
+        return cached["data"]
+
+    # Először a már felépített lista válaszból keresünk (highlight_id is megvan)
+    try:
+        all_matches = get_matches()
+        if isinstance(all_matches, list):
+            for item in all_matches:
+                if str(item.get("id") or "") == str(match_id):
+                    _detail_cache[cache_key] = {"data": item, "ts": now}
+                    return item
+    except Exception:
+        pass
+
+    raw, league = _find_statpal_raw_match(match_id)
+    if not raw:
+        return {"error": "not_found", "id": match_id}
+
+    home_data = raw.get("home") or {}
+    away_data = raw.get("away") or {}
+    events_container = raw.get("events") or {}
+    if not isinstance(events_container, dict):
+        events_container = {}
+    events = ensure_list(events_container.get("event"))
+    events_norm = _normalize_statpal_events(events)
+
+    minute_val = 0
+    if events_norm:
+        last = events_norm[-1]
+        if last.get("minute") is not None:
+            minute_val = last["minute"]
+
+    try:
+        home_score = int(home_data.get("goals", 0) or 0)
+    except Exception:
+        home_score = 0
+    try:
+        away_score = int(away_data.get("goals", 0) or 0)
+    except Exception:
+        away_score = 0
+
+    league_id = str((league or {}).get("id", ""))
+    raw_country = (league or {}).get("country", "")
+    raw_league = (league or {}).get("name", "")
+    full_league = format_league_title(raw_country, raw_league) if raw_league else ""
+
+    payload = {
+        "id": str(match_id),
+        "league_id": league_id,
+        "league": full_league,
+        "country": translate_text(raw_country),
+        "country_code": _country_code(raw_country),
+        "home_team": translate_text(home_data.get("name", "Hazai")),
+        "away_team": translate_text(away_data.get("name", "Vendég")),
+        "home_logo_url": _team_image_url(_get_team_id(home_data)),
+        "away_logo_url": _team_image_url(_get_team_id(away_data)),
+        "home_score": home_score,
+        "away_score": away_score,
+        "status": adjust_time(raw.get("status", "live")),
+        "minute": minute_val,
+        "events": events_norm,
+        "value_bet": True if raw.get("inplay_odds_running") == "True" else False,
+    }
+    _detail_cache[cache_key] = {"data": payload, "ts": now}
+    return payload
+
+
 @app.get("/api/status")
 def get_status():
+
     now = time.time()
-    def cache_info(cache, ttl):
+
+    def cache_info(
+        cache,
+        ttl
+    ):
+
         if cache["data"] is None:
-            return {"cached": False}
+            return {
+                "cached": False
+            }
+
         age = now - cache["ts"]
-        return {"cached": True, "age_seconds": round(age, 1), "ttl_seconds": ttl, "still_valid": age < ttl}
+
+        return {
+            "cached": True,
+            "age_seconds": round(
+                age,
+                1
+            ),
+            "ttl_seconds": ttl,
+            "still_valid": age < ttl
+        }
 
     return {
-        "statpal": cache_info(_statpal_cache, STATPAL_CACHE_TTL),
-        "highlightly": cache_info(_highlightly_cache, HIGHLIGHTLY_CACHE_TTL),
-        "highlightly_count": len(_highlightly_cache["data"] or []) if _highlightly_cache["data"] else 0,
-        "highlightly_match_cache_count": len(_highlightly_match_cache),
-        "ai_cache_count": len(_ai_analysis_cache)
+
+        "statpal": cache_info(
+            _statpal_cache,
+            STATPAL_CACHE_TTL
+        ),
+
+        "highlightly": cache_info(
+            _highlightly_cache,
+            HIGHLIGHTLY_CACHE_TTL
+        ),
+
+        "highlightly_count": (
+            len(
+                _highlightly_cache["data"] or []
+            )
+            if _highlightly_cache["data"]
+            else 0
+        ),
+
+        "highlightly_match_cache_count": len(
+            _highlightly_match_cache
+        )
     }
