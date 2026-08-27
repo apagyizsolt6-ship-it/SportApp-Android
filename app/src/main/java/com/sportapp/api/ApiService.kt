@@ -5,6 +5,7 @@ import com.sportapp.models.HighlightVideo
 import com.sportapp.models.LineupsResponse
 import com.sportapp.models.StatisticsResponse
 import com.sportapp.models.AiAnalysisResponse
+import com.sportapp.models.H2hResponse
 import retrofit2.http.GET
 import retrofit2.http.Path
 
@@ -52,4 +53,9 @@ interface ApiService {
     suspend fun getAiAnalysis(
         @Path("match_id") matchId: String
     ): AiAnalysisResponse
+
+    @GET("api/matches/{match_id}/h2h")
+    suspend fun getMatchH2h(
+        @Path("match_id") matchId: String
+    ): H2hResponse
 }
