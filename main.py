@@ -54,9 +54,21 @@ def _name_tokens(name: str):
     return tokens
 
 
+def _strip_accents(s: str) -> str:
+    repl = {
+        "á": "a", "é": "e", "í": "i", "ó": "o", "ö": "o", "ő": "o",
+        "ú": "u", "ü": "u", "ű": "u", "Á": "a", "É": "e", "Í": "i",
+        "Ó": "o", "Ö": "o", "Ő": "o", "Ú": "u", "Ü": "u", "Ű": "u",
+    }
+    out = []
+    for ch in s or "":
+        out.append(repl.get(ch, ch))
+    return "".join(out)
+
+
 def _teams_soft_match(a: str, b: str) -> bool:
-    a = (a or "").lower().strip()
-    b = (b or "").lower().strip()
+    a = _strip_accents((a or "").lower().strip())
+    b = _strip_accents((b or "").lower().strip())
     if not a or not b:
         return False
     # teljes / prefix
@@ -512,20 +524,29 @@ def fetch_highlightly_lineups(highlight_match_id: str):
     cache_key = str(highlight_match_id).strip()
     now = time.time()
     cached = _lineups_cache.get(cache_key)
-    if cached and (now - cached["ts"]) < LINEUPS_CACHE_TTL:
+    # Üres / None válasz ne maradjon 2 percig cache-ben
+    if cached and cached.get("data") and (now - cached["ts"]) < LINEUPS_CACHE_TTL:
         return cached["data"]
+    if cached and not cached.get("data") and (now - cached["ts"]) < 15:
+        return None
     try:
         resp = requests.get(
             f"https://soccer.highlightly.net/lineups/{cache_key}",
             headers=_highlightly_headers(),
-            timeout=10,
+            timeout=12,
         )
         if resp.status_code != 200:
+            _lineups_cache[cache_key] = {"data": None, "ts": now}
             return None
         data = resp.json()
-        if isinstance(data, dict):
+        if isinstance(data, list) and data:
+            data = data[0] if isinstance(data[0], dict) else None
+        elif isinstance(data, dict) and isinstance(data.get("data"), dict):
+            data = data["data"]
+        if isinstance(data, dict) and (data.get("homeTeam") or data.get("awayTeam") or data.get("home") or data.get("away")):
             _lineups_cache[cache_key] = {"data": data, "ts": now}
             return data
+        _lineups_cache[cache_key] = {"data": None, "ts": now}
     except Exception:
         pass
     return None
@@ -569,129 +590,99 @@ def fetch_highlightly_statistics(highlight_match_id: str):
 
 
 def _normalize_lineups(raw):
-    """Highlightly lineups válasz → egyszerű home/away struktúra."""
+    """Highlightly lineups válasz → egyszerű home/away struktúra.
+
+    Highlightly formátum:
+      homeTeam / awayTeam: { name, formation, initialLineup: [[players]], substitutes: [] }
+    """
     if not isinstance(raw, dict):
         return {"home": None, "away": None}
 
-    def side(key):
-        block = raw.get(key) or raw.get(key.capitalize()) or {}
-        if not isinstance(block, dict):
-            return None
-        formation = block.get("formation") or block.get("Formation")
-        initial = block.get("initialLineup") or block.get("lineup") or []
-        bench = block.get("bench") or block.get("substitutes") or []
-        team = block.get("team") if isinstance(block.get("team"), dict) else {}
+    def _flatten_players(initial, substitutes):
         players = []
-        # initialLineup gyakran list of rows (list of lists)
-        if isinstance(initial, list):
-            for row in initial:
-                if isinstance(row, list):
-                    for p in row:
-                        if isinstance(p, dict):
-                            players.append({
-                                "name": p.get("name") or p.get("playerName"),
-                                "number": p.get("number") or p.get("shirtNumber"),
-                                "position": p.get("position"),
-                                "is_bench": False,
-                            })
-                elif isinstance(row, dict):
+        rows = initial or []
+        # initialLineup: list of rows (each row = list of players) VAGY flat list
+        if rows and isinstance(rows[0], list):
+            for row in rows:
+                for p in row:
+                    if not isinstance(p, dict):
+                        continue
                     players.append({
-                        "name": row.get("name") or row.get("playerName"),
-                        "number": row.get("number") or row.get("shirtNumber"),
-                        "position": row.get("position"),
+                        "name": p.get("name") or p.get("playerName") or p.get("player"),
+                        "number": p.get("number") or p.get("shirtNumber") or p.get("shirt"),
+                        "position": p.get("position") or p.get("pos"),
                         "is_bench": False,
                     })
-        if isinstance(bench, list):
-            for p in bench:
-                if isinstance(p, dict):
-                    players.append({
-                        "name": p.get("name") or p.get("playerName"),
-                        "number": p.get("number") or p.get("shirtNumber"),
-                        "position": p.get("position"),
-                        "is_bench": True,
-                    })
+        else:
+            for p in rows:
+                if not isinstance(p, dict):
+                    continue
+                players.append({
+                    "name": p.get("name") or p.get("playerName") or p.get("player"),
+                    "number": p.get("number") or p.get("shirtNumber") or p.get("shirt"),
+                    "position": p.get("position") or p.get("pos"),
+                    "is_bench": bool(p.get("is_bench") or p.get("substitute")),
+                })
+        for p in (substitutes or []):
+            if not isinstance(p, dict):
+                continue
+            players.append({
+                "name": p.get("name") or p.get("playerName") or p.get("player"),
+                "number": p.get("number") or p.get("shirtNumber") or p.get("shirt"),
+                "position": p.get("position") or p.get("pos"),
+                "is_bench": True,
+            })
+        return players
+
+    def side(prefer_keys):
+        block = None
+        for k in prefer_keys:
+            b = raw.get(k)
+            if isinstance(b, dict) and b:
+                block = b
+                break
+        if not isinstance(block, dict):
+            return None
+        formation = (
+            block.get("formation")
+            or block.get("Formation")
+            or block.get("formation_name")
+        )
+        team = block.get("team") if isinstance(block.get("team"), dict) else {}
+        team_name = (
+            block.get("name")
+            or team.get("name")
+            or block.get("teamName")
+            or block.get("team_name")
+        )
+        initial = (
+            block.get("initialLineup")
+            or block.get("startXI")
+            or block.get("lineup")
+            or block.get("startingLineup")
+            or block.get("players")
+            or []
+        )
+        substitutes = (
+            block.get("substitutes")
+            or block.get("bench")
+            or block.get("subs")
+            or []
+        )
+        players = _flatten_players(initial, substitutes)
+        if not players and not formation:
+            return None
         return {
-            "team_name": team.get("name") or block.get("teamName"),
+            "team_name": team_name,
             "formation": formation,
             "players": players,
         }
 
-    return {
-        "home": side("home"),
-        "away": side("away"),
-    }
+    home = side(["homeTeam", "home", "HomeTeam", "home_team"])
+    away = side(["awayTeam", "away", "AwayTeam", "away_team"])
+    return {"home": home, "away": away}
 
 
-
-STAT_LABEL_HU = {
-    # pontos egyezés (kisbetűs kulcs)
-    "shots accuracy": "Lövéspontosság",
-    "shot accuracy": "Lövéspontosság",
-    "shots on target": "Kapura lövés",
-    "shots off target": "Kapu mellé",
-    "blocked shots": "Blokkolt lövés",
-    "shots blocked": "Blokkolt lövés",
-    "total shots": "Összes lövés",
-    "shots total": "Összes lövés",
-    "shots": "Lövések",
-    "fouls": "Szabálytalanság",
-    "corners": "Szöglet",
-    "corner kicks": "Szöglet",
-    "offsides": "Les",
-    "possession": "Labdabirtoklás",
-    "ball possession": "Labdabirtoklás",
-    "yellow cards": "Sárga lap",
-    "red cards": "Piros lap",
-    "goalkeeper saves": "Kapus védés",
-    "saves": "Védések",
-    "total passes": "Összes passz",
-    "passes total": "Összes passz",
-    "accurate passes": "Pontos passz",
-    "passes accurate": "Pontos passz",
-    "pass accuracy": "Passzpontosság",
-    "key passes": "Kulcspassz",
-    "passes": "Passzok",
-    "expected goals": "Várható gól (xG)",
-    "expected goals (xg)": "Várható gól (xG)",
-    "xg": "Várható gól (xG)",
-    "expected assists": "Várható gólpassz (xA)",
-    "expected assists (xa)": "Várható gólpassz (xA)",
-    "xa": "Várható gólpassz (xA)",
-    "attacks": "Támadás",
-    "dangerous attacks": "Veszélyes támadás",
-    "throw-ins": "Bedobás",
-    "throw ins": "Bedobás",
-    "free kicks": "Szabadrúgás",
-    "goal kicks": "Kapusrúgás",
-    "tackles": "Szerelés",
-    "total tackles": "Összes szerelés",
-    "tackles won": "Nyert szerelés",
-    "interceptions": "Labdaszerzés",
-    "clearances": "Kiszabadítás",
-    "crosses": "Beadás",
-    "total crosses": "Összes beadás",
-    "accurate crosses": "Pontos beadás",
-    "crosses accurate": "Pontos beadás",
-    "counter attacks": "Kontratámadás",
-    "hits woodwork": "Kapufák",
-    "big chances": "Nagy helyzet",
-    "big chances missed": "Elpuskázott nagy helyzet",
-    "big chances created": "Kialakított nagy helyzet",
-    "duels won": "Nyert párharc",
-    "duels": "Párharc",
-    "aerials won": "Fejpárbaj",
-    "aerials": "Fejpárbaj",
-    "dribbles": "Cselt",
-    "dribbles attempted": "Próbált csel",
-    "dribbles succeeded": "Sikeres csel",
-    "successful dribbles": "Sikeres csel",
-    "dribbles successful": "Sikeres csel",
-    "substitutions": "Csere",
-    "passes in final third": "Passz a 16-osban",
-    "final third entries": "Belépés a 16-osba",
-    "long balls": "Hosszú labda",
-    "accurate long balls": "Pontos hosszú labda",
-}
 
 
 def _stat_label_hu(name: str) -> str:
