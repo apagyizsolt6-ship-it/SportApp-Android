@@ -33,6 +33,89 @@ LINEUPS_CACHE_TTL = 120
 STATS_CACHE_TTL = 30
 
 
+
+def _name_tokens(name: str):
+    """Csapatnév tokenek párosításhoz (rövid/hosszú nevek)."""
+    if not name:
+        return set()
+    stop = {
+        "fc", "cf", "sc", "ac", "as", "afc", "fk", "sk", "nk", "bk", "if",
+        "the", "de", "fc.", "u19", "u21", "ii", "b", "women", "w",
+        "united", "city", "town", "hotspur", "wanderers", "athletic",
+        "club", "sporting", "real", "sport", "calcio",
+    }
+    parts = "".join(ch if ch.isalnum() or ch.isspace() else " " for ch in name.lower()).split()
+    tokens = {p for p in parts if len(p) >= 3 and p not in stop}
+    if not tokens and parts:
+        tokens = {parts[-1]}
+    return tokens
+
+
+def _teams_soft_match(a: str, b: str) -> bool:
+    ta, tb = _name_tokens(a), _name_tokens(b)
+    if not ta or not tb:
+        return False
+    if ta & tb:
+        return True
+    # egyik tartalmazza a másik fő tokenjét
+    for x in ta:
+        for y in tb:
+            if x in y or y in x:
+                return True
+    return False
+
+
+def _extract_odds(raw: dict):
+    """StatPal odds mezők – több lehetséges kulcsnév."""
+    if not isinstance(raw, dict):
+        return None, None, None
+    candidates = [
+        ("odds_home", "odds_draw", "odds_away"),
+        ("odd_1", "odd_x", "odd_2"),
+        ("home_od", "draw_od", "away_od"),
+        ("o1", "ox", "o2"),
+    ]
+    # nested odds object
+    odds_obj = raw.get("odds") or raw.get("inplay_odds") or {}
+    if isinstance(odds_obj, dict):
+        for h, d, a in candidates:
+            hv, dv, av = odds_obj.get(h), odds_obj.get(d), odds_obj.get(a)
+            if hv is not None or dv is not None or av is not None:
+                try:
+                    return (
+                        float(hv) if hv is not None else None,
+                        float(dv) if dv is not None else None,
+                        float(av) if av is not None else None,
+                    )
+                except Exception:
+                    pass
+        # common nested: home/draw/away
+        try:
+            h = odds_obj.get("home") or odds_obj.get("1")
+            d = odds_obj.get("draw") or odds_obj.get("x") or odds_obj.get("X")
+            a = odds_obj.get("away") or odds_obj.get("2")
+            if h is not None or d is not None or a is not None:
+                return (
+                    float(h) if h is not None else None,
+                    float(d) if d is not None else None,
+                    float(a) if a is not None else None,
+                )
+        except Exception:
+            pass
+    for h, d, a in candidates:
+        hv, dv, av = raw.get(h), raw.get(d), raw.get(a)
+        if hv is not None or dv is not None or av is not None:
+            try:
+                return (
+                    float(hv) if hv is not None else None,
+                    float(dv) if dv is not None else None,
+                    float(av) if av is not None else None,
+                )
+            except Exception:
+                pass
+    return None, None, None
+
+
 def _normalize_statpal_events(events):
     """StatPal event list -> egységes, mobilbarát formátum."""
     result = []
@@ -1458,6 +1541,14 @@ def get_matches():
                                     and normalized_away
                                     in hl_home
                                 )
+                                or (
+                                    _teams_soft_match(normalized_home, hl_home)
+                                    and _teams_soft_match(normalized_away, hl_away)
+                                )
+                                or (
+                                    _teams_soft_match(normalized_home, hl_away)
+                                    and _teams_soft_match(normalized_away, hl_home)
+                                )
                             ):
                                 exact_match = hl
                                 break
@@ -1627,7 +1718,10 @@ def get_matches():
 
                     "events": _normalize_statpal_events(
                         events
-                    )
+                    ),
+                    "odds_home": _extract_odds(m)[0],
+                    "odds_draw": _extract_odds(m)[1],
+                    "odds_away": _extract_odds(m)[2],
                 })
 
         if not matches_list:
@@ -1963,6 +2057,7 @@ def get_match_detail(match_id: str):
     raw_league = (league or {}).get("name", "")
     full_league = format_league_title(raw_country, raw_league) if raw_league else ""
 
+    oh, od, oa = _extract_odds(raw)
     payload = {
         "id": str(match_id),
         "league_id": league_id,
@@ -1979,9 +2074,154 @@ def get_match_detail(match_id: str):
         "minute": minute_val,
         "events": events_norm,
         "value_bet": True if raw.get("inplay_odds_running") == "True" else False,
+        "odds_home": oh,
+        "odds_draw": od,
+        "odds_away": oa,
+        "venue": None,
+        "referee": None,
+        "highlight_match_id": None,
+        "highlight_url": None,
     }
+
+    # Highlightly extras: venue, referee, jobb events ha van match id a listából
+    try:
+        all_m = get_matches()
+        if isinstance(all_m, list):
+            for item in all_m:
+                if str(item.get("id") or "") == str(match_id):
+                    payload["highlight_match_id"] = item.get("highlight_match_id")
+                    payload["highlight_url"] = item.get("highlight_url")
+                    if item.get("odds_home") is not None:
+                        payload["odds_home"] = item.get("odds_home")
+                        payload["odds_draw"] = item.get("odds_draw")
+                        payload["odds_away"] = item.get("odds_away")
+                    if item.get("events"):
+                        payload["events"] = item.get("events")
+                    break
+        hl_id = payload.get("highlight_match_id")
+        if hl_id:
+            hl = fetch_highlightly_match_detail(str(hl_id))
+            if isinstance(hl, dict):
+                venue = hl.get("venue")
+                if isinstance(venue, dict):
+                    payload["venue"] = venue.get("name") or venue.get("venue_name")
+                elif isinstance(venue, str):
+                    payload["venue"] = venue
+                ref = hl.get("referee")
+                if isinstance(ref, dict):
+                    payload["referee"] = ref.get("name")
+                elif isinstance(ref, str):
+                    payload["referee"] = ref
+    except Exception:
+        pass
+
     _detail_cache[cache_key] = {"data": payload, "ts": now}
     return payload
+
+
+
+
+
+@app.get("/api/matches/{match_id}/h2h")
+def get_match_h2h(match_id: str):
+    """
+    Egymás elleni (H2H) – Highlightly match detail predictions / korábbi találkozók
+    ha elérhető. Egyébként üres lista + üzenet.
+    """
+    detail = get_match_detail(match_id)
+    if not isinstance(detail, dict) or detail.get("error"):
+        return {"items": [], "available": False, "message": "Meccs nem található."}
+
+    home = detail.get("home_team") or ""
+    away = detail.get("away_team") or ""
+    items = []
+
+    hl_id = detail.get("highlight_match_id")
+    if hl_id:
+        try:
+            hl = fetch_highlightly_match_detail(str(hl_id))
+            if isinstance(hl, dict):
+                # néha predictions / previousMeetings / h2h mező
+                for key in ("h2h", "previousMeetings", "previous_meetings", "meetings"):
+                    raw = hl.get(key)
+                    if isinstance(raw, list):
+                        for m in raw[:8]:
+                            if not isinstance(m, dict):
+                                continue
+                            items.append({
+                                "date": m.get("date") or m.get("time"),
+                                "home_team": (m.get("homeTeam") or {}).get("name") if isinstance(m.get("homeTeam"), dict) else m.get("home_team") or m.get("home"),
+                                "away_team": (m.get("awayTeam") or {}).get("name") if isinstance(m.get("awayTeam"), dict) else m.get("away_team") or m.get("away"),
+                                "home_score": m.get("home_score") or (m.get("score") or {}).get("home") if isinstance(m.get("score"), dict) else None,
+                                "away_score": m.get("away_score") or (m.get("score") or {}).get("away") if isinstance(m.get("score"), dict) else None,
+                                "competition": m.get("league") or m.get("competition"),
+                            })
+                        break
+                pred = hl.get("predictions") or hl.get("forecast")
+                if pred and not items:
+                    # nincs H2H lista, de van előrejelzés
+                    return {
+                        "items": [],
+                        "available": False,
+                        "message": "Nincs korábbi egymás elleni adat.",
+                        "prediction": pred if isinstance(pred, (str, dict, list)) else None,
+                        "home_team": home,
+                        "away_team": away,
+                    }
+        except Exception:
+            pass
+
+    return {
+        "items": items,
+        "available": bool(items),
+        "message": None if items else "Nincs elérhető H2H adat ehhez a párosításhoz.",
+        "home_team": home,
+        "away_team": away,
+    }
+
+
+@app.get("/api/ai-analysis/{match_id}")
+def get_ai_analysis(match_id: str):
+    """
+    Placeholder AI elemzés endpoint.
+    A mobil kliens MatchViewModel getAiAnalysis hívását szolgálja ki.
+    Később ide köthető valódi modell / prompt.
+    """
+    detail = None
+    try:
+        detail = get_match_detail(match_id)
+    except Exception:
+        detail = None
+
+    home = away = status = ""
+    home_score = away_score = None
+    if isinstance(detail, dict) and "error" not in detail:
+        home = detail.get("home_team") or ""
+        away = detail.get("away_team") or ""
+        status = detail.get("status") or ""
+        home_score = detail.get("home_score")
+        away_score = detail.get("away_score")
+
+    if home and away:
+        score_txt = ""
+        if home_score is not None and away_score is not None:
+            score_txt = f" Állás: {home_score}-{away_score}."
+        summary = (
+            f"{home} vs {away}.{score_txt} "
+            f"Státusz: {status or 'ismeretlen'}. "
+            "Részletes AI elemzés hamarosan."
+        )
+    else:
+        summary = "Ehhez a mérkőzéshez jelenleg nincs AI elemzés."
+
+    return {
+        "match_id": str(match_id),
+        "summary": summary,
+        "analysis": summary,
+        "text": summary,
+        "prediction": None,
+        "available": False,
+    }
 
 
 @app.get("/api/status")
