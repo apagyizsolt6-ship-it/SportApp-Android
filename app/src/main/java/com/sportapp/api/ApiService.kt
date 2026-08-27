@@ -4,6 +4,7 @@ import com.sportapp.models.MatchResponse
 import com.sportapp.models.HighlightVideo
 import com.sportapp.models.LineupsResponse
 import com.sportapp.models.StatisticsResponse
+import com.sportapp.models.AiAnalysisResponse
 import retrofit2.http.GET
 import retrofit2.http.Path
 
@@ -44,4 +45,11 @@ interface ApiService {
     suspend fun getMatchStatistics(
         @Path("highlight_match_id") highlightMatchId: String
     ): StatisticsResponse
+
+    // AI elemzés – a GitHub-on lévő MatchViewModel hivatkozik rá.
+    // Ha a backend még nem ad valódi AI-t, üres/placeholder válasz jön.
+    @GET("api/ai-analysis/{match_id}")
+    suspend fun getAiAnalysis(
+        @Path("match_id") matchId: String
+    ): AiAnalysisResponse
 }
