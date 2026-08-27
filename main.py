@@ -622,6 +622,65 @@ def _normalize_lineups(raw):
     }
 
 
+
+STAT_LABEL_HU = {
+    "shots accuracy": "Lövéspontosság",
+    "shot accuracy": "Lövéspontosság",
+    "shots on target": "Kapura lövés",
+    "shots off target": "Kapu mellé",
+    "blocked shots": "Blokkolt lövés",
+    "shots blocked": "Blokkolt lövés",
+    "total shots": "Összes lövés",
+    "shots": "Lövések",
+    "fouls": "Szabálytalanság",
+    "corners": "Szöglet",
+    "corner kicks": "Szöglet",
+    "offsides": "Les",
+    "possession": "Labdabirtoklás",
+    "ball possession": "Labdabirtoklás",
+    "yellow cards": "Sárga lap",
+    "red cards": "Piros lap",
+    "goalkeeper saves": "Kapus védés",
+    "saves": "Védések",
+    "passes": "Passzok",
+    "accurate passes": "Pontos passz",
+    "pass accuracy": "Passzpontosság",
+    "expected goals": "Várható gól (xG)",
+    "xg": "Várható gól (xG)",
+    "attacks": "Támadás",
+    "dangerous attacks": "Veszélyes támadás",
+    "throw-ins": "Bedobás",
+    "throw ins": "Bedobás",
+    "free kicks": "Szabadrúgás",
+    "goal kicks": "Kapusrúgás",
+    "tackles": "Szerelés",
+    "interceptions": "Labdaszerzés",
+    "clearances": "Kiszabadítás",
+    "crosses": "Beadás",
+    "counter attacks": "Kontratámadás",
+    "hits woodwork": "Kapufák",
+    "big chances": "Nagy helyzet",
+    "big chances missed": "Elpuskázott nagy helyzet",
+    "duels won": "Nyert párharc",
+    "aerials won": "Fejpárbaj",
+    "dribbles": "Cselt",
+    "substitutions": "Csere",
+}
+
+
+def _stat_label_hu(name: str) -> str:
+    if not name:
+        return name
+    key = str(name).strip().lower()
+    if key in STAT_LABEL_HU:
+        return STAT_LABEL_HU[key]
+    # részleges
+    for en, hu in STAT_LABEL_HU.items():
+        if en in key:
+            return hu
+    return str(name).strip()
+
+
 def _normalize_statistics(raw_list):
     """Highlightly statistics → párosított home/away értékek."""
     if not isinstance(raw_list, list) or not raw_list:
@@ -649,7 +708,7 @@ def _normalize_statistics(raw_list):
         home_name, away_name = teams_order[0], teams_order[1]
         for name, vals in by_name.items():
             result.append({
-                "name": name,
+                "name": _stat_label_hu(name),
                 "home": vals.get(home_name),
                 "away": vals.get(away_name),
             })
@@ -657,7 +716,7 @@ def _normalize_statistics(raw_list):
         only = teams_order[0] if teams_order else ""
         for name, vals in by_name.items():
             result.append({
-                "name": name,
+                "name": _stat_label_hu(name),
                 "home": vals.get(only),
                 "away": None,
             })
