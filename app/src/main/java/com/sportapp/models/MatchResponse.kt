@@ -48,7 +48,13 @@ data class MatchResponse(
     @SerializedName("value_bet") val isValueBet: Boolean? = null,
     @SerializedName("venue") val venue: String? = null,
     @SerializedName("referee") val referee: String? = null,
-    @SerializedName("events") val events: List<MatchEvent>? = null
+    @SerializedName("events") val events: List<MatchEvent>? = null,
+    @SerializedName("kickoff_date") val kickoffDate: String? = null,
+    @SerializedName("kickoff_time") val kickoffTime: String? = null,
+    @SerializedName("hl_home_team_id") val hlHomeTeamId: Any? = null,
+    @SerializedName("hl_away_team_id") val hlAwayTeamId: Any? = null,
+    @SerializedName("predictions") val predictions: Any? = null,
+    @SerializedName("forecast") val forecast: Any? = null
 ) {
     val id: String
         get() = matchId
@@ -100,4 +106,13 @@ data class H2hResponse(
     @SerializedName("message") val message: String? = null,
     @SerializedName("home_team") val homeTeam: String? = null,
     @SerializedName("away_team") val awayTeam: String? = null
+)
+
+
+data class FormResponse(
+    @SerializedName("home") val home: List<String>? = null,
+    @SerializedName("away") val away: List<String>? = null,
+    @SerializedName("home_team") val homeTeam: String? = null,
+    @SerializedName("away_team") val awayTeam: String? = null,
+    @SerializedName("available") val available: Boolean? = false
 )
