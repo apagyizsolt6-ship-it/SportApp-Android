@@ -1,5 +1,21 @@
 package com.sportapp.ui
 
+import com.sportapp.models.AiAnalysisResponse
+
+import com.sportapp.models.H2hResponse
+
+import com.sportapp.models.H2hItem
+
+import androidx.compose.ui.platform.LocalContext
+
+import androidx.compose.ui.graphics.PathEffect
+
+import androidx.compose.foundation.verticalScroll
+
+import androidx.compose.foundation.rememberScrollState
+
+import android.content.Intent
+
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -71,7 +87,11 @@ fun MatchDetailDialog(
     var errorMsg by remember { mutableStateOf<String?>(null) }
 
     val scope = rememberCoroutineScope()
-    val hlId = match.highlightMatchId?.trim().orEmpty()
+    val hlId = (detail.highlightMatchId ?: match.highlightMatchId)?.trim().orEmpty()
+    var h2h by remember { mutableStateOf<H2hResponse?>(null) }
+    var aiText by remember { mutableStateOf<String?>(null) }
+    var showAi by remember { mutableStateOf(false) }
+    val context = LocalContext.current
 
     // Élő frissítés: score + events 20 mp-enként, amíg a részlet nyitva van.
     // A lista ViewModel TTL-jével összhangban (backend cache 20 mp).
@@ -91,6 +111,13 @@ fun MatchDetailDialog(
                     events = match.events.orEmpty()
                 }
                 lastRefreshedAt = System.currentTimeMillis()
+                // H2H egyszer (vagy ha üres)
+                if (h2h == null) {
+                    try {
+                        h2h = RetrofitInstance.api.getMatchH2h(match.id)
+                    } catch (_: Exception) {
+                    }
+                }
             } catch (_: Exception) {
                 // hálózati hiba: megtartjuk az utolsó ismert adatot
             } finally {
@@ -138,7 +165,7 @@ fun MatchDetailDialog(
                             stats = r.items.orEmpty()
                             if (stats.isEmpty()) errorMsg = "Nincs elérhető statisztika."
                         } else {
-                            errorMsg = "Ehhez a meccshez nincs Highlightly azonosító."
+                            errorMsg = "Ehhez a meccshez nincs Highlightly azonosító (stats/lineups/videó ehhez kell)."
                         }
                     }
                     3 -> { // lineups
@@ -148,7 +175,7 @@ fun MatchDetailDialog(
                                 errorMsg = "Az összeállítás még nem elérhető."
                             }
                         } else if (hlId.isBlank()) {
-                            errorMsg = "Ehhez a meccshez nincs Highlightly azonosító."
+                            errorMsg = "Ehhez a meccshez nincs Highlightly azonosító (stats/lineups/videó ehhez kell)."
                         }
                     }
                     4 -> { // videos
@@ -217,6 +244,63 @@ fun MatchDetailDialog(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f)
+                    )
+                    Text(
+                        text = "🔄",
+                        fontSize = 16.sp,
+                        modifier = Modifier
+                            .clickable {
+                                scope.launch {
+                                    try {
+                                        isRefreshing = true
+                                        val d = RetrofitInstance.api.getMatchDetail(match.id)
+                                        detail = d
+                                        if (!d.events.isNullOrEmpty()) events = d.events.orEmpty()
+                                        h2h = RetrofitInstance.api.getMatchH2h(match.id)
+                                        lastRefreshedAt = System.currentTimeMillis()
+                                    } catch (_: Exception) {
+                                    } finally {
+                                        isRefreshing = false
+                                    }
+                                }
+                            }
+                            .padding(horizontal = 6.dp)
+                    )
+                    Text(
+                        text = "🤖",
+                        fontSize = 18.sp,
+                        modifier = Modifier
+                            .clickable {
+                                scope.launch {
+                                    showAi = true
+                                    aiText = null
+                                    try {
+                                        val r = RetrofitInstance.api.getAiAnalysis(match.id)
+                                        aiText = r.summary ?: r.analysis ?: r.text ?: "Nincs AI válasz."
+                                    } catch (e: Exception) {
+                                        aiText = "AI nem elérhető."
+                                    }
+                                }
+                            }
+                            .padding(horizontal = 6.dp)
+                    )
+                    Text(
+                        text = "↗",
+                        color = accent,
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier
+                            .clickable {
+                                val score = "${detail.homeScore ?: 0}–${detail.awayScore ?: 0}"
+                                val min = detail.minute?.takeIf { it > 0 }?.let { " ($it')" } ?: ""
+                                val body = "${detail.homeTeam} $score ${detail.awayTeam}$min\n${detail.league.orEmpty()}"
+                                val intent = Intent(Intent.ACTION_SEND).apply {
+                                    type = "text/plain"
+                                    putExtra(Intent.EXTRA_TEXT, body)
+                                }
+                                context.startActivity(Intent.createChooser(intent, "Megosztás"))
+                            }
+                            .padding(horizontal = 6.dp)
                     )
                     Text(
                         text = if (isFavorite) "★" else "☆",
@@ -328,15 +412,19 @@ fun MatchDetailDialog(
                     0 -> SummaryTab(
                         match = detail,
                         events = events,
+                        h2h = h2h,
                         text = text,
                         sub = sub,
                         card = card,
-                        green = green
+                        green = green,
+                        accent = accent
                     )
                     1 -> EventsTab(
                         events = events,
-                        homeTeam = match.homeTeam,
-                        awayTeam = match.awayTeam,
+                        homeTeam = detail.homeTeam,
+                        awayTeam = detail.awayTeam,
+                        matchStatus = detail.status,
+                        matchMinute = detail.minute,
                         text = text,
                         sub = sub,
                         card = card,
@@ -364,8 +452,28 @@ fun MatchDetailDialog(
             }
         }
     }
-}
 
+        if (showAi) {
+            AlertDialog(
+                onDismissRequest = { showAi = false },
+                title = {
+                    Text("🤖 AI elemzés", fontWeight = FontWeight.Bold, color = green)
+                },
+                text = {
+                    if (aiText == null) {
+                        CircularProgressIndicator(color = green, modifier = Modifier.size(28.dp))
+                    } else {
+                        Text(aiText ?: "", color = text, fontSize = 13.sp)
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = { showAi = false }) {
+                        Text("Bezárás", color = green)
+                    }
+                }
+            )
+        }
+    }
 
 @Composable
 private fun DetailTeamLogo(
@@ -525,33 +633,118 @@ private fun eventIcon(type: String?): String {
 private fun SummaryTab(
     match: MatchResponse,
     events: List<MatchEvent>,
+    h2h: H2hResponse?,
     text: Color,
     sub: Color,
     card: Color,
-    green: Color
+    green: Color,
+    accent: Color
 ) {
     val goals = events.filter {
-        val t = it.type?.lowercase().orEmpty()
-        t.contains("goal") || t == "penalty"
+        val ty = it.type?.lowercase().orEmpty()
+        ty.contains("goal") || ty == "penalty"
     }
-    LazyColumn(modifier = Modifier.fillMaxSize(),
+    val scheduled = isScheduledStatus(match.status, match.minute)
+    val finished = match.status.equals("FT", true) || match.status.equals("AET", true)
+
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
+        verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
+        // Státusz üzenet
+        item {
+            val msg = when {
+                scheduled -> "A meccs még nem kezdődött (${statusLabel(match.status)}). Az események és a statisztikák kezdés után jelennek meg."
+                finished -> "A mérkőzés véget ért."
+                else -> null
+            }
+            if (msg != null) {
+                Text(
+                    text = msg,
+                    color = sub,
+                    fontSize = 12.sp,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(card)
+                        .padding(12.dp)
+                )
+            }
+        }
+
+        // Odds
+        item {
+            OddsRow(match, text, sub, card, green)
+        }
+
+        // Venue / referee
+        if (!match.venue.isNullOrBlank() || !match.referee.isNullOrBlank()) {
+            item {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(card)
+                        .padding(12.dp)
+                ) {
+                    if (!match.venue.isNullOrBlank()) {
+                        Text("📍 ${match.venue}", color = text, fontSize = 13.sp)
+                    }
+                    if (!match.referee.isNullOrBlank()) {
+                        Spacer(Modifier.height(4.dp))
+                        Text("🧑‍⚖️ ${match.referee}", color = sub, fontSize = 12.sp)
+                    }
+                }
+            }
+        }
+
+        // Momentum
+        item {
+            Text("Momentum", color = sub, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+            Spacer(Modifier.height(6.dp))
+            MomentumChart(events = events, green = green, accent = accent, card = card)
+        }
+
+        // Góllövők
         item {
             Text("Góllövők", color = sub, fontSize = 12.sp, fontWeight = FontWeight.Medium)
         }
         if (goals.isEmpty()) {
             item {
-                Text("Még nincs gól.", color = sub, fontSize = 13.sp)
+                Text(
+                    text = if (scheduled) "Kezdés után jelennek meg a gólok." else "Még nincs gól.",
+                    color = sub,
+                    fontSize = 13.sp
+                )
             }
         } else {
             items(goals) { ev ->
                 EventRow(ev, text, sub, card, isHome = ev.team == "home")
             }
         }
+
+        // H2H
         item {
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(4.dp))
+            Text("Egymás ellen (H2H)", color = sub, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+        }
+        val h2hItems = h2h?.items.orEmpty()
+        if (h2hItems.isEmpty()) {
+            item {
+                Text(
+                    text = h2h?.message ?: "Nincs elérhető H2H adat.",
+                    color = sub,
+                    fontSize = 13.sp
+                )
+            }
+        } else {
+            items(h2hItems) { item ->
+                H2hRow(item, text, sub, card)
+            }
+        }
+
+        item {
             Text(
                 text = "Liga: ${match.league.orEmpty()}",
                 color = sub,
@@ -561,17 +754,182 @@ private fun SummaryTab(
     }
 }
 
+private fun isScheduledStatus(status: String?, minute: Int?): Boolean {
+    val s = status?.trim()?.uppercase()?.replace(".", "") ?: return true
+    if (s in setOf("NS", "TBD", "SCHEDULED", "POSTP", "PST")) return true
+    if (s.contains(":")) return true // 20:30
+    if ((minute ?: 0) <= 0 && s !in setOf("1H", "2H", "HT", "LIVE", "ET", "FT", "AET", "PEN")) {
+        if (s.toIntOrNull() == null) return true
+    }
+    return false
+}
+
 @Composable
-private fun EventsTab(
-    events: List<MatchEvent>,
-    homeTeam: String,
-    awayTeam: String,
+private fun OddsRow(
+    match: MatchResponse,
     text: Color,
     sub: Color,
     card: Color,
     green: Color
 ) {
-    LazyColumn(modifier = Modifier.fillMaxSize(),
+    val h = match.oddsHome
+    val d = match.oddsDraw
+    val a = match.oddsAway
+    if (h == null && d == null && a == null && match.isValueBet != true) return
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .background(card)
+            .padding(12.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("Odds 1X2", color = sub, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+            if (match.isValueBet == true) {
+                Text("VALUE BET", color = Color(0xFFFFD54F), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+            }
+        }
+        if (h != null || d != null || a != null) {
+            Spacer(Modifier.height(8.dp))
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OddsChip("1", h, text, green, Modifier.weight(1f))
+                OddsChip("X", d, text, green, Modifier.weight(1f))
+                OddsChip("2", a, text, green, Modifier.weight(1f))
+            }
+        }
+    }
+}
+
+@Composable
+private fun OddsChip(label: String, value: Double?, text: Color, green: Color, modifier: Modifier) {
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(Color(0xFF263238))
+            .padding(vertical = 8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text(label, color = green, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+        Text(
+            text = value?.let { String.format("%.2f", it) } ?: "—",
+            color = text,
+            fontSize = 14.sp,
+            fontWeight = FontWeight.Bold
+        )
+    }
+}
+
+@Composable
+private fun MomentumChart(
+    events: List<MatchEvent>,
+    green: Color,
+    accent: Color,
+    card: Color
+) {
+    val points = events.mapNotNull { ev ->
+        val m = ev.minute ?: return@mapNotNull null
+        val ty = ev.type?.lowercase().orEmpty()
+        val weight = when {
+            ty.contains("goal") || ty == "penalty" -> 3f
+            ty.contains("card") -> 1f
+            ty.contains("sub") -> 0.5f
+            else -> 1f
+        }
+        val sign = if (ev.team == "away") -1f else 1f
+        m to (sign * weight)
+    }
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(72.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(card)
+            .padding(8.dp)
+    ) {
+        if (points.isEmpty()) {
+            Text("Kezdés után jelenik meg a momentum.", color = Color(0xFF9AA0A6), fontSize = 11.sp)
+        } else {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val w = size.width
+                val h = size.height
+                val mid = h / 2
+                drawLine(Color(0x33FFFFFF), Offset(0f, mid), Offset(w, mid), strokeWidth = 1f)
+                // cumulative
+                var cum = 0f
+                val cumPoints = mutableListOf<Offset>()
+                val maxMin = (points.maxOfOrNull { it.first } ?: 90).coerceAtLeast(90).toFloat()
+                cumPoints.add(Offset(0f, mid))
+                for ((minute, wgt) in points.sortedBy { it.first }) {
+                    cum += wgt
+                    val x = (minute / maxMin) * w
+                    val y = mid - (cum * 6f).coerceIn(-mid + 4, mid - 4)
+                    cumPoints.add(Offset(x, y))
+                }
+                for (i in 0 until cumPoints.size - 1) {
+                    drawLine(
+                        color = if (cumPoints[i + 1].y <= mid) green else accent,
+                        start = cumPoints[i],
+                        end = cumPoints[i + 1],
+                        strokeWidth = 3f,
+                        cap = StrokeCap.Round
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun H2hRow(item: H2hItem, text: Color, sub: Color, card: Color) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .background(card)
+            .padding(10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = "${item.homeTeam.orEmpty()} vs ${item.awayTeam.orEmpty()}",
+                color = text,
+                fontSize = 12.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            val meta = listOfNotNull(item.date, item.competition).joinToString(" · ")
+            if (meta.isNotBlank()) {
+                Text(meta, color = sub, fontSize = 10.sp)
+            }
+        }
+        Text(
+            text = "${item.homeScore ?: "-"} : ${item.awayScore ?: "-"}",
+            color = text,
+            fontWeight = FontWeight.Bold,
+            fontSize = 13.sp
+        )
+    }
+}
+
+@Composable
+private fun EventsTab(
+    events: List<MatchEvent>,
+    homeTeam: String,
+    awayTeam: String,
+    matchStatus: String,
+    matchMinute: Int?,
+    text: Color,
+    sub: Color,
+    card: Color,
+    green: Color
+) {
+    val scheduled = isScheduledStatus(matchStatus, matchMinute)
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
@@ -584,7 +942,14 @@ private fun EventsTab(
         }
         if (events.isEmpty()) {
             item {
-                Text("Nincs esemény adat.", color = sub, fontSize = 13.sp)
+                Text(
+                    text = if (scheduled)
+                        "A meccs még nem kezdődött. Az események kezdés után jelennek meg."
+                    else
+                        "Nincs esemény adat.",
+                    color = sub,
+                    fontSize = 13.sp
+                )
             }
         } else {
             items(events) { ev ->
