@@ -185,7 +185,7 @@ fun MatchDetailDialog(
                 .background(bg),
             color = bg
         ) {
-            Column(Modifier = Modifier.fillMaxSize()) {
+            Column(modifier = Modifier.fillMaxSize()) {
                 // Header
                 Row(
                     modifier = Modifier
@@ -403,8 +403,7 @@ private fun MatchDetailScoreboard(
     green: Color
 ) {
     val isLive = match.status != "FT" && (match.minute ?: 0) > 0
-    Column(
-        modifier = Modifier
+    Column(modifier = Modifier
             .fillMaxWidth()
             .background(card)
             .padding(vertical = 16.dp, horizontal = 12.dp),
@@ -414,8 +413,7 @@ private fun MatchDetailScoreboard(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Column(
-                modifier = Modifier.weight(1f),
+            Column(modifier = Modifier.weight(1f),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 DetailTeamLogo(url = match.homeLogoUrl, teamName = match.homeTeam, size = 48.dp)
@@ -473,8 +471,7 @@ private fun MatchDetailScoreboard(
                 }
             }
 
-            Column(
-                modifier = Modifier.weight(1f),
+            Column(modifier = Modifier.weight(1f),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 DetailTeamLogo(url = match.awayLogoUrl, teamName = match.awayTeam, size = 48.dp)
@@ -529,8 +526,7 @@ private fun SummaryTab(
         val t = it.type?.lowercase().orEmpty()
         t.contains("goal") || t == "penalty"
     }
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
+    LazyColumn(modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
@@ -567,8 +563,7 @@ private fun EventsTab(
     card: Color,
     green: Color
 ) {
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
+    LazyColumn(modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
@@ -637,8 +632,7 @@ private fun StatsTab(
     card: Color,
     accent: Color
 ) {
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
+    LazyColumn(modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
@@ -648,8 +642,7 @@ private fun StatsTab(
             items(stats) { s ->
                 val homeVal = s.home?.toString() ?: "-"
                 val awayVal = s.away?.toString() ?: "-"
-                Column(
-                    modifier = Modifier
+                Column(modifier = Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(8.dp))
                         .background(card)
@@ -671,7 +664,7 @@ private fun StatsTab(
                         Spacer(Modifier.height(6.dp))
                         val ratio = (h / (h + a)).coerceIn(0f, 1f)
                         LinearProgressIndicator(
-                            progress = { ratio },
+                            progress = ratio,
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(6.dp)
@@ -693,8 +686,7 @@ private fun LineupsTab(
     sub: Color,
     card: Color
 ) {
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
+    LazyColumn(modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
@@ -719,8 +711,7 @@ private fun LineupSideBlock(
     sub: Color,
     card: Color
 ) {
-    Column(
-        modifier = Modifier
+    Column(modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(10.dp))
             .background(card)
@@ -781,8 +772,7 @@ private fun VideosTab(
     card: Color,
     onVideoClick: (HighlightVideo) -> Unit
 ) {
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
+    LazyColumn(modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
@@ -829,8 +819,7 @@ private fun StandingsTab(
     awayTeam: String,
     accent: Color
 ) {
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
+    LazyColumn(modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(12.dp)
     ) {
         if (standings.isEmpty()) {
