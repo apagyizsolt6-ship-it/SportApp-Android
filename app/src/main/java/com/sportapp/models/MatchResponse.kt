@@ -79,3 +79,13 @@ data class StatisticsResponse(
     @SerializedName("items") val items: List<StatItem>? = null,
     @SerializedName("available") val available: Boolean? = false
 )
+
+
+data class AiAnalysisResponse(
+    @SerializedName("match_id") val matchId: String? = null,
+    @SerializedName("summary") val summary: String? = null,
+    @SerializedName("analysis") val analysis: String? = null,
+    @SerializedName("text") val text: String? = null,
+    @SerializedName("prediction") val prediction: String? = null,
+    @SerializedName("available") val available: Boolean? = false
+)
