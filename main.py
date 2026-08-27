@@ -28,6 +28,9 @@ _highlightly_match_cache = {}
 _detail_cache = {}
 _lineups_cache = {}
 _stats_cache = {}
+_hl_date_cache = {}
+_hl_h2h_cache = {}
+_hl_form_cache = {}
 DETAIL_CACHE_TTL = 20
 LINEUPS_CACHE_TTL = 120
 STATS_CACHE_TTL = 30
@@ -200,6 +203,212 @@ def _find_statpal_raw_match(match_id: str):
 
 def _highlightly_headers():
     return {"x-rapidapi-key": HIGHLIGHTLY_KEY}
+
+
+def _normalize_date_str(raw) -> str:
+    """Bármilyen dátum → YYYY-MM-DD. StatPal: 23.12.2025 vagy 2025-12-23."""
+    if raw is None:
+        return datetime.now().strftime("%Y-%m-%d")
+    s = str(raw).strip()
+    if not s:
+        return datetime.now().strftime("%Y-%m-%d")
+    # ISO
+    if len(s) >= 10 and s[4] == "-" and s[7] == "-":
+        return s[:10]
+    # dd.MM.yyyy
+    if "." in s:
+        parts = s.replace("/", ".").split(".")
+        if len(parts) >= 3:
+            d, m, y = parts[0], parts[1], parts[2]
+            try:
+                return f"{int(y):04d}-{int(m):02d}-{int(d):02d}"
+            except Exception:
+                pass
+    # dd/MM/yyyy
+    if "/" in s:
+        parts = s.split("/")
+        if len(parts) >= 3:
+            try:
+                return f"{int(parts[2]):04d}-{int(parts[1]):02d}-{int(parts[0]):02d}"
+            except Exception:
+                pass
+    return datetime.now().strftime("%Y-%m-%d")
+
+
+def fetch_highlightly_matches_by_date(date_iso: str, limit: int = 100):
+    """Highlightly GET /matches?date=YYYY-MM-DD&timezone=Europe/Budapest"""
+    if not HIGHLIGHTLY_KEY or not date_iso:
+        return []
+    cache_key = date_iso.strip()[:10]
+    now = time.time()
+    cached = _hl_date_cache.get(cache_key)
+    if cached and (now - cached["ts"]) < 60:
+        return cached["data"]
+    try:
+        resp = requests.get(
+            "https://soccer.highlightly.net/matches",
+            headers=_highlightly_headers(),
+            params={
+                "date": cache_key,
+                "timezone": "Europe/Budapest",
+                "limit": limit,
+                "offset": 0,
+            },
+            timeout=12,
+        )
+        if resp.status_code != 200:
+            return []
+        payload = resp.json()
+        if isinstance(payload, dict):
+            data = payload.get("data") or []
+        elif isinstance(payload, list):
+            data = payload
+        else:
+            data = []
+        if not isinstance(data, list):
+            data = []
+        _hl_date_cache[cache_key] = {"data": data, "ts": now}
+        return data
+    except Exception:
+        return []
+
+
+def fetch_highlightly_h2h(team_id_one, team_id_two):
+    """Highlightly GET /head-2-head?teamIdOne=&teamIdTwo="""
+    if not HIGHLIGHTLY_KEY or not team_id_one or not team_id_two:
+        return []
+    a, b = str(team_id_one), str(team_id_two)
+    cache_key = f"{a}:{b}"
+    now = time.time()
+    cached = _hl_h2h_cache.get(cache_key)
+    if cached and (now - cached["ts"]) < 300:
+        return cached["data"]
+    try:
+        resp = requests.get(
+            "https://soccer.highlightly.net/head-2-head",
+            headers=_highlightly_headers(),
+            params={"teamIdOne": a, "teamIdTwo": b},
+            timeout=10,
+        )
+        if resp.status_code != 200:
+            return []
+        payload = resp.json()
+        data = payload if isinstance(payload, list) else (payload.get("data") if isinstance(payload, dict) else [])
+        if not isinstance(data, list):
+            data = []
+        _hl_h2h_cache[cache_key] = {"data": data, "ts": now}
+        return data
+    except Exception:
+        return []
+
+
+def fetch_highlightly_last_five(team_id):
+    """Highlightly GET /last-five-games?teamId="""
+    if not HIGHLIGHTLY_KEY or not team_id:
+        return []
+    cache_key = str(team_id)
+    now = time.time()
+    cached = _hl_form_cache.get(cache_key)
+    if cached and (now - cached["ts"]) < 300:
+        return cached["data"]
+    try:
+        resp = requests.get(
+            "https://soccer.highlightly.net/last-five-games",
+            headers=_highlightly_headers(),
+            params={"teamId": cache_key},
+            timeout=10,
+        )
+        if resp.status_code != 200:
+            return []
+        payload = resp.json()
+        data = payload if isinstance(payload, list) else (payload.get("data") if isinstance(payload, dict) else [])
+        if not isinstance(data, list):
+            data = []
+        _hl_form_cache[cache_key] = {"data": data, "ts": now}
+        return data
+    except Exception:
+        return []
+
+
+def _normalize_hl_match_item(m: dict) -> dict:
+    """Highlightly match → app MatchResponse-szerű dict."""
+    if not isinstance(m, dict):
+        return {}
+    home = m.get("homeTeam") if isinstance(m.get("homeTeam"), dict) else {}
+    away = m.get("awayTeam") if isinstance(m.get("awayTeam"), dict) else {}
+    league = m.get("league") if isinstance(m.get("league"), dict) else {}
+    country = m.get("country") if isinstance(m.get("country"), dict) else {}
+    state = m.get("state") if isinstance(m.get("state"), dict) else {}
+    score = state.get("score") if isinstance(state.get("score"), dict) else {}
+    current = str(score.get("current") or "")
+    home_score = away_score = None
+    if "-" in current:
+        parts = current.replace(" ", "").split("-")
+        if len(parts) >= 2:
+            try:
+                home_score = int(parts[0])
+                away_score = int(parts[1])
+            except Exception:
+                pass
+    date_raw = m.get("date") or ""
+    kickoff_date = _normalize_date_str(date_raw)
+    kickoff_time = None
+    if "T" in str(date_raw):
+        try:
+            # 2023-05-20T15:30:00.000Z → local-ish HH:MM (UTC+2 approx for HU)
+            from datetime import timezone as tz
+            dt = datetime.fromisoformat(str(date_raw).replace("Z", "+00:00"))
+            dt_hu = dt + timedelta(hours=2)
+            kickoff_time = dt_hu.strftime("%H:%M")
+        except Exception:
+            pass
+    desc = str(state.get("description") or "").lower()
+    clock = state.get("clock")
+    if "not started" in desc or "to be announced" in desc:
+        status = kickoff_time or "NS"
+    elif "finished" in desc or desc == "ft":
+        status = "FT"
+    elif clock is not None:
+        try:
+            status = str(int(clock))
+        except Exception:
+            status = str(clock)
+    else:
+        status = state.get("description") or "NS"
+
+    country_name = country.get("name") or ""
+    league_name = league.get("name") or ""
+    full_league = format_league_title(country_name, league_name) if league_name else league_name
+
+    return {
+        "id": f"hl-{m.get('id')}",
+        "league_id": str(league.get("id") or ""),
+        "league": full_league or league_name,
+        "country": translate_text(country_name) if country_name else "",
+        "country_code": country.get("code") or _country_code(country_name),
+        "home_team": home.get("name") or "Hazai",
+        "away_team": away.get("name") or "Vendég",
+        "home_logo_url": home.get("logo"),
+        "away_logo_url": away.get("logo"),
+        "home_score": home_score,
+        "away_score": away_score,
+        "status": status,
+        "minute": int(clock) if isinstance(clock, (int, float)) else (int(clock) if str(clock).isdigit() else 0),
+        "highlight_url": None,
+        "highlight_match_id": str(m.get("id")) if m.get("id") is not None else None,
+        "value_bet": False,
+        "events": [],
+        "odds_home": None,
+        "odds_draw": None,
+        "odds_away": None,
+        "kickoff_date": kickoff_date,
+        "kickoff_time": kickoff_time,
+        "hl_home_team_id": home.get("id"),
+        "hl_away_team_id": away.get("id"),
+        "source": "highlightly",
+    }
+
+
 
 
 def fetch_highlightly_match_detail(highlight_match_id: str):
@@ -1662,6 +1871,30 @@ def get_matches():
                     raw_status
                 )
 
+                # Kickoff dátum/idő (naptárhoz)
+                # StatPal live/today → általában ma; ha van date mező, azt használjuk.
+                raw_date = (
+                    m.get("date")
+                    or m.get("match_date")
+                    or m.get("formatted_date")
+                )
+                kickoff_date = _normalize_date_str(raw_date) if raw_date else datetime.now().strftime("%Y-%m-%d")
+                kickoff_time = None
+                st = str(adjusted_status or "")
+                if ":" in st and len(st) <= 5 and st.replace(":", "").isdigit():
+                    kickoff_time = st
+                elif isinstance(m.get("time"), str) and ":" in str(m.get("time")):
+                    try:
+                        kickoff_time = adjust_time(str(m.get("time"))[:5])
+                    except Exception:
+                        kickoff_time = str(m.get("time"))[:5]
+                # StatPal time mező külön
+                if not kickoff_time and m.get("time"):
+                    try:
+                        kickoff_time = adjust_time(str(m.get("time"))[:5])
+                    except Exception:
+                        pass
+
                 # ========================================================
                 # MECCS
                 # ========================================================
@@ -1722,6 +1955,8 @@ def get_matches():
                     "odds_home": _extract_odds(m)[0],
                     "odds_draw": _extract_odds(m)[1],
                     "odds_away": _extract_odds(m)[2],
+                    "kickoff_date": kickoff_date,
+                    "kickoff_time": kickoff_time,
                 })
 
         if not matches_list:
@@ -1956,6 +2191,8 @@ def get_highlightly_match_detail(highlight_match_id: str):
         })
     state = data.get("state") if isinstance(data.get("state"), dict) else {}
     score = state.get("score") if isinstance(state.get("score"), dict) else {}
+    home_t = data.get("homeTeam") if isinstance(data.get("homeTeam"), dict) else {}
+    away_t = data.get("awayTeam") if isinstance(data.get("awayTeam"), dict) else {}
     return {
         "id": data.get("id"),
         "round": data.get("round"),
@@ -1970,8 +2207,10 @@ def get_highlightly_match_detail(highlight_match_id: str):
         "events": norm_events,
         "statistics": _normalize_statistics(data.get("statistics") or []),
         "predictions": data.get("predictions"),
-        "home_team": (data.get("homeTeam") or {}).get("name") if isinstance(data.get("homeTeam"), dict) else None,
-        "away_team": (data.get("awayTeam") or {}).get("name") if isinstance(data.get("awayTeam"), dict) else None,
+        "home_team": home_t.get("name"),
+        "away_team": away_t.get("name"),
+        "hl_home_team_id": home_t.get("id"),
+        "hl_away_team_id": away_t.get("id"),
     }
 
 
@@ -2112,6 +2351,16 @@ def get_match_detail(match_id: str):
                     payload["referee"] = ref.get("name")
                 elif isinstance(ref, str):
                     payload["referee"] = ref
+                payload["hl_home_team_id"] = hl.get("hl_home_team_id") or (
+                    (hl.get("homeTeam") or {}).get("id") if isinstance(hl.get("homeTeam"), dict) else None
+                )
+                payload["hl_away_team_id"] = hl.get("hl_away_team_id") or (
+                    (hl.get("awayTeam") or {}).get("id") if isinstance(hl.get("awayTeam"), dict) else None
+                )
+                if hl.get("predictions") is not None:
+                    payload["predictions"] = hl.get("predictions")
+                if hl.get("forecast") is not None:
+                    payload["forecast"] = hl.get("forecast")
     except Exception:
         pass
 
@@ -2124,10 +2373,7 @@ def get_match_detail(match_id: str):
 
 @app.get("/api/matches/{match_id}/h2h")
 def get_match_h2h(match_id: str):
-    """
-    Egymás elleni (H2H) – Highlightly match detail predictions / korábbi találkozók
-    ha elérhető. Egyébként üres lista + üzenet.
-    """
+    """Highlightly GET /head-2-head – team ID-k a match detailből."""
     detail = get_match_detail(match_id)
     if not isinstance(detail, dict) or detail.get("error"):
         return {"items": [], "available": False, "message": "Meccs nem található."}
@@ -2136,40 +2382,44 @@ def get_match_h2h(match_id: str):
     away = detail.get("away_team") or ""
     items = []
 
+    home_id = detail.get("hl_home_team_id")
+    away_id = detail.get("hl_away_team_id")
+
+    # team ID a Highlightly match detailből, ha még nincs
     hl_id = detail.get("highlight_match_id")
-    if hl_id:
+    if (not home_id or not away_id) and hl_id:
         try:
             hl = fetch_highlightly_match_detail(str(hl_id))
             if isinstance(hl, dict):
-                # néha predictions / previousMeetings / h2h mező
-                for key in ("h2h", "previousMeetings", "previous_meetings", "meetings"):
-                    raw = hl.get(key)
-                    if isinstance(raw, list):
-                        for m in raw[:8]:
-                            if not isinstance(m, dict):
-                                continue
-                            items.append({
-                                "date": m.get("date") or m.get("time"),
-                                "home_team": (m.get("homeTeam") or {}).get("name") if isinstance(m.get("homeTeam"), dict) else m.get("home_team") or m.get("home"),
-                                "away_team": (m.get("awayTeam") or {}).get("name") if isinstance(m.get("awayTeam"), dict) else m.get("away_team") or m.get("away"),
-                                "home_score": m.get("home_score") or (m.get("score") or {}).get("home") if isinstance(m.get("score"), dict) else None,
-                                "away_score": m.get("away_score") or (m.get("score") or {}).get("away") if isinstance(m.get("score"), dict) else None,
-                                "competition": m.get("league") or m.get("competition"),
-                            })
-                        break
-                pred = hl.get("predictions") or hl.get("forecast")
-                if pred and not items:
-                    # nincs H2H lista, de van előrejelzés
-                    return {
-                        "items": [],
-                        "available": False,
-                        "message": "Nincs korábbi egymás elleni adat.",
-                        "prediction": pred if isinstance(pred, (str, dict, list)) else None,
-                        "home_team": home,
-                        "away_team": away,
-                    }
+                ht = hl.get("homeTeam") if isinstance(hl.get("homeTeam"), dict) else {}
+                at = hl.get("awayTeam") if isinstance(hl.get("awayTeam"), dict) else {}
+                home_id = home_id or ht.get("id")
+                away_id = away_id or at.get("id")
         except Exception:
             pass
+
+    if home_id and away_id:
+        raw_list = fetch_highlightly_h2h(home_id, away_id)
+        for m in raw_list[:10]:
+            if not isinstance(m, dict):
+                continue
+            state = m.get("state") if isinstance(m.get("state"), dict) else {}
+            score = state.get("score") if isinstance(state.get("score"), dict) else {}
+            current = str(score.get("current") or "")
+            hs = as_ = None
+            if "-" in current:
+                parts = current.replace(" ", "").split("-")
+                if len(parts) >= 2:
+                    hs, as_ = parts[0], parts[1]
+            league = m.get("league") if isinstance(m.get("league"), dict) else {}
+            items.append({
+                "date": m.get("date"),
+                "home_team": (m.get("homeTeam") or {}).get("name") if isinstance(m.get("homeTeam"), dict) else None,
+                "away_team": (m.get("awayTeam") or {}).get("name") if isinstance(m.get("awayTeam"), dict) else None,
+                "home_score": hs,
+                "away_score": as_,
+                "competition": league.get("name") if isinstance(league, dict) else None,
+            })
 
     return {
         "items": items,
@@ -2177,7 +2427,103 @@ def get_match_h2h(match_id: str):
         "message": None if items else "Nincs elérhető H2H adat ehhez a párosításhoz.",
         "home_team": home,
         "away_team": away,
+        "home_team_id": home_id,
+        "away_team_id": away_id,
     }
+
+
+@app.get("/api/matches/{match_id}/form")
+def get_match_form(match_id: str):
+    """Utolsó 5 meccs forma mindkét csapatra (Highlightly /last-five-games)."""
+    detail = get_match_detail(match_id)
+    if not isinstance(detail, dict) or detail.get("error"):
+        return {"home": [], "away": [], "available": False}
+
+    home_id = detail.get("hl_home_team_id")
+    away_id = detail.get("hl_away_team_id")
+    hl_id = detail.get("highlight_match_id")
+    if (not home_id or not away_id) and hl_id:
+        hl = fetch_highlightly_match_detail(str(hl_id))
+        if isinstance(hl, dict):
+            ht = hl.get("homeTeam") if isinstance(hl.get("homeTeam"), dict) else {}
+            at = hl.get("awayTeam") if isinstance(hl.get("awayTeam"), dict) else {}
+            home_id = home_id or ht.get("id")
+            away_id = away_id or at.get("id")
+
+    def _form_from_games(games, team_id):
+        form = []
+        tid = str(team_id)
+        for g in (games or [])[:5]:
+            if not isinstance(g, dict):
+                continue
+            state = g.get("state") if isinstance(g.get("state"), dict) else {}
+            score = state.get("score") if isinstance(state.get("score"), dict) else {}
+            current = str(score.get("current") or "").replace(" ", "")
+            if "-" not in current:
+                continue
+            parts = current.split("-")
+            try:
+                hs, aws = int(parts[0]), int(parts[1])
+            except Exception:
+                continue
+            home = g.get("homeTeam") if isinstance(g.get("homeTeam"), dict) else {}
+            is_home = str(home.get("id") or "") == tid
+            my, opp = (hs, aws) if is_home else (aws, hs)
+            if my > opp:
+                form.append("W")
+            elif my < opp:
+                form.append("L")
+            else:
+                form.append("D")
+        return form
+
+    home_form = _form_from_games(fetch_highlightly_last_five(home_id), home_id) if home_id else []
+    away_form = _form_from_games(fetch_highlightly_last_five(away_id), away_id) if away_id else []
+
+    return {
+        "home": home_form,
+        "away": away_form,
+        "home_team": detail.get("home_team"),
+        "away_team": detail.get("away_team"),
+        "available": bool(home_form or away_form),
+    }
+
+
+@app.get("/api/matches/by-date/{date}")
+def get_matches_by_date(date: str):
+    """
+    Naptár nap: először StatPal ma-lista szűrve, plusz Highlightly /matches?date=.
+    date: YYYY-MM-DD
+    """
+    date_iso = _normalize_date_str(date)
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    # Mai nap: a meglévő get_matches (StatPal rich data)
+    if date_iso == today:
+        try:
+            all_m = get_matches()
+            if isinstance(all_m, list):
+                filtered = [
+                    m for m in all_m
+                    if isinstance(m, dict)
+                    and _normalize_date_str(m.get("kickoff_date") or today) == date_iso
+                ]
+                if filtered:
+                    return filtered
+                # ha nincs kickoff_date a listában, az egész mai lista
+                return [m for m in all_m if isinstance(m, dict) and m.get("id") not in ("0", "err")]
+        except Exception:
+            pass
+
+    # Más nap / üres: Highlightly date query
+    hl_raw = fetch_highlightly_matches_by_date(date_iso, limit=100)
+    result = []
+    for m in hl_raw:
+        item = _normalize_hl_match_item(m)
+        if item.get("id"):
+            result.append(item)
+    return result
+
 
 
 @app.get("/api/ai-analysis/{match_id}")
