@@ -1,12 +1,18 @@
 package com.sportapp.ui
 
+import android.content.Intent
+import android.net.Uri
+
 import android.webkit.WebChromeClient
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
@@ -17,8 +23,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -31,10 +39,42 @@ import com.sportapp.models.HighlightVideo
 import com.sportapp.api.RetrofitInstance
 import com.sportapp.api.StandingTeam
 import kotlinx.coroutines.launch
+import java.text.Collator
+import java.util.Locale
+import org.json.JSONArray
+import org.json.JSONObject
+
+private fun isMatchFinished(status: String?): Boolean {
+    val s = status?.trim()?.uppercase()?.replace(".", "")?.replace(" ", "") ?: return false
+    return s in setOf(
+        "FT", "AET", "PEN", "PENS", "PSO", "FINISHED", "FULLTIME", "FULL-TIME",
+        "ENDED", "AFTEREXTRATIME"
+    )
+}
+
+private fun isMatchLive(status: String?, minute: Int?): Boolean {
+    if (isMatchFinished(status)) return false
+    val s = status?.trim()?.uppercase()?.replace(".", "") ?: ""
+    if (s in setOf("1H", "2H", "HT", "LIVE", "ET", "INPLAY")) return true
+    // státusz maga a perc (régi feed)
+    if (s.toIntOrNull() != null) return true
+    val min = minute ?: 0
+    if (min <= 0) return false
+    // kezdési idő (20:45) ne legyen élő
+    if (s.contains(":")) return false
+    if (s in setOf("NS", "TBD", "SCHEDULED")) return false
+    return true
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
+    val aiAnalysis by viewModel.aiAnalysis.collectAsState()
+    val isLoadingAi by viewModel.isLoadingAi.collectAsState()
+    var selectedMatchForAi by remember { mutableStateOf<MatchResponse?>(null) }
+    // Meccs részlet (events/stats/lineups) – NEM cseréli az AI / videó / média funkciókat
+    var selectedMatchForDetail by remember { mutableStateOf<MatchResponse?>(null) }
+
     val matches by viewModel.matches.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
     var isDarkMode by remember { mutableStateOf(true) }
@@ -70,12 +110,33 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
     }
 
     var selectedVideo by remember { mutableStateOf<HighlightVideo?>(null) }
+    var selectedMatchForMedia by remember { mutableStateOf<MatchResponse?>(null) }
+
+    val mediaPrefs = remember(context) {
+        context.getSharedPreferences(
+            "match_media_preferences",
+            android.content.Context.MODE_PRIVATE
+        )
+    }
+
+    var recentMediaItems by remember {
+        mutableStateOf(loadRecentMedia(mediaPrefs))
+    }
+
+    fun persistRecentMedia(items: List<RecentMediaItem>) {
+        recentMediaItems = items
+        saveRecentMedia(mediaPrefs, items)
+    }
+
+    fun pushRecentMedia(item: RecentMediaItem) {
+        val next = listOf(item) + recentMediaItems.filter { it.id != item.id }
+        persistRecentMedia(next.take(20))
+    }
     var highlightVideos by remember { mutableStateOf<List<HighlightVideo>>(emptyList()) }
     var showHighlightPicker by remember { mutableStateOf(false) }
     var isHighlightLoading by remember { mutableStateOf(false) }
     var highlightError by remember { mutableStateOf<String?>(null) }
     var selectedLeaguePair by remember { mutableStateOf<Pair<String, String>?>(null) }
-    var selectedMatch by remember { mutableStateOf<MatchResponse?>(null) }
 
     val coroutineScope = rememberCoroutineScope()
 
@@ -238,12 +299,19 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
 
             val matchesTab = when (selectedTab) {
 
-                // ÉLŐ
-                1 -> match.status != "FT" &&
-                        (match.minute ?: 0) > 0
+                // ÉLŐ – FT/AET/PEN NEM élő
+                1 -> isMatchLive(match.status, match.minute)
 
                 // KEDVENC
                 2 -> isMatchFav || isLeagueFav
+
+                // MÉDIA – élő, befejezett, vagy van highlight
+                3 -> {
+                    val hasHighlight = !match.highlightMatchId.isNullOrBlank()
+                    val live = isMatchLive(match.status, match.minute)
+                    val finished = isMatchFinished(match.status)
+                    hasHighlight || live || finished
+                }
 
                 // ÖSSZES
                 else -> true
@@ -263,35 +331,64 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
     // 2. felhasználói kedvenc ligák
     // 3. minden egyéb liga ABC sorrendben
     //
+    // Magyar ábécés rendező. A java.text.Collator magyar Locale-lal
+    // kezeli az ékezetes és többjegyű magyar betűket is.
+    val hungarianCollator = remember {
+        Collator.getInstance(Locale("hu", "HU")).apply {
+            strength = Collator.TERTIARY
+        }
+    }
+
+    // A TOP ligák fix sorrendben maradnak legelöl. Minden más liga
+    // magyar ABC szerint követi őket. A kedvenc státusz nem írhatja
+    // felül ezt a sorrendet.
+    val topLeagueRanks = remember {
+        mapOf(
+            "ANGLIA: PREMIER LEAGUE" to 0,
+            "SPANYOLORSZÁG: LA LIGA" to 1,
+            "OLASZORSZÁG: SERIE A" to 2,
+            "NÉMETORSZÁG: BUNDESLIGA" to 3,
+            "FRANCIAORSZÁG: LIGUE 1" to 4
+        )
+    }
+
     val groupedMatchesList = remember(
         filteredMatches,
-        favoriteLeagueNames
+        favoriteLeagueNames,
+        hungarianCollator
     ) {
-
         val groups = filteredMatches.groupBy {
             it.league ?: "EGYÉB BAJNOKSÁG"
         }
 
-        groups.entries.sortedWith(
+        groups.entries.sortedWith(Comparator { a, b ->
+            val aName = a.key.trim()
+            val bName = b.key.trim()
 
-            compareByDescending<Map.Entry<String, List<MatchResponse>>> {
-                (leagueName, leagueMatches) ->
+            val aRank = topLeagueRanks[aName.uppercase()]
+            val bRank = topLeagueRanks[bName.uppercase()]
 
-                isTopFiveLeague(
-                    leagueName,
-                    leagueMatches.firstOrNull()?.countryCode
-                )
+            when {
+                aRank != null && bRank != null ->
+                    aRank.compareTo(bRank)
+
+                aRank != null -> -1
+                bRank != null -> 1
+
+                else -> hungarianCollator.compare(aName, bName)
             }
-
-                .thenByDescending { (leagueName, _) ->
-                    favoriteLeagueNames.contains(leagueName)
-                }
-
-                .thenBy {
-                    it.key.uppercase()
-                }
-        )
+        })
     }
+
+    // ============================================================
+    // TELJES MECCSLISTA NYITÁS / ZÁRÁS
+    // ============================================================
+    // A ligák továbbra is külön-külön is nyithatók/zárhatók.
+    // Ez a kapcsoló csak az összes jelenleg látható ligára hat.
+    val allLeaguesCollapsed = groupedMatchesList.isNotEmpty() &&
+            groupedMatchesList.all {
+                collapsedLeagueNames.contains(it.key)
+            }
 
     Surface(
         modifier = Modifier.fillMaxSize(),
@@ -328,6 +425,20 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                         fontWeight = FontWeight.Black,
                         color = primaryGreen
                     )
+
+                    IconButton(
+                        onClick = {
+                            viewModel.fetchMatches(showLoading = true)
+                        },
+                        modifier = Modifier
+                            .clip(CircleShape)
+                            .background(leagueBgColor)
+                            .size(36.dp)
+                    ) {
+                        Text(text = "🔄", fontSize = 16.sp)
+                    }
+
+                    Spacer(modifier = Modifier.width(8.dp))
 
                     IconButton(
                         onClick = {
@@ -466,6 +577,86 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                         fontWeight = FontWeight.Bold
                     )
                 }
+
+                Tab(
+                    selected = selectedTab == 3,
+                    onClick = {
+                        selectedTab = 3
+                    }
+                ) {
+
+                    Text(
+                        "🎬 MÉDIA",
+                        modifier = Modifier.padding(
+                            vertical = 10.dp
+                        ),
+                        color = if (selectedTab == 3) {
+                            Color(0xFF40C4FF)
+                        } else {
+                            subTextColor
+                        },
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+
+            // ====================================================
+            // TELJES MECCSLISTA – NYITÁS / ZÁRÁS
+            // ====================================================
+            // Független az egyes ligák saját nyitás/zárás gombjától.
+            //
+            // Ha minden liga nyitva van -> minden liga bezárása.
+            // Ha akár csak egy liga nyitva van -> minden liga megnyitása.
+            if (!isLoading && groupedMatchesList.isNotEmpty()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(8.dp),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Surface(
+                        modifier = Modifier.clickable {
+                            collapsedLeagueNames = if (allLeaguesCollapsed) {
+                                emptySet()
+                            } else {
+                                groupedMatchesList
+                                    .map { it.key }
+                                    .toSet()
+                            }
+                        },
+                        shape = RoundedCornerShape(20.dp),
+                        color = if (isDarkMode) {
+                            Color(0xFF20252B)
+                        } else {
+                            Color(0xFFE7EBEF)
+                        }
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(10.dp, 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = if (allLeaguesCollapsed) "▲" else "▼",
+                                color = primaryGreen,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Spacer(Modifier.width(5.dp))
+                            Text(
+                                text = if (allLeaguesCollapsed) {
+                                    "ÖSSZES NYITÁSA"
+                                } else {
+                                    "ÖSSZES ZÁRÁSA"
+                                },
+                                color = primaryGreen,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                }
             }
 
             // ====================================================
@@ -483,6 +674,58 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                         color = primaryGreen
                     )
                 }
+
+            } else if (selectedTab == 3) {
+
+                // ====================================================
+                // MÉDIA HUB
+                // ====================================================
+                MediaHubList(
+                    matches = filteredMatches,
+                    recentItems = recentMediaItems,
+                    isDarkMode = isDarkMode,
+                    cardBgColor = cardBgColor,
+                    textColor = textColor,
+                    subTextColor = subTextColor,
+                    primaryGreen = primaryGreen,
+                    onOpenMatchMedia = { match ->
+                        selectedMatchForMedia = match
+                        highlightVideos = emptyList()
+                        highlightError = null
+                        showHighlightPicker = true
+                        val highlightMatchId =
+                            match.highlightMatchId?.trim().orEmpty()
+                        if (highlightMatchId.isNotBlank()) {
+                            coroutineScope.launch {
+                                isHighlightLoading = true
+                                try {
+                                    val videos =
+                                        RetrofitInstance.api.getMatchHighlights(
+                                            highlightMatchId
+                                        )
+                                    highlightVideos =
+                                        videos.filter {
+                                            !it.embedUrl.isNullOrBlank() ||
+                                                    !it.url.isNullOrBlank()
+                                        }
+                                } catch (_: Exception) {
+                                } finally {
+                                    isHighlightLoading = false
+                                }
+                            }
+                        }
+                    },
+                    onOpenRecent = { item ->
+                        try {
+                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(item.url))
+                            context.startActivity(intent)
+                        } catch (_: Exception) {
+                        }
+                    },
+                    onClearRecent = {
+                        persistRecentMedia(emptyList())
+                    }
+                )
 
             } else {
 
@@ -664,16 +907,10 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                                     // ORSZÁG ZÁSZLÓ
                                     // ====================================================
 
-                                    Text(
-                                        text = countryFlag(
-                                            firstLeagueMatch?.countryCode
-                                        ),
-
-                                        fontSize = 14.sp,
-
-                                        modifier = Modifier.padding(
-                                            end = 6.dp
-                                        )
+                                    LeagueFlagIcon(
+                                        countryCode = firstLeagueMatch?.countryCode,
+                                        leagueName = leagueName,
+                                        modifier = Modifier.padding(end = 6.dp)
                                     )
 
                                     // ====================================================
@@ -856,33 +1093,23 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                                             }
                                     },
 
-                                    onMatchClick = { m ->
-                                        selectedMatch = m
-                                    },
+                                    onVideoClick = { match ->
+                                        selectedMatchForMedia = match
+                                        highlightVideos = emptyList()
+                                        highlightError = null
+                                        showHighlightPicker = true
 
-                                    onVideoClick = {
-                                        match ->
                                         val highlightMatchId =
                                             match.highlightMatchId?.trim().orEmpty()
 
-                                        if (highlightMatchId.isBlank()) {
-                                            highlightError =
-                                                "Ehhez a mérkőzéshez jelenleg nincs elérhető Highlightly videó."
-                                            showHighlightPicker = true
-                                            highlightVideos = emptyList()
-                                        } else {
+                                        if (highlightMatchId.isNotBlank()) {
                                             coroutineScope.launch {
                                                 isHighlightLoading = true
-                                                highlightError = null
-                                                highlightVideos = emptyList()
-                                                showHighlightPicker = true
-
                                                 try {
                                                     val videos =
                                                         RetrofitInstance.api.getMatchHighlights(
                                                             highlightMatchId
                                                         )
-
                                                     highlightVideos =
                                                         videos
                                                             .filter {
@@ -899,19 +1126,20 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                                                                     it.title.orEmpty()
                                                                 }
                                                             )
-
-                                                    if (highlightVideos.isEmpty()) {
-                                                        highlightError =
-                                                            "A Highlightly nem adott vissza lejátszható videót ehhez a mérkőzéshez."
-                                                    }
                                                 } catch (e: Exception) {
-                                                    highlightError =
-                                                        "A Highlightly videók betöltése sikertelen."
+                                                    highlightError = null
                                                 } finally {
                                                     isHighlightLoading = false
                                                 }
                                             }
                                         }
+                                    },
+                                    onAiClick = { match ->
+                                        selectedMatchForAi = match
+                                        viewModel.fetchAiAnalysis(match.id)
+                                    },
+                                    onMatchClick = { match ->
+                                        selectedMatchForDetail = match
                                     }
                                 )
 
@@ -933,16 +1161,54 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
 
     if (showHighlightPicker) {
         HighlightVideoPickerDialog(
+            match = selectedMatchForMedia,
             videos = highlightVideos,
             isLoading = isHighlightLoading,
             errorMessage = highlightError,
             isDarkMode = isDarkMode,
             onVideoSelected = { video ->
+                val m = selectedMatchForMedia
+                val url = video.embedUrl ?: video.url
+                if (m != null && !url.isNullOrBlank()) {
+                    pushRecentMedia(
+                        RecentMediaItem(
+                            id = "hl-${video.id}",
+                            title = video.title?.takeIf { it.isNotBlank() }
+                                ?: "${m.homeTeam} vs ${m.awayTeam}",
+                            subtitle = video.category ?: (m.league ?: "Highlightly"),
+                            url = url,
+                            thumbUrl = video.imgUrl ?: m.homeLogoUrl,
+                            timestamp = System.currentTimeMillis()
+                        )
+                    )
+                }
                 selectedVideo = video
                 showHighlightPicker = false
             },
+            onOpenExternalUrl = { url ->
+                try {
+                    val m = selectedMatchForMedia
+                    if (m != null) {
+                        pushRecentMedia(
+                            RecentMediaItem(
+                                id = "yt-${m.id}-${url.hashCode()}",
+                                title = "${m.homeTeam} vs ${m.awayTeam}",
+                                subtitle = m.league ?: "YouTube",
+                                url = url,
+                                thumbUrl = m.homeLogoUrl,
+                                timestamp = System.currentTimeMillis()
+                            )
+                        )
+                    }
+                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                    context.startActivity(intent)
+                } catch (e: Exception) {
+                    // ignore
+                }
+            },
             onDismiss = {
                 showHighlightPicker = false
+                selectedMatchForMedia = null
                 highlightVideos = emptyList()
                 highlightError = null
             }
@@ -966,7 +1232,20 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
     // TABELLA
     // ============================================================
 
-    selectedMatch?.let { m ->
+    selectedLeaguePair?.let { (leagueId, leagueName) ->
+        FullLeagueTableDialog(
+            leagueId = leagueId,
+            leagueName = leagueName,
+            isDarkMode = isDarkMode
+        ) {
+            selectedLeaguePair = null
+        }
+    }
+
+    // ============================================================
+    // MECCS RÉSZLET (events / stats / lineups / videók tab)
+    // ============================================================
+    selectedMatchForDetail?.let { m ->
         val isFav = favoriteMatchIds.contains(m.id)
         MatchDetailDialog(
             match = m,
@@ -977,65 +1256,403 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                     if (isFav) favoriteMatchIds - m.id
                     else favoriteMatchIds + m.id
             },
-            onDismiss = { selectedMatch = null },
+            onDismiss = { selectedMatchForDetail = null },
             onVideoClick = { video ->
                 selectedVideo = video
             }
         )
     }
 
-    selectedLeaguePair?.let {
-            (leagueId, leagueName) ->
+    // ============================================================
+    // AI ELEMZÉS DIALOG
+    // ============================================================
 
-        FullLeagueTableDialog(
-            leagueId = leagueId,
-            leagueName = leagueName,
-            isDarkMode = isDarkMode
-        ) {
-
-            selectedLeaguePair = null
-        }
+    selectedMatchForAi?.let { match ->
+        val aiScroll = rememberScrollState()
+        AlertDialog(
+            onDismissRequest = {
+                selectedMatchForAi = null
+                viewModel.clearAiAnalysis()
+            },
+            title = {
+                Text(
+                    text = "🤖 AI Szimuláció & Elemzés",
+                    fontWeight = FontWeight.Bold,
+                    color = primaryGreen
+                )
+            },
+            text = {
+                if (isLoadingAi) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 12.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        CircularProgressIndicator(color = primaryGreen)
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Text(
+                            text = "Szimuláció futtatása…",
+                            color = subTextColor,
+                            fontSize = 12.sp
+                        )
+                    }
+                } else {
+                    Text(
+                        text = aiAnalysis ?: "Nincs elérhető elemzés.",
+                        color = textColor,
+                        fontSize = 13.sp,
+                        lineHeight = 18.sp,
+                        modifier = Modifier
+                            .heightIn(max = 360.dp)
+                            .verticalScroll(aiScroll)
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        selectedMatchForAi = null
+                        viewModel.clearAiAnalysis()
+                    }
+                ) {
+                    Text(
+                        text = "Bezárás",
+                        color = primaryGreen,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            },
+            containerColor = if (isDarkMode) Color(0xFF1E293B) else Color.White
+        )
     }
 }
 
 // ================================================================
-// ORSZÁGZÁSZLÓ
+// ORSZÁG / RÉGIÓ ZÁSZLÓ
 // ================================================================
 
-private fun countryFlag(
-    countryCode: String?
-): String {
+private enum class FlagKind {
+    COUNTRY,
+    EUROPE,
+    SOUTH_AMERICA,
+    NORTH_AMERICA,
+    CENTRAL_AMERICA,
+    AFRICA,
+    ASIA,
+    OCEANIA,
+    WORLD,
+    GENERIC
+}
 
-    val code =
-        countryCode
-            ?.trim()
-            ?.lowercase()
-            .orEmpty()
+private data class FlagResult(
+    val kind: FlagKind,
+    val emoji: String? = null
+)
 
-    if (code.length != 2) {
-        return "🌐"
+@Composable
+private fun LeagueFlagIcon(
+    countryCode: String?,
+    leagueName: String?,
+    modifier: Modifier = Modifier
+) {
+    val result = countryFlagResult(countryCode, leagueName)
+
+    when (result.kind) {
+        FlagKind.COUNTRY -> {
+            Text(
+                text = result.emoji ?: "🏳️",
+                fontSize = 14.sp,
+                modifier = modifier
+            )
+        }
+
+        FlagKind.EUROPE -> {
+            RegionFlagIcon(
+                kind = FlagKind.EUROPE,
+                modifier = modifier
+            )
+        }
+
+        FlagKind.SOUTH_AMERICA,
+        FlagKind.NORTH_AMERICA,
+        FlagKind.CENTRAL_AMERICA,
+        FlagKind.AFRICA,
+        FlagKind.ASIA,
+        FlagKind.OCEANIA,
+        FlagKind.WORLD,
+        FlagKind.GENERIC -> {
+            RegionFlagIcon(
+                kind = result.kind,
+                modifier = modifier
+            )
+        }
     }
+}
+
+/**
+ * Kis, egységes zászló-jellegű régióikonok azokhoz a sorozatokhoz,
+ * amelyek nem egyetlen országhoz tartoznak.
+ *
+ * Így többé nem jelenik meg 🌐 a régióknál sem.
+ */
+@Composable
+private fun RegionFlagIcon(
+    kind: FlagKind,
+    modifier: Modifier = Modifier
+) {
+    Canvas(
+        modifier = modifier
+            .width(22.dp)
+            .height(15.dp)
+    ) {
+        val w = size.width
+        val h = size.height
+        val radius = 2.5f
+
+        when (kind) {
+            FlagKind.EUROPE -> {
+                // EU: kék zászló + sárga csillagpontok.
+                drawRoundRect(
+                    color = Color(0xFF174EA6),
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(radius, radius)
+                )
+                val cx = w / 2f
+                val cy = h / 2f
+                val r = h * 0.30f
+                for (i in 0 until 8) {
+                    val a = Math.toRadians((i * 45.0) - 90.0)
+                    drawCircle(
+                        color = Color(0xFFFFD700),
+                        radius = 0.85f,
+                        center = androidx.compose.ui.geometry.Offset(
+                            cx + kotlin.math.cos(a).toFloat() * r,
+                            cy + kotlin.math.sin(a).toFloat() * r
+                        )
+                    )
+                }
+            }
+
+            FlagKind.SOUTH_AMERICA -> {
+                drawRoundRect(Color(0xFF1B5E20), cornerRadius = androidx.compose.ui.geometry.CornerRadius(radius, radius))
+                drawCircle(Color(0xFFFFD54F), radius = h * 0.34f, center = androidx.compose.ui.geometry.Offset(w * 0.50f, h * 0.50f))
+                drawCircle(Color(0xFF1565C0), radius = h * 0.19f, center = androidx.compose.ui.geometry.Offset(w * 0.50f, h * 0.50f))
+            }
+
+            FlagKind.NORTH_AMERICA -> {
+                drawRoundRect(Color(0xFF1565C0), cornerRadius = androidx.compose.ui.geometry.CornerRadius(radius, radius))
+                drawRect(Color.White, androidx.compose.ui.geometry.Offset(w * 0.10f, h * 0.28f), androidx.compose.ui.geometry.Size(w * 0.80f, h * 0.14f))
+                drawRect(Color.White, androidx.compose.ui.geometry.Offset(w * 0.10f, h * 0.58f), androidx.compose.ui.geometry.Size(w * 0.80f, h * 0.14f))
+                drawCircle(Color(0xFFE53935), radius = h * 0.16f, center = androidx.compose.ui.geometry.Offset(w * 0.22f, h * 0.50f))
+            }
+
+            FlagKind.CENTRAL_AMERICA -> {
+                drawRoundRect(Color(0xFF0277BD), cornerRadius = androidx.compose.ui.geometry.CornerRadius(radius, radius))
+                drawRect(Color.White, androidx.compose.ui.geometry.Offset(0f, h * 0.28f), androidx.compose.ui.geometry.Size(w, h * 0.44f))
+                drawCircle(Color(0xFF2E7D32), radius = h * 0.17f, center = androidx.compose.ui.geometry.Offset(w * 0.50f, h * 0.50f))
+            }
+
+            FlagKind.AFRICA -> {
+                drawRoundRect(Color(0xFF2E7D32), cornerRadius = androidx.compose.ui.geometry.CornerRadius(radius, radius))
+                drawLine(Color(0xFFFFD600), androidx.compose.ui.geometry.Offset(w * 0.10f, h * 0.78f), androidx.compose.ui.geometry.Offset(w * 0.90f, h * 0.22f), strokeWidth = h * 0.16f)
+                drawCircle(Color(0xFFD32F2F), radius = h * 0.18f, center = androidx.compose.ui.geometry.Offset(w * 0.72f, h * 0.35f))
+            }
+
+            FlagKind.ASIA -> {
+                drawRoundRect(Color(0xFFD32F2F), cornerRadius = androidx.compose.ui.geometry.CornerRadius(radius, radius))
+                drawCircle(Color(0xFFFFD54F), radius = h * 0.28f, center = androidx.compose.ui.geometry.Offset(w * 0.50f, h * 0.50f))
+                drawCircle(Color(0xFFD32F2F), radius = h * 0.20f, center = androidx.compose.ui.geometry.Offset(w * 0.56f, h * 0.44f))
+            }
+
+            FlagKind.OCEANIA -> {
+                drawRoundRect(Color(0xFF1565C0), cornerRadius = androidx.compose.ui.geometry.CornerRadius(radius, radius))
+                drawCircle(Color(0xFFFFD54F), radius = h * 0.14f, center = androidx.compose.ui.geometry.Offset(w * 0.70f, h * 0.34f))
+                drawCircle(Color.White, radius = h * 0.10f, center = androidx.compose.ui.geometry.Offset(w * 0.35f, h * 0.65f))
+                drawCircle(Color.White, radius = h * 0.07f, center = androidx.compose.ui.geometry.Offset(w * 0.55f, h * 0.68f))
+            }
+
+            FlagKind.WORLD -> {
+                drawRoundRect(Color(0xFF1565C0), cornerRadius = androidx.compose.ui.geometry.CornerRadius(radius, radius))
+                drawCircle(
+                    color = Color(0xFF66BB6A),
+                    radius = h * 0.36f,
+                    center = androidx.compose.ui.geometry.Offset(w * 0.50f, h * 0.50f)
+                )
+                drawCircle(
+                    color = Color(0xFF1565C0),
+                    radius = h * 0.36f,
+                    center = androidx.compose.ui.geometry.Offset(w * 0.55f, h * 0.45f)
+                )
+            }
+
+            FlagKind.GENERIC -> {
+                drawRoundRect(Color(0xFF455A64), cornerRadius = androidx.compose.ui.geometry.CornerRadius(radius, radius))
+                drawRect(Color.White, androidx.compose.ui.geometry.Offset(0f, h * 0.33f), androidx.compose.ui.geometry.Size(w, h * 0.34f))
+            }
+
+            FlagKind.COUNTRY -> Unit
+        }
+    }
+}
+
+private fun countryFlagResult(
+    countryCode: String?,
+    leagueName: String? = null
+): FlagResult {
+    val directCode = countryCode
+        ?.trim()
+        ?.uppercase()
+        .orEmpty()
+
+    if (directCode.length == 2 &&
+        directCode[0] in 'A'..'Z' &&
+        directCode[1] in 'A'..'Z'
+    ) {
+        return FlagResult(FlagKind.COUNTRY, isoFlag(directCode))
+    }
+
+    val name = leagueName
+        ?.trim()
+        ?.uppercase()
+        .orEmpty()
+
+    return when {
+        startsWithRegion(name, "EURÓPA", "EUROPE", "UEFA") -> FlagResult(FlagKind.EUROPE)
+        startsWithRegion(name, "DÉL-AMERIKA", "SOUTH AMERICA", "CONMEBOL", "SOUTHAMERICA") -> FlagResult(FlagKind.SOUTH_AMERICA)
+        startsWithRegion(name, "KÖZÉP-AMERIKA", "CENTRAL AMERICA") -> FlagResult(FlagKind.CENTRAL_AMERICA)
+        startsWithRegion(name, "ÉSZAK-AMERIKA", "NORTH AMERICA", "CONCACAF") -> FlagResult(FlagKind.NORTH_AMERICA)
+        startsWithRegion(name, "AFRIKA", "AFRICA", "CAF") -> FlagResult(FlagKind.AFRICA)
+        startsWithRegion(name, "ÁZSIA", "ASIA", "AFC") -> FlagResult(FlagKind.ASIA)
+        startsWithRegion(name, "ÓCEÁNIA", "OCEANIA", "OFC") -> FlagResult(FlagKind.OCEANIA)
+        startsWithRegion(name, "VILÁG", "WORLD", "NEMZETKÖZI", "INTERNATIONAL") -> FlagResult(FlagKind.WORLD)
+        else -> countryCodeFromLeagueName(name)?.let { FlagResult(FlagKind.COUNTRY, isoFlag(it)) }
+            ?: FlagResult(FlagKind.GENERIC)
+    }
+}
+
+private fun startsWithRegion(name: String, vararg prefixes: String): Boolean =
+    prefixes.any { prefix ->
+        name == prefix ||
+            name.startsWith("$prefix:") ||
+            name.startsWith("$prefix ")
+    }
+
+private fun isoFlag(code: String): String {
+    if (code == "EU") return "🇪🇺"
+    if (code == "UN") return "🇺🇳"
+    if (code == "XK") return "🇽🇰"
+    if (code.length != 2) return "🏳️"
 
     val first = code[0]
     val second = code[1]
 
-    if (
-        first !in 'a'..'z' ||
-        second !in 'a'..'z'
-    ) {
-        return "🌐"
+    if (first !in 'A'..'Z' || second !in 'A'..'Z') {
+        return "🏳️"
     }
 
     return buildString {
-
-        appendCodePoint(
-            0x1F1E6 + (first - 'a')
-        )
-
-        appendCodePoint(
-            0x1F1E6 + (second - 'a')
-        )
+        appendCodePoint(0x1F1E6 + (first - 'A'))
+        appendCodePoint(0x1F1E6 + (second - 'A'))
     }
+}
+
+/**
+ * Ország meghatározása a bajnokság nevéből.
+ *
+ * Ez a tartalék megoldás azért kell, mert több API-rekordnál a
+ * countryCode üres / hiányzik, miközben a bajnokság neve egyértelműen
+ * tartalmazza az országot.
+ */
+private fun countryCodeFromLeagueName(name: String): String? {
+    val countries = linkedMapOf(
+        "EGYESÜLT ARAB EMÍRSÉGEK" to "AE", "UNITED ARAB EMIRATES" to "AE",
+        "DÉL-KOREA" to "KR", "SOUTH KOREA" to "KR",
+        "ÉSZAK-MACEDÓNIA" to "MK", "NORTH MACEDONIA" to "MK",
+        "CSEHORSZÁG" to "CZ", "CZECHIA" to "CZ", "CZECH REPUBLIC" to "CZ",
+        "FEHÉROROSZORSZÁG" to "BY", "BELARUS" to "BY",
+        "HORVÁTORSZÁG" to "HR", "CROATIA" to "HR",
+        "SZERBIA" to "RS", "SERBIA" to "RS",
+        "SZLOVÁKIA" to "SK", "SLOVAKIA" to "SK",
+        "SZLOVÉNIA" to "SI", "SLOVENIA" to "SI",
+        "LENGYELORSZÁG" to "PL", "POLAND" to "PL",
+        "ROMÁNIA" to "RO", "ROMANIA" to "RO",
+        "BULGÁRIA" to "BG", "BULGARIA" to "BG",
+        "DÁNIA" to "DK", "DENMARK" to "DK",
+        "ANGLIA" to "GB", "ENGLAND" to "GB", "SKÓCIA" to "GB", "SCOTLAND" to "GB",
+        "WALES" to "GB", "ÉSZAK-ÍRORSZÁG" to "GB", "NORTHERN IRELAND" to "GB",
+        "FRANCIAORSZÁG" to "FR", "FRANCE" to "FR",
+        "NÉMETORSZÁG" to "DE", "GERMANY" to "DE",
+        "OLASZORSZÁG" to "IT", "ITALY" to "IT",
+        "SPANYOLORSZÁG" to "ES", "SPAIN" to "ES",
+        "PORTUGÁLIA" to "PT", "PORTUGAL" to "PT",
+        "HOLLANDIA" to "NL", "NETHERLANDS" to "NL",
+        "BELGIUM" to "BE", "SVÁJC" to "CH", "SWITZERLAND" to "CH",
+        "AUSZTRIA" to "AT", "AUSTRIA" to "AT",
+        "TÖRÖKORSZÁG" to "TR", "TURKEY" to "TR",
+        "GÖRÖGORSZÁG" to "GR", "GREECE" to "GR",
+        "IZLAND" to "IS", "ICELAND" to "IS",
+        "ÍRORSZÁG" to "IE", "IRELAND" to "IE",
+        "NORVÉGIA" to "NO", "NORWAY" to "NO",
+        "SVÉDORSZÁG" to "SE", "SWEDEN" to "SE",
+        "FINNORSZÁG" to "FI", "FINLAND" to "FI",
+        "UKRAJNA" to "UA", "UKRAINE" to "UA",
+        "OROSZORSZÁG" to "RU", "RUSSIA" to "RU",
+        "BOSZNIA-HERCEGOVINA" to "BA", "BOSNIA" to "BA", "MONTENEGRO" to "ME",
+        "ÉSZTORSZÁG" to "EE", "ESTONIA" to "EE", "LETTORSZÁG" to "LV", "LATVIA" to "LV",
+        "LITVÁNIA" to "LT", "LITHUANIA" to "LT", "MOLDOVA" to "MD",
+        "KOSZOVÓ" to "XK", "KOSOVO" to "XK", "ÖRMÉNYORSZÁG" to "AM", "ARMENIA" to "AM",
+        "AZERBAJDZSÁN" to "AZ", "AZERBAIJAN" to "AZ", "GRÚZIA" to "GE", "GEORGIA" to "GE",
+        "KAZAHSZTÁN" to "KZ", "KAZAKHSTAN" to "KZ", "ÜZBEGISZTÁN" to "UZ", "UZBEKISTAN" to "UZ",
+        "KIRGIZISZTÁN" to "KG", "KYRGYZSTAN" to "KG", "TÁDZSIKISZTÁN" to "TJ", "TAJIKISTAN" to "TJ",
+        "TURKMENISZTÁN" to "TM", "TURKMENISTAN" to "TM", "IRÁN" to "IR", "IRAN" to "IR",
+        "IRAK" to "IQ", "IRAQ" to "IQ", "IZRAEL" to "IL", "ISRAEL" to "IL",
+        "KATAR" to "QA", "QATAR" to "QA", "SZAÚD-ARÁBIA" to "SA", "SAUDI ARABIA" to "SA",
+        "INDIA" to "IN", "PAKISZTÁN" to "PK", "PAKISTAN" to "PK", "BANGLADESH" to "BD",
+        "JAPÁN" to "JP", "JAPAN" to "JP", "KÍNA" to "CN", "CHINA" to "CN",
+        "DÉL-AFRIKA" to "ZA", "SOUTH AFRICA" to "ZA", "EGYIPTOM" to "EG", "EGYPT" to "EG",
+        "MAROKKÓ" to "MA", "MOROCCO" to "MA", "ALGÉRIA" to "DZ", "ALGERIA" to "DZ",
+        "TUNÉZIA" to "TN", "TUNISIA" to "TN", "TANZÁNIA" to "TZ", "TANZANIA" to "TZ",
+        "GHÁNA" to "GH", "GHANA" to "GH", "NIGÉRIA" to "NG", "NIGERIA" to "NG",
+        "KENYA" to "KE", "UGANDA" to "UG", "ETIÓPIA" to "ET", "ETHIOPIA" to "ET",
+        "USA" to "US", "EGYESÜLT ÁLLAMOK" to "US", "UNITED STATES" to "US", "KANADA" to "CA", "CANADA" to "CA",
+        "MEXIKÓ" to "MX", "MEXICO" to "MX", "KOSTA RIKA" to "CR", "COSTA RICA" to "CR",
+        "PANAMA" to "PA", "GUATEMALA" to "GT", "HONDURAS" to "HN", "NICARAGUA" to "NI", "EL SALVADOR" to "SV",
+        "KOLUMBIA" to "CO", "COLOMBIA" to "CO", "ECUADOR" to "EC", "PERU" to "PE", "BOLÍVIA" to "BO", "BOLIVIA" to "BO",
+        "CHILE" to "CL", "ARGENTÍNA" to "AR", "ARGENTINA" to "AR", "BRAZÍLIA" to "BR", "BRAZIL" to "BR",
+        "PARAGUAY" to "PY", "URUGUAY" to "UY", "VENEZUELA" to "VE", "KUBA" to "CU", "CUBA" to "CU", "JAMAICA" to "JM",
+        "DOMINIKAI KÖZTÁRSASÁG" to "DO", "DOMINICAN REPUBLIC" to "DO", "TRINIDAD ÉS TOBAGO" to "TT", "TRINIDAD AND TOBAGO" to "TT",
+        "AUSTRÁLIA" to "AU", "AUSTRALIA" to "AU", "ÚJ-ZÉLAND" to "NZ", "NEW ZEALAND" to "NZ",
+        "MALAJZIA" to "MY", "MALAYSIA" to "MY", "SZINGAPÚR" to "SG", "SINGAPORE" to "SG", "THAIFÖLD" to "TH", "THAILAND" to "TH",
+        "VIETNÁM" to "VN", "VIETNAM" to "VN", "INDONÉZIA" to "ID", "INDONESIA" to "ID", "FÜLÖP-SZIGETEK" to "PH", "PHILIPPINES" to "PH",
+        "MYANMAR" to "MM", "SRÍ LANKA" to "LK", "SRI LANKA" to "LK", "NEPÁL" to "NP", "NEPAL" to "NP",
+        "CIPRUS" to "CY", "CYPRUS" to "CY", "MÁLTA" to "MT", "MALTA" to "MT", "LUXEMBURG" to "LU", "LUXEMBOURG" to "LU",
+        "ANDORRA" to "AD", "SAN MARINO" to "SM", "GIBRALTÁR" to "GI", "GIBRALTAR" to "GI", "FERÖER-SZIGETEK" to "FO", "FAROE ISLANDS" to "FO",
+        "LIECHTENSTEIN" to "LI"
+    )
+
+    for ((country, code) in countries) {
+        if (name == country || name.startsWith("$country:") || name.startsWith("$country ")) {
+            return code
+        }
+    }
+
+    val containsCountry = listOf(
+        "COPA PARAGUAY" to "PY",
+        "COPA URUGUAY" to "UY",
+        "BETANO POKALEN" to "DK",
+        "CROATIAN CUP" to "HR",
+        "ARMENIAN CUP" to "AM",
+        "RUSSIAN CUP" to "RU",
+        "SLOVAK CUP" to "SK",
+        "CALCUTTA PREMIER" to "IN",
+        "LIGA DE ASCENSO" to "CR"
+    )
+
+    for ((part, code) in containsCountry) {
+        if (name.contains(part)) return code
+    }
+
+    return null
 }
 
 // ================================================================
@@ -1137,6 +1754,7 @@ fun PremiumMatchRow(
     primaryGreen: Color,
     onFavoriteToggle: () -> Unit,
     onVideoClick: (MatchResponse) -> Unit,
+    onAiClick: (MatchResponse) -> Unit,
     onMatchClick: (MatchResponse) -> Unit = {}
 ) {
 
@@ -1194,30 +1812,19 @@ fun PremiumMatchRow(
                 Alignment.Start
         ) {
 
-            val isLive =
-                match.status != "FT" &&
-                        (match.minute ?: 0) > 0
+            val isLive = isMatchLive(match.status, match.minute)
 
             val statusText =
-                when (match.status) {
-
-                    "FT" ->
-                        "Vége"
-
-                    "HT" ->
-                        "Félidő"
-
-                    "1H" ->
-                        "1. Félidő"
-
-                    "2H" ->
-                        "2. Félidő"
-
-                    "NS" ->
-                        "Kezdés"
-
-                    else ->
-                        match.status
+                when {
+                    match.status == "FT" -> "Vége"
+                    match.status == "AET" -> "Hossz. után"
+                    match.status == "PEN" || match.status == "Pen." -> "11-esek"
+                    match.status == "HT" -> "Félidő"
+                    match.status == "1H" -> "1. Félidő"
+                    match.status == "2H" -> "2. Félidő"
+                    match.status == "ET" -> "Hosszabbítás"
+                    match.status == "NS" -> "Kezdés"
+                    else -> match.status
                 }
 
             if (isLive) {
@@ -1299,18 +1906,13 @@ fun PremiumMatchRow(
                 )
 
                 Text(
-                    text =
-                        match.homeTeam,
-
-                    color =
-                        textColor,
-
+                    text = match.homeTeam,
+                    color = textColor,
                     fontSize = 13.sp,
-
-                    fontWeight =
-                        FontWeight.SemiBold,
-
-                    maxLines = 1
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false)
                 )
             }
 
@@ -1338,103 +1940,80 @@ fun PremiumMatchRow(
                 )
 
                 Text(
-                    text =
-                        match.awayTeam,
-
-                    color =
-                        textColor,
-
+                    text = match.awayTeam,
+                    color = textColor,
                     fontSize = 13.sp,
-
-                    fontWeight =
-                        FontWeight.SemiBold,
-
-                    maxLines = 1
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false)
                 )
             }
         }
 
         // ============================================================
-        // EREDMÉNY
+        // EREDMÉNY + AKCIÓ GOMBOK (nem zsugorodhatnak el)
         // ============================================================
 
-        Column(
-            horizontalAlignment =
-                Alignment.End
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.wrapContentWidth()
         ) {
+            Column(
+                horizontalAlignment = Alignment.End,
+                modifier = Modifier.widthIn(min = 20.dp)
+            ) {
+                Text(
+                    text = "${match.homeScore ?: 0}",
+                    color = if (match.homeScore != null) primaryGreen else subTextColor,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = "${match.awayScore ?: 0}",
+                    color = if (match.awayScore != null) primaryGreen else subTextColor,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
 
-            Text(
-                text =
-                    "${match.homeScore ?: 0}",
+            Spacer(modifier = Modifier.width(8.dp))
 
-                color =
-                    if (match.homeScore != null) {
-                        primaryGreen
-                    } else {
-                        subTextColor
-                    },
-
-                fontSize = 13.sp,
-
-                fontWeight =
-                    FontWeight.Bold
-            )
-
-            Spacer(
-                modifier =
-                    Modifier.height(2.dp)
-            )
-
-            Text(
-                text =
-                    "${match.awayScore ?: 0}",
-
-                color =
-                    if (match.awayScore != null) {
-                        primaryGreen
-                    } else {
-                        subTextColor
-                    },
-
-                fontSize = 13.sp,
-
-                fontWeight =
-                    FontWeight.Bold
-            )
-        }
-
-        // ============================================================
-        // VIDEÓ
-        // ============================================================
-
-        match.highlightMatchId?.let {
-
-            Spacer(
-                modifier =
-                    Modifier.width(8.dp)
-            )
-
+            // AI gomb – mindig látszik
             Box(
                 modifier = Modifier
-                    .clip(
-                        RoundedCornerShape(6.dp)
-                    )
-                    .background(
-                        Color(0xFF2979FF)
-                    )
-                    .clickable {
-                        onVideoClick(match)
-                    }
-                    .padding(
-                        horizontal = 6.dp,
-                        vertical = 4.dp
-                    )
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(Color(0xFF0284C7))
+                    .clickable { onAiClick(match) }
+                    .padding(horizontal = 7.dp, vertical = 5.dp)
             ) {
+                Text(
+                    text = "🤖",
+                    color = Color.White,
+                    fontSize = 12.sp
+                )
+            }
 
+            // Videó / multimédia gomb – mindig látszik
+            Spacer(modifier = Modifier.width(6.dp))
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(
+                        if (!match.highlightMatchId.isNullOrBlank()) {
+                            Color(0xFF2979FF)
+                        } else {
+                            Color(0xFF455A64)
+                        }
+                    )
+                    .clickable { onVideoClick(match) }
+                    .padding(horizontal = 7.dp, vertical = 5.dp)
+            ) {
                 Text(
                     text = "🎥",
                     color = Color.White,
-                    fontSize = 11.sp
+                    fontSize = 12.sp
                 )
             }
         }
@@ -1856,11 +2435,13 @@ fun FullLeagueTableDialog(
 
 @Composable
 fun HighlightVideoPickerDialog(
+    match: MatchResponse?,
     videos: List<HighlightVideo>,
     isLoading: Boolean,
     errorMessage: String?,
     isDarkMode: Boolean,
     onVideoSelected: (HighlightVideo) -> Unit,
+    onOpenExternalUrl: (String) -> Unit,
     onDismiss: () -> Unit
 ) {
     val dialogBg =
@@ -1874,181 +2455,201 @@ fun HighlightVideoPickerDialog(
 
     val goalClips =
         videos.filter {
-            it.category.equals(
-                "goal-clip",
-                ignoreCase = true
-            )
+            it.category.equals("goal-clip", ignoreCase = true)
         }
 
     val matchHighlights =
         videos.filter {
-            it.category.equals(
-                "match-highlights",
-                ignoreCase = true
-            )
+            it.category.equals("match-highlights", ignoreCase = true)
         }
 
-    Dialog(
-        onDismissRequest = onDismiss
-    ) {
+    val otherVideos =
+        videos.filter {
+            !it.category.equals("goal-clip", ignoreCase = true) &&
+                !it.category.equals("match-highlights", ignoreCase = true)
+        }
+
+    val home = match?.homeTeam.orEmpty()
+    val away = match?.awayTeam.orEmpty()
+    val queryBase = listOf(home, "vs", away).filter { it.isNotBlank() }.joinToString(" ")
+
+    fun ytSearchUrl(extra: String): String {
+        val q = "$queryBase $extra".trim().ifBlank { "football highlights" }
+        return "https://www.youtube.com/results?search_query=" + Uri.encode(q)
+    }
+
+    Dialog(onDismissRequest = onDismiss) {
         Card(
-            modifier =
-                Modifier
-                    .fillMaxWidth()
-                    .padding(10.dp),
-
-            shape =
-                RoundedCornerShape(16.dp),
-
-            colors =
-                CardDefaults.cardColors(
-                    containerColor = dialogBg
-                )
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(10.dp),
+            shape = RoundedCornerShape(16.dp),
+            colors = CardDefaults.cardColors(containerColor = dialogBg)
         ) {
-
-            Column(
-                modifier =
-                    Modifier.padding(16.dp)
-            ) {
+            Column(modifier = Modifier.padding(16.dp)) {
 
                 Text(
-                    text = "🎥 Highlightly videók",
+                    text = "🎬 Multimédia központ",
                     color = Color(0xFF00E676),
                     fontSize = 16.sp,
                     fontWeight = FontWeight.ExtraBold
                 )
 
-                Spacer(
-                    modifier =
-                        Modifier.height(8.dp)
-                )
-
-                if (isLoading) {
-
-                    Box(
-                        modifier =
-                            Modifier
-                                .fillMaxWidth()
-                                .height(120.dp),
-
-                        contentAlignment =
-                            Alignment.Center
-                    ) {
-
-                        CircularProgressIndicator(
-                            color = Color(0xFF00E676)
-                        )
-                    }
-
-                } else if (errorMessage != null) {
-
+                if (!home.isNullOrBlank() || !away.isNullOrBlank()) {
+                    Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text = errorMessage,
-                        color = subTextColor,
-                        fontSize = 12.sp
+                        text = "$home vs $away",
+                        color = textColor,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold
                     )
-
-                } else {
-
-                    if (goalClips.isNotEmpty()) {
-
+                    match?.league?.let { league ->
                         Text(
-                            text = "⚽ Gólvideók",
-                            color = Color(0xFFFFD54F),
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-
-                        Spacer(
-                            modifier =
-                                Modifier.height(6.dp)
-                        )
-
-                        LazyColumn(
-                            modifier =
-                                Modifier.heightIn(
-                                    max = 260.dp
-                                )
-                        ) {
-
-                            items(goalClips) { video ->
-
-                                HighlightVideoRow(
-                                    video = video,
-                                    textColor = textColor,
-                                    subTextColor = subTextColor,
-                                    onClick = {
-                                        onVideoSelected(video)
-                                    }
-                                )
-
-                                Divider(
-                                    color =
-                                        if (isDarkMode) {
-                                            Color(0xFF2B3036)
-                                        } else {
-                                            Color(0xFFE5E7EB)
-                                        },
-                                    thickness = 0.5.dp
-                                )
-                            }
-                        }
-
-                    } else if (matchHighlights.isNotEmpty()) {
-
-                        Text(
-                            text = "🎬 Meccsösszefoglaló",
-                            color = Color(0xFF64B5F6),
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-
-                        Spacer(
-                            modifier =
-                                Modifier.height(6.dp)
-                        )
-
-                        matchHighlights.forEach { video ->
-
-                            HighlightVideoRow(
-                                video = video,
-                                textColor = textColor,
-                                subTextColor = subTextColor,
-                                onClick = {
-                                    onVideoSelected(video)
-                                }
-                            )
-                        }
-
-                    } else {
-
-                        Text(
-                            text =
-                                "Ehhez a mérkőzéshez nincs elérhető videó.",
+                            text = league,
                             color = subTextColor,
-                            fontSize = 12.sp
+                            fontSize = 11.sp
                         )
                     }
                 }
 
-                Spacer(
-                    modifier =
-                        Modifier.height(12.dp)
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // ---- YouTube / külső források (mindig) ----
+                Text(
+                    text = "🌍 Nemzetközi források",
+                    color = Color(0xFF40C4FF),
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold
                 )
+                Spacer(modifier = Modifier.height(6.dp))
+
+                MultimediaLinkRow(
+                    emoji = "▶️",
+                    title = "YouTube – meccsösszefoglaló",
+                    subtitle = "Keresés: highlights",
+                    textColor = textColor,
+                    subTextColor = subTextColor,
+                    onClick = { onOpenExternalUrl(ytSearchUrl("highlights")) }
+                )
+                MultimediaLinkRow(
+                    emoji = "⚽",
+                    title = "YouTube – gólok",
+                    subtitle = "Keresés: goals",
+                    textColor = textColor,
+                    subTextColor = subTextColor,
+                    onClick = { onOpenExternalUrl(ytSearchUrl("goals")) }
+                )
+                MultimediaLinkRow(
+                    emoji = "📡",
+                    title = "YouTube – élő / preview",
+                    subtitle = "Keresés: live OR preview",
+                    textColor = textColor,
+                    subTextColor = subTextColor,
+                    onClick = { onOpenExternalUrl(ytSearchUrl("live OR preview")) }
+                )
+
+                Spacer(modifier = Modifier.height(12.dp))
+                Divider(
+                    color = if (isDarkMode) Color(0xFF2B3036) else Color(0xFFE5E7EB),
+                    thickness = 1.dp
+                )
+                Spacer(modifier = Modifier.height(10.dp))
+
+                Text(
+                    text = "🎥 Highlightly",
+                    color = Color(0xFFFFD54F),
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+
+                if (isLoading) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(100.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        CircularProgressIndicator(color = Color(0xFF00E676))
+                    }
+                } else if (goalClips.isNotEmpty() || matchHighlights.isNotEmpty() || otherVideos.isNotEmpty()) {
+                    LazyColumn(modifier = Modifier.heightIn(max = 220.dp)) {
+                        if (goalClips.isNotEmpty()) {
+                            item {
+                                Text(
+                                    text = "⚽ Gólvideók",
+                                    color = Color(0xFFFFD54F),
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(vertical = 4.dp)
+                                )
+                            }
+                            items(goalClips) { video ->
+                                HighlightVideoRow(
+                                    video = video,
+                                    textColor = textColor,
+                                    subTextColor = subTextColor,
+                                    onClick = { onVideoSelected(video) }
+                                )
+                            }
+                        }
+                        if (matchHighlights.isNotEmpty()) {
+                            item {
+                                Text(
+                                    text = "🎬 Meccsösszefoglaló",
+                                    color = Color(0xFF64B5F6),
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(vertical = 4.dp)
+                                )
+                            }
+                            items(matchHighlights) { video ->
+                                HighlightVideoRow(
+                                    video = video,
+                                    textColor = textColor,
+                                    subTextColor = subTextColor,
+                                    onClick = { onVideoSelected(video) }
+                                )
+                            }
+                        }
+                        if (otherVideos.isNotEmpty()) {
+                            item {
+                                Text(
+                                    text = "📹 Egyéb",
+                                    color = subTextColor,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(vertical = 4.dp)
+                                )
+                            }
+                            items(otherVideos) { video ->
+                                HighlightVideoRow(
+                                    video = video,
+                                    textColor = textColor,
+                                    subTextColor = subTextColor,
+                                    onClick = { onVideoSelected(video) }
+                                )
+                            }
+                        }
+                    }
+                } else {
+                    Text(
+                        text = errorMessage
+                            ?: "Jelenleg nincs Highlightly-videó ehhez a meccshez. Használd a YouTube forrásokat fent.",
+                        color = subTextColor,
+                        fontSize = 12.sp
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
 
                 Button(
                     onClick = onDismiss,
-                    colors =
-                        ButtonDefaults.buttonColors(
-                            containerColor =
-                                Color(0xFF00E676)
-                        ),
-                    modifier =
-                        Modifier.align(
-                            Alignment.End
-                        )
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFF00E676)
+                    ),
+                    modifier = Modifier.align(Alignment.End)
                 ) {
-
                     Text(
                         text = "Bezárás",
                         color = Color.Black,
@@ -2057,6 +2658,46 @@ fun HighlightVideoPickerDialog(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun MultimediaLinkRow(
+    emoji: String,
+    title: String,
+    subtitle: String,
+    textColor: Color,
+    subTextColor: Color,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(text = emoji, fontSize = 18.sp)
+        Spacer(modifier = Modifier.width(10.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = title,
+                color = textColor,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold
+            )
+            Text(
+                text = subtitle,
+                color = subTextColor,
+                fontSize = 10.sp
+            )
+        }
+        Text(
+            text = "↗",
+            color = Color(0xFF40C4FF),
+            fontSize = 14.sp,
+            fontWeight = FontWeight.Bold
+        )
     }
 }
 
@@ -2233,6 +2874,344 @@ fun HighlightlyVideoDialog(
                     )
                 }
             }
+        }
+    }
+}
+
+
+// ================================================================
+// MÉDIA HUB – legutóbb nézett + thumbnail kártyák
+// ================================================================
+
+data class RecentMediaItem(
+    val id: String,
+    val title: String,
+    val subtitle: String,
+    val url: String,
+    val thumbUrl: String?,
+    val timestamp: Long
+)
+
+private fun loadRecentMedia(
+    prefs: android.content.SharedPreferences
+): List<RecentMediaItem> {
+    return try {
+        val raw = prefs.getString("recent_media_json", null) ?: return emptyList()
+        val arr = JSONArray(raw)
+        buildList {
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                add(
+                    RecentMediaItem(
+                        id = o.optString("id"),
+                        title = o.optString("title"),
+                        subtitle = o.optString("subtitle"),
+                        url = o.optString("url"),
+                        thumbUrl = o.optString("thumbUrl").takeIf { it.isNotBlank() },
+                        timestamp = o.optLong("timestamp")
+                    )
+                )
+            }
+        }
+    } catch (_: Exception) {
+        emptyList()
+    }
+}
+
+private fun saveRecentMedia(
+    prefs: android.content.SharedPreferences,
+    items: List<RecentMediaItem>
+) {
+    val arr = JSONArray()
+    items.forEach { item ->
+        arr.put(
+            JSONObject()
+                .put("id", item.id)
+                .put("title", item.title)
+                .put("subtitle", item.subtitle)
+                .put("url", item.url)
+                .put("thumbUrl", item.thumbUrl ?: "")
+                .put("timestamp", item.timestamp)
+        )
+    }
+    prefs.edit().putString("recent_media_json", arr.toString()).apply()
+}
+
+@Composable
+private fun MediaHubList(
+    matches: List<MatchResponse>,
+    recentItems: List<RecentMediaItem>,
+    isDarkMode: Boolean,
+    cardBgColor: Color,
+    textColor: Color,
+    subTextColor: Color,
+    primaryGreen: Color,
+    onOpenMatchMedia: (MatchResponse) -> Unit,
+    onOpenRecent: (RecentMediaItem) -> Unit,
+    onClearRecent: () -> Unit
+) {
+    val mediaMatches = remember(matches) {
+        matches.sortedWith(
+            compareByDescending<MatchResponse> {
+                !it.highlightMatchId.isNullOrBlank()
+            }.thenByDescending {
+                (it.minute ?: 0) > 0 && it.status != "FT"
+            }.thenBy {
+                it.league.orEmpty()
+            }
+        )
+    }
+
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        item {
+            Text(
+                text = "🎬 Média központ",
+                color = primaryGreen,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.ExtraBold
+            )
+            Text(
+                text = "Összefoglalók, gólok, nemzetközi források",
+                color = subTextColor,
+                fontSize = 11.sp
+            )
+        }
+
+        if (recentItems.isNotEmpty()) {
+            item {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "🕐 Legutóbb nézett",
+                        color = Color(0xFF40C4FF),
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "Törlés",
+                        color = subTextColor,
+                        fontSize = 11.sp,
+                        modifier = Modifier.clickable { onClearRecent() }
+                    )
+                }
+            }
+
+            items(recentItems.take(8), key = { it.id }) { item ->
+                RecentMediaCard(
+                    item = item,
+                    cardBgColor = cardBgColor,
+                    textColor = textColor,
+                    subTextColor = subTextColor,
+                    onClick = { onOpenRecent(item) }
+                )
+            }
+        }
+
+        item {
+            Text(
+                text = "📺 Ajánlott meccsek",
+                color = Color(0xFFFFD54F),
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(top = 6.dp)
+            )
+        }
+
+        if (mediaMatches.isEmpty()) {
+            item {
+                Text(
+                    text = "Most nincs megjeleníthető média-tartalom. Nézz vissza élő vagy befejezett meccseknél.",
+                    color = subTextColor,
+                    fontSize = 12.sp,
+                    modifier = Modifier.padding(vertical = 16.dp)
+                )
+            }
+        } else {
+            items(mediaMatches, key = { it.id }) { match ->
+                MediaMatchCard(
+                    match = match,
+                    cardBgColor = cardBgColor,
+                    textColor = textColor,
+                    subTextColor = subTextColor,
+                    primaryGreen = primaryGreen,
+                    onClick = { onOpenMatchMedia(match) }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun RecentMediaCard(
+    item: RecentMediaItem,
+    cardBgColor: Color,
+    textColor: Color,
+    subTextColor: Color,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(cardBgColor)
+            .clickable(onClick = onClick)
+            .padding(10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .size(52.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(Color(0xFF263238)),
+            contentAlignment = Alignment.Center
+        ) {
+            if (!item.thumbUrl.isNullOrBlank()) {
+                AsyncImage(
+                    model = item.thumbUrl,
+                    contentDescription = null,
+                    modifier = Modifier.size(52.dp)
+                )
+            } else {
+                Text("▶️", fontSize = 20.sp)
+            }
+        }
+        Spacer(modifier = Modifier.width(10.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = item.title,
+                color = textColor,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = item.subtitle,
+                color = subTextColor,
+                fontSize = 11.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        Text(text = "↗", color = Color(0xFF40C4FF), fontSize = 16.sp)
+    }
+}
+
+@Composable
+private fun MediaMatchCard(
+    match: MatchResponse,
+    cardBgColor: Color,
+    textColor: Color,
+    subTextColor: Color,
+    primaryGreen: Color,
+    onClick: () -> Unit
+) {
+    val isLive = isMatchLive(match.status, match.minute)
+    val hasHighlight = !match.highlightMatchId.isNullOrBlank()
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(cardBgColor)
+            .clickable(onClick = onClick)
+            .padding(10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        // Thumbnail: hazai + vendég logó
+        Box(
+            modifier = Modifier
+                .size(56.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(Color(0xFF1B2228))
+        ) {
+            AsyncImage(
+                model = match.homeLogoUrl,
+                contentDescription = null,
+                modifier = Modifier
+                    .size(30.dp)
+                    .align(Alignment.TopStart)
+                    .padding(4.dp)
+            )
+            AsyncImage(
+                model = match.awayLogoUrl,
+                contentDescription = null,
+                modifier = Modifier
+                    .size(30.dp)
+                    .align(Alignment.BottomEnd)
+                    .padding(4.dp)
+            )
+        }
+
+        Spacer(modifier = Modifier.width(10.dp))
+
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = "${match.homeTeam} vs ${match.awayTeam}",
+                color = textColor,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = match.league ?: "",
+                color = subTextColor,
+                fontSize = 11.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (isLive) {
+                    Text(
+                        text = "ÉLŐ ${match.minute}'",
+                        color = primaryGreen,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                } else if (isMatchFinished(match.status)) {
+                    Text(
+                        text = "VÉGE",
+                        color = subTextColor,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                }
+                Text(
+                    text = "${match.homeScore ?: 0} - ${match.awayScore ?: 0}",
+                    color = textColor,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Medium
+                )
+                if (hasHighlight) {
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Highlightly",
+                        color = Color(0xFFFFD54F),
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+        }
+
+        Box(
+            modifier = Modifier
+                .clip(RoundedCornerShape(8.dp))
+                .background(Color(0xFF2979FF))
+                .padding(horizontal = 10.dp, vertical = 8.dp)
+        ) {
+            Text(text = "🎥", fontSize = 14.sp)
         }
     }
 }
