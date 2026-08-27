@@ -13,6 +13,18 @@ data class HighlightVideo(
     @SerializedName("imgUrl") val imgUrl: String? = null
 )
 
+data class MatchEvent(
+    @SerializedName("type") val type: String? = null,
+    @SerializedName("team") val team: String? = null,
+    @SerializedName("team_name") val teamName: String? = null,
+    @SerializedName("minute") val minute: Int? = null,
+    @SerializedName("minute_display") val minuteDisplay: String? = null,
+    @SerializedName("player") val player: String? = null,
+    @SerializedName("assist") val assist: String? = null,
+    @SerializedName("result") val result: String? = null,
+    @SerializedName("substituted") val substituted: String? = null
+)
+
 data class MatchResponse(
     @SerializedName("id") val matchId: String,
     @SerializedName("league_id") val leagueId: String = "",
@@ -30,10 +42,40 @@ data class MatchResponse(
     @SerializedName("minute") val minute: Int?,
     @SerializedName("highlight_url") val highlightUrl: String?,
     @SerializedName("highlight_match_id") val highlightMatchId: String? = null,
-    @SerializedName("odds_home") val oddsHome: Double?,
-    @SerializedName("value_bet") val isValueBet: Boolean?
+    @SerializedName("odds_home") val oddsHome: Double? = null,
+    @SerializedName("value_bet") val isValueBet: Boolean? = null,
+    @SerializedName("events") val events: List<MatchEvent>? = null
 ) {
-    // Visszafelé kompatibilis alias: a meglévő UI-kód továbbra is használhatja az id-t.
     val id: String
         get() = matchId
 }
+
+data class LineupPlayer(
+    @SerializedName("name") val name: String? = null,
+    @SerializedName("number") val number: Any? = null,
+    @SerializedName("position") val position: String? = null,
+    @SerializedName("is_bench") val isBench: Boolean? = false
+)
+
+data class LineupSide(
+    @SerializedName("team_name") val teamName: String? = null,
+    @SerializedName("formation") val formation: String? = null,
+    @SerializedName("players") val players: List<LineupPlayer>? = null
+)
+
+data class LineupsResponse(
+    @SerializedName("home") val home: LineupSide? = null,
+    @SerializedName("away") val away: LineupSide? = null,
+    @SerializedName("available") val available: Boolean? = false
+)
+
+data class StatItem(
+    @SerializedName("name") val name: String? = null,
+    @SerializedName("home") val home: Any? = null,
+    @SerializedName("away") val away: Any? = null
+)
+
+data class StatisticsResponse(
+    @SerializedName("items") val items: List<StatItem>? = null,
+    @SerializedName("available") val available: Boolean? = false
+)
