@@ -55,15 +55,24 @@ def _name_tokens(name: str):
 
 
 def _teams_soft_match(a: str, b: str) -> bool:
+    a = (a or "").lower().strip()
+    b = (b or "").lower().strip()
+    if not a or not b:
+        return False
+    # teljes / prefix
+    if a == b or a in b or b in a:
+        return True
     ta, tb = _name_tokens(a), _name_tokens(b)
     if not ta or not tb:
-        return False
+        # token nélkül: első 4 betű egyezés
+        return len(a) >= 4 and len(b) >= 4 and (a[:4] == b[:4])
     if ta & tb:
         return True
-    # egyik tartalmazza a másik fő tokenjét
     for x in ta:
         for y in tb:
             if x in y or y in x:
+                return True
+            if len(x) >= 4 and len(y) >= 4 and x[:4] == y[:4]:
                 return True
     return False
 
@@ -409,6 +418,59 @@ def _normalize_hl_match_item(m: dict) -> dict:
     }
 
 
+
+
+
+def resolve_highlightly_match_id(home_name: str, away_name: str, date_iso: str = None):
+    """
+    Highlightly match ID feloldás:
+    1) mai / megadott nap GET /matches?date=
+    2) soft team name match (Kups ↔ KuPS, Shamrock Rovers, stb.)
+    """
+    if not HIGHLIGHTLY_KEY:
+        return None
+    date_iso = (date_iso or datetime.now().strftime("%Y-%m-%d"))[:10]
+    matches = fetch_highlightly_matches_by_date(date_iso, limit=100)
+    if not matches:
+        # tegnap + holnap is (időzóna / késő meccs)
+        for delta in (-1, 1):
+            try:
+                d = (datetime.now() + timedelta(days=delta)).strftime("%Y-%m-%d")
+                matches = fetch_highlightly_matches_by_date(d, limit=100)
+                if matches:
+                    break
+            except Exception:
+                pass
+    if not matches:
+        return None
+
+    nh = " ".join((home_name or "").lower().split())
+    na = " ".join((away_name or "").lower().split())
+
+    best_id = None
+    for m in matches:
+        if not isinstance(m, dict):
+            continue
+        ht = m.get("homeTeam") if isinstance(m.get("homeTeam"), dict) else {}
+        at = m.get("awayTeam") if isinstance(m.get("awayTeam"), dict) else {}
+        hl_h = " ".join(str(ht.get("name") or "").lower().split())
+        hl_a = " ".join(str(at.get("name") or "").lower().split())
+        if not hl_h or not hl_a:
+            continue
+        # pontos
+        if (hl_h == nh and hl_a == na) or (hl_h == na and hl_a == nh):
+            mid = m.get("id")
+            if mid is not None:
+                return str(mid)
+        # soft
+        if (
+            (_teams_soft_match(nh, hl_h) and _teams_soft_match(na, hl_a))
+            or (_teams_soft_match(nh, hl_a) and _teams_soft_match(na, hl_h))
+        ):
+            mid = m.get("id")
+            if mid is not None:
+                best_id = str(mid)
+    return best_id
 
 
 def fetch_highlightly_match_detail(highlight_match_id: str):
@@ -1793,6 +1855,15 @@ def get_matches():
                             )
                         )
 
+                # 4. FALLBACK: Highlightly napi matches (élő kupa – még nincs videó highlight)
+                if not highlight_match_id:
+                    try:
+                        highlight_match_id = resolve_highlightly_match_id(
+                            home_name, away_name, None
+                        )
+                    except Exception:
+                        pass
+
                 # ========================================================
                 # GÓLOK
                 # ========================================================
@@ -2259,6 +2330,19 @@ def get_match_detail(match_id: str):
         if isinstance(all_matches, list):
             for item in all_matches:
                 if str(item.get("id") or "") == str(match_id):
+                    # Élő meccs: ha nincs HL id, feloldás /matches?date=
+                    if not item.get("highlight_match_id"):
+                        try:
+                            hid = resolve_highlightly_match_id(
+                                item.get("home_team") or "",
+                                item.get("away_team") or "",
+                                item.get("kickoff_date"),
+                            )
+                            if hid:
+                                item = dict(item)
+                                item["highlight_match_id"] = hid
+                        except Exception:
+                            pass
                     _detail_cache[cache_key] = {"data": item, "ts": now}
                     return item
     except Exception:
