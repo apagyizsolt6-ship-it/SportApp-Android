@@ -373,7 +373,7 @@ private fun DetailTeamLogo(
     teamName: String,
     size: androidx.compose.ui.unit.Dp = 48.dp
 ) {
-    val initials = teamName.trim().split(Regex("\s+"))
+    val initials = teamName.trim().split(Regex("""\s+"""))
         .filter { it.isNotBlank() }.take(2)
         .joinToString("") { it.first().uppercase() }
         .ifBlank { "⚽" }
@@ -1016,7 +1016,7 @@ private fun PlayerLine(p: LineupPlayer, text: Color, sub: Color) {
 /** Rövid név a pályára (vezetéknév). */
 private fun shortName(name: String?): String {
     if (name.isNullOrBlank()) return "—"
-    val parts = name.trim().split(Regex("\s+"))
+    val parts = name.trim().split(Regex("""\s+"""))
     return parts.last().take(10)
 }
 
