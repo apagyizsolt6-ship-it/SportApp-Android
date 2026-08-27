@@ -624,6 +624,7 @@ def _normalize_lineups(raw):
 
 
 STAT_LABEL_HU = {
+    # pontos egyezés (kisbetűs kulcs)
     "shots accuracy": "Lövéspontosság",
     "shot accuracy": "Lövéspontosság",
     "shots on target": "Kapura lövés",
@@ -631,6 +632,7 @@ STAT_LABEL_HU = {
     "blocked shots": "Blokkolt lövés",
     "shots blocked": "Blokkolt lövés",
     "total shots": "Összes lövés",
+    "shots total": "Összes lövés",
     "shots": "Lövések",
     "fouls": "Szabálytalanság",
     "corners": "Szöglet",
@@ -642,11 +644,19 @@ STAT_LABEL_HU = {
     "red cards": "Piros lap",
     "goalkeeper saves": "Kapus védés",
     "saves": "Védések",
-    "passes": "Passzok",
+    "total passes": "Összes passz",
+    "passes total": "Összes passz",
     "accurate passes": "Pontos passz",
+    "passes accurate": "Pontos passz",
     "pass accuracy": "Passzpontosság",
+    "key passes": "Kulcspassz",
+    "passes": "Passzok",
     "expected goals": "Várható gól (xG)",
+    "expected goals (xg)": "Várható gól (xG)",
     "xg": "Várható gól (xG)",
+    "expected assists": "Várható gólpassz (xA)",
+    "expected assists (xa)": "Várható gólpassz (xA)",
+    "xa": "Várható gólpassz (xA)",
     "attacks": "Támadás",
     "dangerous attacks": "Veszélyes támadás",
     "throw-ins": "Bedobás",
@@ -654,30 +664,50 @@ STAT_LABEL_HU = {
     "free kicks": "Szabadrúgás",
     "goal kicks": "Kapusrúgás",
     "tackles": "Szerelés",
+    "total tackles": "Összes szerelés",
+    "tackles won": "Nyert szerelés",
     "interceptions": "Labdaszerzés",
     "clearances": "Kiszabadítás",
     "crosses": "Beadás",
+    "total crosses": "Összes beadás",
+    "accurate crosses": "Pontos beadás",
+    "crosses accurate": "Pontos beadás",
     "counter attacks": "Kontratámadás",
     "hits woodwork": "Kapufák",
     "big chances": "Nagy helyzet",
     "big chances missed": "Elpuskázott nagy helyzet",
+    "big chances created": "Kialakított nagy helyzet",
     "duels won": "Nyert párharc",
+    "duels": "Párharc",
     "aerials won": "Fejpárbaj",
+    "aerials": "Fejpárbaj",
     "dribbles": "Cselt",
+    "dribbles attempted": "Próbált csel",
+    "dribbles succeeded": "Sikeres csel",
+    "successful dribbles": "Sikeres csel",
+    "dribbles successful": "Sikeres csel",
     "substitutions": "Csere",
+    "passes in final third": "Passz a 16-osban",
+    "final third entries": "Belépés a 16-osba",
+    "long balls": "Hosszú labda",
+    "accurate long balls": "Pontos hosszú labda",
 }
 
 
 def _stat_label_hu(name: str) -> str:
+    """Először pontos egyezés – ne legyen minden 'Passzok'."""
     if not name:
         return name
-    key = str(name).strip().lower()
+    key = " ".join(str(name).strip().lower().split())
     if key in STAT_LABEL_HU:
         return STAT_LABEL_HU[key]
-    # részleges
-    for en, hu in STAT_LABEL_HU.items():
-        if en in key:
-            return hu
+    # hosszabb kulcsok előbb (pl. accurate passes > passes)
+    for en in sorted(STAT_LABEL_HU.keys(), key=len, reverse=True):
+        if en == key:
+            return STAT_LABEL_HU[en]
+        # csak teljes szóhatáros tartalmazás, min. 8 karakteres kulcs
+        if len(en) >= 8 and en in key:
+            return STAT_LABEL_HU[en]
     return str(name).strip()
 
 
