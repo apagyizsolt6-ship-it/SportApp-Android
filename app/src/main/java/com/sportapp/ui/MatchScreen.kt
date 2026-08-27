@@ -1,6 +1,14 @@
 package com.sportapp.ui
 
 import android.content.Intent
+import java.util.Calendar
+import java.time.format.DateTimeFormatter
+import java.time.LocalDate
+import com.sportapp.MatchReminderReceiver
+import android.widget.Toast
+import android.os.Build
+import android.app.PendingIntent
+import android.app.AlarmManager
 import android.net.Uri
 
 import android.webkit.WebChromeClient
@@ -69,6 +77,114 @@ private fun isMatchLive(status: String?, minute: Int?): Boolean {
 }
 
 /** 0..4 = TOP sorrend, null = nem TOP. */
+
+
+/** 15 perccel a kickoff előtt értesítés. Siker: true. */
+private fun scheduleMatchReminder(context: android.content.Context, match: MatchResponse): Boolean {
+    val timeStr = match.kickoffTime?.trim()?.takeIf { it.contains(":") }
+        ?: match.status.trim().takeIf { it.contains(":") && it.length <= 5 }
+        ?: return false
+    val parts = timeStr.split(":")
+    if (parts.size < 2) return false
+    val hour = parts[0].toIntOrNull() ?: return false
+    val minute = parts[1].toIntOrNull() ?: return false
+
+    val cal = Calendar.getInstance().apply {
+        // kickoff dátum
+        val d = match.kickoffDate?.take(10)
+        if (d != null && d.length >= 10) {
+            try {
+                val y = d.substring(0, 4).toInt()
+                val mo = d.substring(5, 7).toInt()
+                val day = d.substring(8, 10).toInt()
+                set(Calendar.YEAR, y)
+                set(Calendar.MONTH, mo - 1)
+                set(Calendar.DAY_OF_MONTH, day)
+            } catch (_: Exception) {
+            }
+        }
+        set(Calendar.HOUR_OF_DAY, hour)
+        set(Calendar.MINUTE, minute)
+        set(Calendar.SECOND, 0)
+        set(Calendar.MILLISECOND, 0)
+        add(Calendar.MINUTE, -15)
+    }
+    if (cal.timeInMillis <= System.currentTimeMillis()) return false
+
+    val intent = Intent(context, MatchReminderReceiver::class.java).apply {
+        putExtra(MatchReminderReceiver.EXTRA_TITLE, "⚽ Hamarosan kezdődik")
+        putExtra(
+            MatchReminderReceiver.EXTRA_BODY,
+            "${match.homeTeam} vs ${match.awayTeam} · ${match.kickoffTime ?: timeStr}"
+        )
+        putExtra(MatchReminderReceiver.EXTRA_MATCH_ID, match.id)
+    }
+    val pi = PendingIntent.getBroadcast(
+        context,
+        match.id.hashCode(),
+        intent,
+        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+    )
+    val am = context.getSystemService(android.content.Context.ALARM_SERVICE) as AlarmManager
+    return try {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, cal.timeInMillis, pi)
+        } else {
+            am.setExact(AlarmManager.RTC_WAKEUP, cal.timeInMillis, pi)
+        }
+        true
+    } catch (_: Exception) {
+        try {
+            am.set(AlarmManager.RTC_WAKEUP, cal.timeInMillis, pi)
+            true
+        } catch (_: Exception) {
+            false
+        }
+    }
+}
+
+private fun todayIso(): String {
+    return try {
+        LocalDate.now().toString()
+    } catch (_: Exception) {
+        java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
+            .format(java.util.Date())
+    }
+}
+
+private fun dateIsoWithOffset(offsetDays: Int): String {
+    return try {
+        LocalDate.now().plusDays(offsetDays.toLong()).toString()
+    } catch (_: Exception) {
+        val cal = Calendar.getInstance()
+        cal.add(Calendar.DAY_OF_YEAR, offsetDays)
+        java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(cal.time)
+    }
+}
+
+private fun matchKickoffDate(match: MatchResponse): String {
+    val d = match.kickoffDate?.trim().orEmpty()
+    if (d.length >= 10) return d.take(10)
+    // Ütemezett / élő ma a feedben → ma
+    return todayIso()
+}
+
+private fun dayLabel(offset: Int): String {
+    return when (offset) {
+        0 -> "Ma"
+        -1 -> "Tegnap"
+        1 -> "Holnap"
+        else -> {
+            try {
+                val d = LocalDate.now().plusDays(offset.toLong())
+                d.format(DateTimeFormatter.ofPattern("MM.dd"))
+            } catch (_: Exception) {
+                if (offset > 0) "+$offset" else "$offset"
+            }
+        }
+    }
+}
+
 private fun topFiveRank(leagueName: String?, countryCode: String?): Int? {
     if (leagueName.isNullOrBlank()) return null
 
@@ -180,12 +296,28 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
     var isDarkMode by remember { mutableStateOf(true) }
     var selectedTab by remember { mutableIntStateOf(0) }
     var searchQuery by remember { mutableStateOf("") }
+    // Naptár: 0 = ma, -1 = tegnap, +1 = holnap...
+    var selectedDayOffset by remember { mutableIntStateOf(0) }
+    LaunchedEffect(selectedDayOffset) {
+        viewModel.setDayOffset(selectedDayOffset)
+    }
 
     val context = LocalContext.current
     val favoritePrefs = remember(context) {
         context.getSharedPreferences(
             "match_screen_preferences",
             android.content.Context.MODE_PRIVATE
+        )
+    }
+    val reminderPrefs = remember(context) {
+        context.getSharedPreferences(
+            "match_reminders",
+            android.content.Context.MODE_PRIVATE
+        )
+    }
+    var reminderMatchIds by remember {
+        mutableStateOf(
+            reminderPrefs.getStringSet("ids", emptySet())?.toSet() ?: emptySet()
         )
     }
 
@@ -318,14 +450,21 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
         mutableStateOf(setOf<String>())
     }
 
+    val selectedDateIso = remember(selectedDayOffset) { dateIsoWithOffset(selectedDayOffset) }
+
     val filteredMatches = remember(
         matches,
         selectedTab,
         searchQuery,
         favoriteMatchIds,
-        favoriteLeagueNames
+        favoriteLeagueNames,
+        selectedDateIso
     ) {
         matches.filter { match ->
+            // Naptár nap szűrés
+            val onDay = matchKickoffDate(match) == selectedDateIso
+            if (!onDay) return@filter false
+
 
             val leagueName = match.league ?: "EGYÉB BAJNOKSÁG"
 
@@ -429,6 +568,17 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
     // ============================================================
     // A ligák továbbra is külön-külön is nyithatók/zárhatók.
     // Ez a kapcsoló csak az összes jelenleg látható ligára hat.
+
+    val daySummary = remember(filteredMatches, favoriteMatchIds, favoriteLeagueNames) {
+        val total = filteredMatches.size
+        val live = filteredMatches.count { isMatchLive(it.status, it.minute) }
+        val fav = filteredMatches.count {
+            favoriteMatchIds.contains(it.id) ||
+                favoriteLeagueNames.contains(it.league ?: "")
+        }
+        Triple(total, live, fav)
+    }
+
     val allLeaguesCollapsed = groupedMatchesList.isNotEmpty() &&
             groupedMatchesList.all {
                 collapsedLeagueNames.contains(it.key)
@@ -577,6 +727,65 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                     )
                     .clip(RoundedCornerShape(8.dp))
             )
+
+            // ====================================================
+            // NAPI ÖSSZEFOGLALÓ + NAPTÁR
+            // ====================================================
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                val (total, live, fav) = daySummary
+                Text(
+                    text = "${dayLabel(selectedDayOffset)} · $total meccs" +
+                        (if (live > 0) " · $live élő" else "") +
+                        (if (fav > 0) " · $fav kedvenc" else ""),
+                    color = subTextColor,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(20.dp))
+                        .background(cardBgColor)
+                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                )
+            }
+
+            // Napválasztó sáv
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                for (off in -1..3) {
+                    val selected = selectedDayOffset == off
+                    Surface(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clickable { selectedDayOffset = off },
+                        shape = RoundedCornerShape(12.dp),
+                        color = if (selected) primaryGreen.copy(alpha = 0.25f) else cardBgColor,
+                        border = androidx.compose.foundation.BorderStroke(
+                            1.dp,
+                            if (selected) primaryGreen else Color(0x33A0C4FF)
+                        )
+                    ) {
+                        Text(
+                            text = dayLabel(off),
+                            color = if (selected) primaryGreen else textColor,
+                            fontSize = 11.sp,
+                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 8.dp)
+                        )
+                    }
+                }
+            }
 
             // ====================================================
             // SZŰRŐ FÜLEK
@@ -1215,6 +1424,28 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                                     },
                                     onMatchClick = { match ->
                                         selectedMatchForDetail = match
+                                    },
+                                    isReminderSet = reminderMatchIds.contains(match.id),
+                                    onReminderClick = { m ->
+                                        val ok = scheduleMatchReminder(context, m)
+                                        if (ok) {
+                                            val next = reminderMatchIds + m.id
+                                            reminderMatchIds = next
+                                            reminderPrefs.edit()
+                                                .putStringSet("ids", next)
+                                                .apply()
+                                            Toast.makeText(
+                                                context,
+                                                "Emlékeztető beállítva (15 perccel kezdés előtt)",
+                                                Toast.LENGTH_SHORT
+                                            ).show()
+                                        } else {
+                                            Toast.makeText(
+                                                context,
+                                                "Nem sikerült (nincs kezdési idő vagy már elmúlt)",
+                                                Toast.LENGTH_SHORT
+                                            ).show()
+                                        }
                                     }
                                 )
 
@@ -1823,6 +2054,7 @@ private fun TeamLogo(
 fun PremiumMatchRow(
     match: MatchResponse,
     isFavorite: Boolean,
+    isReminderSet: Boolean = false,
     cardBgColor: Color,
     textColor: Color,
     subTextColor: Color,
@@ -1830,7 +2062,8 @@ fun PremiumMatchRow(
     onFavoriteToggle: () -> Unit,
     onVideoClick: (MatchResponse) -> Unit,
     onAiClick: (MatchResponse) -> Unit,
-    onMatchClick: (MatchResponse) -> Unit = {}
+    onMatchClick: (MatchResponse) -> Unit = {},
+    onReminderClick: (MatchResponse) -> Unit = {}
 ) {
 
     Row(
@@ -2057,6 +2290,25 @@ fun PremiumMatchRow(
             }
 
             Spacer(modifier = Modifier.width(8.dp))
+
+            // Emlékeztető
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(
+                        if (isReminderSet) Color(0xFFFF9100) else Color(0xFF455A64)
+                    )
+                    .clickable { onReminderClick(match) }
+                    .padding(horizontal = 7.dp, vertical = 5.dp)
+            ) {
+                Text(
+                    text = if (isReminderSet) "🔔" else "⏰",
+                    color = Color.White,
+                    fontSize = 12.sp
+                )
+            }
+
+            Spacer(modifier = Modifier.width(6.dp))
 
             // AI gomb – mindig látszik
             Box(

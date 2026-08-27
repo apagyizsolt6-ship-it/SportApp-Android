@@ -3,38 +3,51 @@ package com.sportapp.ui
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.sportapp.api.RetrofitInstance
+import com.sportapp.models.MatchResponse
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import java.time.LocalDate
 
 class MatchViewModel : ViewModel() {
 
-    private val _matches = MutableStateFlow<List<com.sportapp.models.MatchResponse>>(emptyList())
-    val matches: StateFlow<List<com.sportapp.models.MatchResponse>> = _matches
+    private val _matches = MutableStateFlow<List<MatchResponse>>(emptyList())
+    val matches: StateFlow<List<MatchResponse>> = _matches
 
     private val _isLoading = MutableStateFlow(true)
     val isLoading: StateFlow<Boolean> = _isLoading
 
     private val _aiAnalysis = MutableStateFlow<String?>(null)
-    val aiAnalysis: StateFlow<String?> = _aiAnalysis.asStateFlow()
+    val aiAnalysis: StateFlow<String?> = _aiAnalysis
 
     private val _isLoadingAi = MutableStateFlow(false)
-    val isLoadingAi: StateFlow<Boolean> = _isLoadingAi.asStateFlow()
+    val isLoadingAi: StateFlow<Boolean> = _isLoadingAi
 
-    // Kicsit ritkább frissítés – kevesebb terhelés, snappibb UI
-    private val REFRESH_INTERVAL_MS = 30_000L
+    private val REFRESH_INTERVAL_MS = 20_000L
+
+    /** 0 = ma; -1 tegnap; +1 holnap … */
+    private var dayOffset: Int = 0
+    private var autoJob: Job? = null
 
     init {
         startAutoRefresh()
     }
 
+    fun setDayOffset(offset: Int) {
+        if (dayOffset == offset) return
+        dayOffset = offset
+        fetchMatches(showLoading = true)
+        autoJob?.cancel()
+        if (offset == 0) startAutoRefresh()
+    }
+
     private fun startAutoRefresh() {
-        viewModelScope.launch {
-            while (isActive) {
-                loadMatches(showLoading = _matches.value.isEmpty())
+        autoJob?.cancel()
+        autoJob = viewModelScope.launch {
+            while (true) {
+                fetchMatches(showLoading = _matches.value.isEmpty())
                 delay(REFRESH_INTERVAL_MS)
             }
         }
@@ -42,62 +55,59 @@ class MatchViewModel : ViewModel() {
 
     fun fetchMatches(showLoading: Boolean = true) {
         viewModelScope.launch {
-            loadMatches(showLoading)
+            if (showLoading) _isLoading.value = true
+            try {
+                _matches.value = if (dayOffset == 0) {
+                    RetrofitInstance.api.getMatches()
+                } else {
+                    val date = try {
+                        LocalDate.now().plusDays(dayOffset.toLong()).toString()
+                    } catch (_: Exception) {
+                        val cal = java.util.Calendar.getInstance()
+                        cal.add(java.util.Calendar.DAY_OF_YEAR, dayOffset)
+                        java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
+                            .format(cal.time)
+                    }
+                    RetrofitInstance.api.getMatchesByDate(date)
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            } finally {
+                if (showLoading) _isLoading.value = false
+            }
         }
     }
 
-    private suspend fun loadMatches(showLoading: Boolean) {
-        if (showLoading) {
-            _isLoading.value = true
-        }
-
-        try {
-            val result = RetrofitInstance.api.getMatches()
-            if (result.isNotEmpty()) {
-                _matches.value = result
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
-        } finally {
-            if (showLoading) {
-                _isLoading.value = false
-            }
-        }
-    }
-
-    /**
-     * Gemini AI elemzés – 1 automatikus újrapróbálással.
-     */
     fun fetchAiAnalysis(matchId: String) {
         viewModelScope.launch {
             _isLoadingAi.value = true
             _aiAnalysis.value = null
-
-            var lastError: String? = null
-            repeat(2) { attempt ->
-                try {
-                    val response = RetrofitInstance.api.getAiAnalysis(matchId)
-                    val text = response.analysis?.trim().orEmpty()
-                    if (text.isNotEmpty()) {
-                        _aiAnalysis.value = text
-                        _isLoadingAi.value = false
-                        return@launch
-                    }
-                    lastError = "Üres AI válasz érkezett."
-                } catch (e: Exception) {
-                    lastError = e.message ?: "hálózati hiba"
-                    e.printStackTrace()
-                    // Rövid várás újrapróbálás előtt
-                    if (attempt == 0) delay(1200)
+            try {
+                val r = RetrofitInstance.api.getAiAnalysis(matchId)
+                // Mezőnevek repónként eltérhetnek – reflection nélkül toString fallback
+                val text = try {
+                    val clazz = r.javaClass
+                    listOf("summary", "analysis", "text", "message", "content")
+                        .mapNotNull { name ->
+                            try {
+                                val f = clazz.declaredFields.find { it.name == name }
+                                    ?: clazz.fields.find { it.name == name }
+                                f?.isAccessible = true
+                                f?.get(r)?.toString()?.takeIf { it.isNotBlank() && it != "null" }
+                            } catch (_: Exception) {
+                                null
+                            }
+                        }
+                        .firstOrNull()
+                } catch (_: Exception) {
+                    null
                 }
+                _aiAnalysis.value = text ?: "AI válasz érkezett."
+            } catch (e: Exception) {
+                _aiAnalysis.value = "AI elemzés jelenleg nem elérhető."
+            } finally {
+                _isLoadingAi.value = false
             }
-
-            _aiAnalysis.value =
-                "Az AI elemzés elérése sikertelen volt.\n\n" +
-                    "Lehetséges ok: lassú szerver, hálózat vagy Gemini terhelés.\n" +
-                    "Próbáld újra néhány másodperc múlva." +
-                    (if (!lastError.isNullOrBlank()) "\n($lastError)" else "")
-            _isLoadingAi.value = false
         }
     }
 

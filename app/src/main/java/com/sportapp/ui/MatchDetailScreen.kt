@@ -3,6 +3,7 @@ package com.sportapp.ui
 import com.sportapp.models.AiAnalysisResponse
 
 import com.sportapp.models.H2hResponse
+import com.sportapp.models.FormResponse
 
 import com.sportapp.models.H2hItem
 
@@ -91,6 +92,7 @@ fun MatchDetailDialog(
     val scope = rememberCoroutineScope()
     val hlId = (detail.highlightMatchId ?: match.highlightMatchId)?.trim().orEmpty()
     var h2h by remember { mutableStateOf<H2hResponse?>(null) }
+    var form by remember { mutableStateOf<FormResponse?>(null) }
     var aiText by remember { mutableStateOf<String?>(null) }
     var showAi by remember { mutableStateOf(false) }
     val context = LocalContext.current
@@ -117,6 +119,12 @@ fun MatchDetailDialog(
                 if (h2h == null) {
                     try {
                         h2h = RetrofitInstance.api.getMatchH2h(match.id)
+                    } catch (_: Exception) {
+                    }
+                }
+                if (form == null) {
+                    try {
+                        form = RetrofitInstance.api.getMatchForm(match.id)
                     } catch (_: Exception) {
                     }
                 }
@@ -439,6 +447,7 @@ fun MatchDetailDialog(
                         match = detail,
                         events = events,
                         h2h = h2h,
+                        form = form,
                         text = text,
                         sub = sub,
                         card = card,
@@ -702,6 +711,7 @@ private fun SummaryTab(
     match: MatchResponse,
     events: List<MatchEvent>,
     h2h: H2hResponse?,
+    form: FormResponse?,
     text: Color,
     sub: Color,
     card: Color,
@@ -744,6 +754,24 @@ private fun SummaryTab(
         // Odds
         item {
             OddsRow(match, text, sub, card, green)
+        }
+
+        // Forma (W-D-L)
+        if (form?.available == true || !form?.home.isNullOrEmpty() || !form?.away.isNullOrEmpty()) {
+            item {
+                Text("Forma (utolsó 5)", color = sub, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                Spacer(Modifier.height(6.dp))
+                FormRow(
+                    homeName = match.homeTeam,
+                    awayName = match.awayTeam,
+                    homeForm = form?.home.orEmpty(),
+                    awayForm = form?.away.orEmpty(),
+                    text = text,
+                    sub = sub,
+                    card = card,
+                    green = green
+                )
+            }
         }
 
         // Venue / referee
@@ -830,6 +858,67 @@ private fun isScheduledStatus(status: String?, minute: Int?): Boolean {
         if (s.toIntOrNull() == null) return true
     }
     return false
+}
+
+
+@Composable
+private fun FormRow(
+    homeName: String,
+    awayName: String,
+    homeForm: List<String>,
+    awayForm: List<String>,
+    text: Color,
+    sub: Color,
+    card: Color,
+    green: Color
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .background(card)
+            .padding(12.dp)
+    ) {
+        FormSide(homeName, homeForm, text, sub, green)
+        Spacer(Modifier.height(8.dp))
+        FormSide(awayName, awayForm, text, sub, green)
+    }
+}
+
+@Composable
+private fun FormSide(name: String, form: List<String>, text: Color, sub: Color, green: Color) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            text = name,
+            color = text,
+            fontSize = 12.sp,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f)
+        )
+        if (form.isEmpty()) {
+            Text("—", color = sub, fontSize = 11.sp)
+        } else {
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                form.forEach { r ->
+                    val bg = when (r.uppercase()) {
+                        "W" -> green
+                        "L" -> Color(0xFFE53935)
+                        else -> Color(0xFF9E9E9E)
+                    }
+                    Box(
+                        modifier = Modifier
+                            .size(18.dp)
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(bg),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(r.uppercase().take(1), color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+    }
 }
 
 @Composable
