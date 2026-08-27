@@ -43,7 +43,11 @@ data class MatchResponse(
     @SerializedName("highlight_url") val highlightUrl: String?,
     @SerializedName("highlight_match_id") val highlightMatchId: String? = null,
     @SerializedName("odds_home") val oddsHome: Double? = null,
+    @SerializedName("odds_draw") val oddsDraw: Double? = null,
+    @SerializedName("odds_away") val oddsAway: Double? = null,
     @SerializedName("value_bet") val isValueBet: Boolean? = null,
+    @SerializedName("venue") val venue: String? = null,
+    @SerializedName("referee") val referee: String? = null,
     @SerializedName("events") val events: List<MatchEvent>? = null
 ) {
     val id: String
@@ -78,4 +82,22 @@ data class StatItem(
 data class StatisticsResponse(
     @SerializedName("items") val items: List<StatItem>? = null,
     @SerializedName("available") val available: Boolean? = false
+)
+
+
+data class H2hItem(
+    @SerializedName("date") val date: String? = null,
+    @SerializedName("home_team") val homeTeam: String? = null,
+    @SerializedName("away_team") val awayTeam: String? = null,
+    @SerializedName("home_score") val homeScore: Any? = null,
+    @SerializedName("away_score") val awayScore: Any? = null,
+    @SerializedName("competition") val competition: String? = null
+)
+
+data class H2hResponse(
+    @SerializedName("items") val items: List<H2hItem>? = null,
+    @SerializedName("available") val available: Boolean? = false,
+    @SerializedName("message") val message: String? = null,
+    @SerializedName("home_team") val homeTeam: String? = null,
+    @SerializedName("away_team") val awayTeam: String? = null
 )
