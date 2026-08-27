@@ -6,6 +6,7 @@ import com.sportapp.models.LineupsResponse
 import com.sportapp.models.StatisticsResponse
 import com.sportapp.models.AiAnalysisResponse
 import com.sportapp.models.H2hResponse
+import com.sportapp.models.FormResponse
 import retrofit2.http.GET
 import retrofit2.http.Path
 
@@ -58,4 +59,14 @@ interface ApiService {
     suspend fun getMatchH2h(
         @Path("match_id") matchId: String
     ): H2hResponse
+
+    @GET("api/matches/{match_id}/form")
+    suspend fun getMatchForm(
+        @Path("match_id") matchId: String
+    ): FormResponse
+
+    @GET("api/matches/by-date/{date}")
+    suspend fun getMatchesByDate(
+        @Path("date") date: String
+    ): List<MatchResponse>
 }
