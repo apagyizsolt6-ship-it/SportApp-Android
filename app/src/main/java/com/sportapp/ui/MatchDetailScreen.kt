@@ -513,6 +513,75 @@ fun MatchDetailDialog(
 
 
 /** AiAnalysisResponse mezői repónként eltérhetnek – első nem üres String property. */
+
+
+private fun formatStatValue(name: String?, raw: Any?): String {
+    if (raw == null) return "—"
+    val n = huStatName(name).lowercase()
+    val s = raw.toString().trim()
+    val f = s.replace("%", "").toFloatOrNull()
+    if (f != null) {
+        // 0–1 arány → százalék
+        if (f in 0.0..1.0 && ("birtoklás" in n || "pontosság" in n || "accuracy" in (name ?: "").lowercase())) {
+            return "${(f * 100).toInt()}%"
+        }
+        // már százalékos érték 0-100
+        if ("birtoklás" in n && f > 1f && f <= 100f) {
+            return "${f.toInt()}%"
+        }
+        // egész számok
+        if (f == f.toLong().toFloat()) return f.toLong().toString()
+        return "%.1f".format(f)
+    }
+    return s
+}
+
+private fun huStatName(raw: String?): String {
+    if (raw.isNullOrBlank()) return "—"
+    val key = raw.trim().lowercase()
+    val map = mapOf(
+        "shots accuracy" to "Lövéspontosság",
+        "shot accuracy" to "Lövéspontosság",
+        "shots on target" to "Kapura lövés",
+        "shots off target" to "Kapu mellé",
+        "blocked shots" to "Blokkolt lövés",
+        "shots blocked" to "Blokkolt lövés",
+        "total shots" to "Összes lövés",
+        "shots" to "Lövések",
+        "fouls" to "Szabálytalanság",
+        "corners" to "Szöglet",
+        "corner kicks" to "Szöglet",
+        "offsides" to "Les",
+        "possession" to "Labdabirtoklás",
+        "ball possession" to "Labdabirtoklás",
+        "yellow cards" to "Sárga lap",
+        "red cards" to "Piros lap",
+        "goalkeeper saves" to "Kapus védés",
+        "saves" to "Védések",
+        "passes" to "Passzok",
+        "accurate passes" to "Pontos passz",
+        "pass accuracy" to "Passzpontosság",
+        "expected goals" to "Várható gól (xG)",
+        "xg" to "Várható gól (xG)",
+        "attacks" to "Támadás",
+        "dangerous attacks" to "Veszélyes támadás",
+        "throw-ins" to "Bedobás",
+        "free kicks" to "Szabadrúgás",
+        "goal kicks" to "Kapusrúgás",
+        "tackles" to "Szerelés",
+        "interceptions" to "Labdaszerzés",
+        "clearances" to "Kiszabadítás",
+        "crosses" to "Beadás",
+        "big chances" to "Nagy helyzet",
+        "big chances missed" to "Elpuskázott nagy helyzet",
+        "duels won" to "Nyert párharc",
+        "aerials won" to "Fejpárbaj"
+    )
+    map[key]?.let { return it }
+    map.entries.firstOrNull { key.contains(it.key) }?.value?.let { return it }
+    return raw.trim()
+}
+
 private fun extractAiText(r: Any): String {
     val preferred = listOf(
         "summary", "analysis", "text", "message", "content",
@@ -656,7 +725,7 @@ private fun MatchDetailScoreboard(
                 if (match.isValueBet == true) {
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        text = "VALUE BET",
+                        text = "ÉRTÉKES",
                         color = Color(0xFFFFB300),
                         fontSize = 10.sp,
                         fontWeight = FontWeight.Bold
@@ -945,9 +1014,9 @@ private fun OddsRow(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text("Odds 1X2", color = sub, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+            Text("Szorzók 1X2", color = sub, fontSize = 12.sp, fontWeight = FontWeight.Medium)
             if (match.isValueBet == true) {
-                Text("VALUE BET", color = Color(0xFFFFD54F), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                Text("ÉRTÉKES", color = Color(0xFFFFD54F), fontSize = 11.sp, fontWeight = FontWeight.Bold)
             }
         }
         if (h != null || d != null || a != null) {
@@ -1170,15 +1239,15 @@ private fun StatsTab(
             item { Text("Nincs statisztika.", color = sub, fontSize = 13.sp) }
         } else {
             items(stats) { s ->
-                val homeVal = s.home?.toString() ?: "-"
-                val awayVal = s.away?.toString() ?: "-"
+                val homeVal = formatStatValue(s.name, s.home)
+                val awayVal = formatStatValue(s.name, s.away)
                 Column(modifier = Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(8.dp))
                         .background(card)
                         .padding(12.dp)
                 ) {
-                    Text(s.name.orEmpty(), color = sub, fontSize = 11.sp)
+                    Text(huStatName(s.name), color = sub, fontSize = 11.sp)
                     Spacer(Modifier.height(4.dp))
                     Row(
                         modifier = Modifier.fillMaxWidth(),
