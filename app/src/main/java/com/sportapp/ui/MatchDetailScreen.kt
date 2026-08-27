@@ -276,7 +276,7 @@ fun MatchDetailDialog(
                                     aiText = null
                                     try {
                                         val r = RetrofitInstance.api.getAiAnalysis(match.id)
-                                        aiText = r.summary ?: r.analysis ?: r.text ?: "Nincs AI válasz."
+                                        aiText = extractAiText(r)
                                     } catch (e: Exception) {
                                         aiText = "AI nem elérhető."
                                     }
@@ -474,6 +474,47 @@ fun MatchDetailDialog(
             )
         }
     }
+
+
+/** AiAnalysisResponse mezői repónként eltérhetnek – első nem üres String property. */
+private fun extractAiText(r: Any): String {
+    val preferred = listOf(
+        "summary", "analysis", "text", "message", "content",
+        "result", "prediction", "output", "answer"
+    )
+    val clazz = r.javaClass
+    for (name in preferred) {
+        try {
+            val field = clazz.declaredFields.find { it.name == name }
+                ?: clazz.fields.find { it.name == name }
+            if (field != null) {
+                field.isAccessible = true
+                val v = field.get(r)?.toString()?.trim()
+                if (!v.isNullOrBlank() && v != "null") return v
+            }
+        } catch (_: Exception) {
+        }
+        try {
+            val getter = "get" + name.replaceFirstChar { it.uppercase() }
+            val m = clazz.methods.find { it.name == getter && it.parameterCount == 0 }
+            val v = m?.invoke(r)?.toString()?.trim()
+            if (!v.isNullOrBlank() && v != "null") return v
+        } catch (_: Exception) {
+        }
+    }
+    // bármilyen nem üres string mező
+    try {
+        for (field in clazz.declaredFields) {
+            field.isAccessible = true
+            val v = field.get(r)?.toString()?.trim()
+            if (!v.isNullOrBlank() && v != "null" && field.type == String::class.java) {
+                return v
+            }
+        }
+    } catch (_: Exception) {
+    }
+    return "AI válasz érkezett (részletek a lista 🤖 gombjánál)."
+}
 
 @Composable
 private fun DetailTeamLogo(
