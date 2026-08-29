@@ -723,7 +723,7 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
 
     val allLeaguesCollapsed = groupedMatchesList.isNotEmpty() &&
             groupedMatchesList.all {
-                collapsedLeagueNames.contains(it.key)
+                collapsedLeagueNames.contains(it.first)
             }
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -1127,7 +1127,7 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                                 emptySet()
                             } else {
                                 groupedMatchesList
-                                    .map { it.key }
+                                    .map { it.first }
                                     .toSet()
                             }
                         },
