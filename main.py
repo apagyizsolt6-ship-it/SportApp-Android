@@ -2870,3 +2870,259 @@ def get_status():
             _highlightly_match_cache
         )
     }
+
+
+
+# =============================================================================
+# FCM – gól / lap / kezdés / félidő / vége push
+# Env: FCM_SERVER_KEY = Firebase Cloud Messaging legacy server key
+# =============================================================================
+import threading
+from collections import defaultdict
+
+FCM_SERVER_KEY = os.getenv("FCM_SERVER_KEY") or os.getenv("FIREBASE_SERVER_KEY")
+
+# token -> set(match_id)
+_fcm_subs = defaultdict(set)
+# match_id -> set(token)
+_fcm_match_tokens = defaultdict(set)
+# match_id -> snapshot for diff
+_fcm_last_state = {}
+_fcm_lock = threading.Lock()
+_fcm_worker_started = False
+
+
+def _fcm_send(token: str, title: str, body: str, ntype: str, match_id: str):
+    if not FCM_SERVER_KEY or not token:
+        return False
+    try:
+        resp = requests.post(
+            "https://fcm.googleapis.com/fcm/send",
+            headers={
+                "Authorization": f"key={FCM_SERVER_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "to": token,
+                "priority": "high",
+                "data": {
+                    "title": title,
+                    "body": body,
+                    "type": ntype,
+                    "match_id": str(match_id),
+                },
+                "notification": {
+                    "title": title,
+                    "body": body,
+                    "sound": "default",
+                },
+            },
+            timeout=8,
+        )
+        return resp.status_code == 200
+    except Exception:
+        return False
+
+
+def _fcm_broadcast(match_id: str, title: str, body: str, ntype: str):
+    with _fcm_lock:
+        tokens = list(_fcm_match_tokens.get(str(match_id), set()))
+    for tok in tokens:
+        _fcm_send(tok, title, body, ntype, match_id)
+
+
+def _event_sig(ev: dict) -> str:
+    return "|".join([
+        str(ev.get("minute") or ""),
+        str(ev.get("type") or ev.get("event_type") or "").lower(),
+        str(ev.get("player") or ev.get("player_name") or ""),
+        str(ev.get("team") or ""),
+    ])
+
+
+def _classify_event(ev: dict):
+    t = str(ev.get("type") or ev.get("event_type") or "").lower()
+    if "goal" in t or t in ("g", "penalty", "own goal"):
+        return "goal", "⚽ GÓL"
+    if "red" in t:
+        return "red", "🟥 Piros lap"
+    if "yellow" in t or "card" in t:
+        return "yellow", "🟨 Sárga lap"
+    return None, None
+
+
+def _fcm_check_match(match_id: str, detail: dict):
+    """Diff score/status/events → push."""
+    if not isinstance(detail, dict):
+        return
+    mid = str(match_id)
+    home = detail.get("home_team") or detail.get("homeTeam") or "?"
+    away = detail.get("away_team") or detail.get("awayTeam") or "?"
+    hs = detail.get("home_score")
+    aws = detail.get("away_score")
+    status = str(detail.get("status") or "")
+    events = detail.get("events") or []
+    if not isinstance(events, list):
+        events = []
+
+    sigs = {_event_sig(e) for e in events if isinstance(e, dict)}
+    snap = {
+        "hs": hs,
+        "as": aws,
+        "status": status.upper().replace(".", ""),
+        "sigs": sigs,
+    }
+
+    with _fcm_lock:
+        prev = _fcm_last_state.get(mid)
+
+    if prev is None:
+        with _fcm_lock:
+            _fcm_last_state[mid] = snap
+        return
+
+    # Státusz váltások
+    ps = str(prev.get("status") or "")
+    cs = snap["status"]
+    if ps != cs:
+        if cs in ("1H", "LIVE") and (ps in ("NS", "TBD", "SCHEDULED", "") or ":" in ps):
+            _fcm_broadcast(mid, "🏁 Kezdés", f"{home} – {away}", "kickoff")
+        elif cs == "HT":
+            _fcm_broadcast(
+                mid, "⏸ Félidő",
+                f"{home} {hs if hs is not None else '-'} – {aws if aws is not None else '-'} {away}",
+                "ht",
+            )
+        elif cs in ("FT", "AET", "PEN", "PENS", "FINISHED"):
+            _fcm_broadcast(
+                mid, "🏁 Vége",
+                f"{home} {hs if hs is not None else '-'} – {aws if aws is not None else '-'} {away}",
+                "ft",
+            )
+
+    # Új események
+    prev_sigs = prev.get("sigs") or set()
+    for e in events:
+        if not isinstance(e, dict):
+            continue
+        s = _event_sig(e)
+        if s in prev_sigs:
+            continue
+        ntype, label = _classify_event(e)
+        if not ntype:
+            continue
+        player = e.get("player") or e.get("player_name") or ""
+        minute = e.get("minute")
+        min_s = f"{minute}' " if minute is not None else ""
+        body = f"{min_s}{home} {hs if hs is not None else '-'}–{aws if aws is not None else '-'} {away}"
+        if player:
+            body = f"{min_s}{player} · {home} {hs if hs is not None else '-'}–{aws if aws is not None else '-'} {away}"
+        _fcm_broadcast(mid, label, body, ntype)
+
+    # Gól score-ból is (ha event nem jött)
+    try:
+        if prev.get("hs") is not None and hs is not None and int(hs) > int(prev["hs"]):
+            _fcm_broadcast(
+                mid, "⚽ GÓL",
+                f"{home} {hs}–{aws} {away}",
+                "goal",
+            )
+        if prev.get("as") is not None and aws is not None and int(aws) > int(prev["as"]):
+            _fcm_broadcast(
+                mid, "⚽ GÓL",
+                f"{home} {hs}–{aws} {away}",
+                "goal",
+            )
+    except Exception:
+        pass
+
+    with _fcm_lock:
+        _fcm_last_state[mid] = snap
+
+
+def _fcm_worker_loop():
+    while True:
+        try:
+            with _fcm_lock:
+                match_ids = list(_fcm_match_tokens.keys())
+            for mid in match_ids:
+                if not _fcm_match_tokens.get(mid):
+                    continue
+                try:
+                    detail = get_match_detail(mid)
+                    if isinstance(detail, dict) and not detail.get("error"):
+                        _fcm_check_match(mid, detail)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        time.sleep(25)
+
+
+def _ensure_fcm_worker():
+    global _fcm_worker_started
+    if _fcm_worker_started:
+        return
+    if not FCM_SERVER_KEY:
+        return
+    _fcm_worker_started = True
+    th = threading.Thread(target=_fcm_worker_loop, name="fcm-worker", daemon=True)
+    th.start()
+
+
+@app.post("/api/fcm/register")
+def fcm_register(body: dict):
+    token = str((body or {}).get("token") or "").strip()
+    if not token:
+        return {"ok": False, "error": "token required"}
+    with _fcm_lock:
+        _fcm_subs.setdefault(token, set())
+    _ensure_fcm_worker()
+    return {"ok": True, "fcm_configured": bool(FCM_SERVER_KEY)}
+
+
+@app.post("/api/fcm/subscribe")
+def fcm_subscribe(body: dict):
+    token = str((body or {}).get("token") or "").strip()
+    match_id = str((body or {}).get("match_id") or "").strip()
+    if not token or not match_id:
+        return {"ok": False, "error": "token and match_id required"}
+    with _fcm_lock:
+        _fcm_subs[token].add(match_id)
+        _fcm_match_tokens[match_id].add(token)
+    _ensure_fcm_worker()
+    # első snapshot
+    try:
+        detail = get_match_detail(match_id)
+        if isinstance(detail, dict) and not detail.get("error"):
+            _fcm_check_match(match_id, detail)
+    except Exception:
+        pass
+    return {"ok": True, "match_id": match_id, "fcm_configured": bool(FCM_SERVER_KEY)}
+
+
+@app.post("/api/fcm/unsubscribe")
+def fcm_unsubscribe(body: dict):
+    token = str((body or {}).get("token") or "").strip()
+    match_id = str((body or {}).get("match_id") or "").strip()
+    with _fcm_lock:
+        if token in _fcm_subs and match_id:
+            _fcm_subs[token].discard(match_id)
+        if match_id in _fcm_match_tokens and token:
+            _fcm_match_tokens[match_id].discard(token)
+            if not _fcm_match_tokens[match_id]:
+                _fcm_match_tokens.pop(match_id, None)
+                _fcm_last_state.pop(match_id, None)
+    return {"ok": True}
+
+
+@app.get("/api/fcm/status")
+def fcm_status():
+    with _fcm_lock:
+        return {
+            "fcm_configured": bool(FCM_SERVER_KEY),
+            "tokens": len(_fcm_subs),
+            "followed_matches": len(_fcm_match_tokens),
+            "worker": _fcm_worker_started,
+        }
+
