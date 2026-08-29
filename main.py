@@ -29,6 +29,8 @@ _detail_cache = {}
 _lineups_cache = {}
 _stats_cache = {}
 _hl_date_cache = {}
+_matches_list_cache = {"data": None, "ts": 0}
+MATCHES_LIST_TTL = 25
 _hl_h2h_cache = {}
 _hl_form_cache = {}
 DETAIL_CACHE_TTL = 20
@@ -257,41 +259,84 @@ def _normalize_date_str(raw) -> str:
 
 
 def fetch_highlightly_matches_by_date(date_iso: str, limit: int = 100):
-    """Highlightly GET /matches?date=YYYY-MM-DD&timezone=Europe/Budapest"""
+    """Highlightly GET /matches?date= – lapozva, max ~500 meccs."""
     if not HIGHLIGHTLY_KEY or not date_iso:
         return []
     cache_key = date_iso.strip()[:10]
     now = time.time()
     cached = _hl_date_cache.get(cache_key)
-    if cached and (now - cached["ts"]) < 60:
+    if cached and (now - cached["ts"]) < 90:
         return cached["data"]
+
+    all_data = []
+    page_size = min(int(limit) if limit else 100, 100)
     try:
-        resp = requests.get(
-            "https://soccer.highlightly.net/matches",
-            headers=_highlightly_headers(),
-            params={
-                "date": cache_key,
-                "timezone": "Europe/Budapest",
-                "limit": limit,
-                "offset": 0,
-            },
-            timeout=12,
-        )
-        if resp.status_code != 200:
-            return []
-        payload = resp.json()
-        if isinstance(payload, dict):
-            data = payload.get("data") or []
-        elif isinstance(payload, list):
-            data = payload
-        else:
-            data = []
-        if not isinstance(data, list):
-            data = []
-        _hl_date_cache[cache_key] = {"data": data, "ts": now}
-        return data
+        for page in range(0, 8):  # max 800
+            offset = page * page_size
+            resp = requests.get(
+                "https://soccer.highlightly.net/matches",
+                headers=_highlightly_headers(),
+                params={
+                    "date": cache_key,
+                    "timezone": "Europe/Budapest",
+                    "limit": page_size,
+                    "offset": offset,
+                },
+                timeout=12,
+            )
+            if resp.status_code != 200:
+                break
+            payload = resp.json()
+            if isinstance(payload, dict):
+                data = payload.get("data") or []
+            elif isinstance(payload, list):
+                data = payload
+            else:
+                data = []
+            if not isinstance(data, list) or not data:
+                break
+            all_data.extend(data)
+            if len(data) < page_size:
+                break
+        _hl_date_cache[cache_key] = {"data": all_data, "ts": now}
+        return all_data
     except Exception:
+        if all_data:
+            _hl_date_cache[cache_key] = {"data": all_data, "ts": now}
+            return all_data
+        if cached:
+            return cached["data"]
         return []
+
+
+def _build_hl_id_lookup(hl_matches: list) -> dict:
+    """Csapatnév-pár → Highlightly match id (gyors lookup a listaépítéshez)."""
+    lookup = {}
+    for m in hl_matches or []:
+        if not isinstance(m, dict):
+            continue
+        mid = m.get("id")
+        if mid is None:
+            continue
+        ht = m.get("homeTeam") if isinstance(m.get("homeTeam"), dict) else {}
+        at = m.get("awayTeam") if isinstance(m.get("awayTeam"), dict) else {}
+        nh = " ".join(str(ht.get("name") or "").lower().split())
+        na = " ".join(str(at.get("name") or "").lower().split())
+        if not nh or not na:
+            continue
+        lookup[(nh, na)] = str(mid)
+        lookup[(na, nh)] = str(mid)
+    return lookup
+
+
+def _lookup_hl_id(lookup: dict, home_name: str, away_name: str):
+    if not lookup:
+        return None
+    nh = " ".join((home_name or "").lower().split())
+    na = " ".join((away_name or "").lower().split())
+    return lookup.get((nh, na))
+
+
 
 
 def fetch_highlightly_h2h(team_id_one, team_id_two):
@@ -1647,6 +1692,17 @@ def get_matches():
             "minute": 0
         }]
 
+    # Gyors válasz: legutóbbi sikeres lista (25 mp)
+    now_c = time.time()
+    cached_list = _matches_list_cache.get("data")
+    if (
+        isinstance(cached_list, list)
+        and cached_list
+        and (now_c - _matches_list_cache.get("ts", 0)) < MATCHES_LIST_TTL
+        and not (len(cached_list) == 1 and str(cached_list[0].get("id")) in ("err", "0"))
+    ):
+        return cached_list
+
     try:
         data = fetch_statpal_matches()
 
@@ -1672,6 +1728,15 @@ def get_matches():
             highlights_data = []
         if not isinstance(highlights_data, list):
             highlights_data = []
+
+        # Egyszer töltjük a napi HL meccseket → id lookup (gyors, nincs N×API)
+        hl_id_lookup = {}
+        try:
+            today_iso = datetime.now().strftime("%Y-%m-%d")
+            hl_day = fetch_highlightly_matches_by_date(today_iso, limit=100)
+            hl_id_lookup = _build_hl_id_lookup(hl_day)
+        except Exception:
+            hl_id_lookup = {}
 
         for league in leagues:
 
@@ -1932,11 +1997,11 @@ def get_matches():
                             )
                         )
 
-                # 4. FALLBACK: Highlightly napi matches (élő kupa – még nincs videó highlight)
-                if not highlight_match_id:
+                # 4. Gyors HL id a előre épített lookup-ból (NEM API hívás / meccs)
+                if not highlight_match_id and hl_id_lookup:
                     try:
-                        highlight_match_id = resolve_highlightly_match_id(
-                            home_name, away_name, None
+                        highlight_match_id = _lookup_hl_id(
+                            hl_id_lookup, home_name, away_name
                         )
                     except Exception:
                         pass
@@ -2150,10 +2215,18 @@ def get_matches():
             key=get_league_sort_key
         )
 
+        _matches_list_cache["data"] = matches_list
+        _matches_list_cache["ts"] = time.time()
         return matches_list
 
     except Exception as e:
-        # Utolsó esély: Highlightly mai meccsek (ne "API Hiba" kártya)
+        # Friss cache ha van (ne tűnjenek el a meccsek)
+        cached = _matches_list_cache.get("data")
+        if isinstance(cached, list) and cached and not (
+            len(cached) == 1 and str(cached[0].get("id")) in ("err", "0")
+        ):
+            return cached
+        # Highlightly teljes napi lista (lapozva)
         try:
             today = datetime.now().strftime("%Y-%m-%d")
             hl_raw = fetch_highlightly_matches_by_date(today, limit=100)
@@ -2163,11 +2236,11 @@ def get_matches():
                 if item.get("id"):
                     result.append(item)
             if result:
+                _matches_list_cache["data"] = result
+                _matches_list_cache["ts"] = time.time()
                 return result
         except Exception:
             pass
-        # Stale full list ha valaha volt sikeres get_matches cache – nincs;
-        # minimum üres lista helyett informatív hiba
         return [{
             "id": "err",
             "league_id": "0",
