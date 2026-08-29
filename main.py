@@ -25,6 +25,166 @@ _team_image_cache = {}
 _highlightly_match_cache = {}
 
 
+# =============================================================================
+# JÁTÉKOSFOTÓ CACHE (Upstash Redis) – tartós, szerver-újraindítást túlélő
+# =============================================================================
+#
+# A cél: egy adott Highlightly playerId fotó-URL-jét CSAK EGYSZER kérdezzük
+# le a Highlightly /players/{id}/statistics végpontjáról, utána tartósan
+# (Upstash Redis-ben) tároljuk. Ez a Football Futár 2 nevű, KÜLÖN Android
+# alkalmazás Kezdő11 pályaképéhez kell -- a SportApp saját funkcióit
+# (StatPal meccsadatok, FCM stb.) ez a blokk nem érinti.
+#
+# Az Upstash Redis "REST API"-ját natív requests-hívásokkal érjük el,
+# hogy ne kelljen új Python-csomagot telepíteni.
+
+UPSTASH_REDIS_REST_URL = os.getenv("UPSTASH_REDIS_REST_URL", "").rstrip("/")
+UPSTASH_REDIS_REST_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN", "")
+
+# Ha egyszer megvan egy játékos fotó-URL-je, az ritkán változik --
+# 30 napig tartjuk, utána automatikusan frissül a következő kérésnél.
+PLAYER_PHOTO_CACHE_TTL_SECONDS = 30 * 24 * 60 * 60
+
+# Rövid életű, csak a szerver éber állapotában élő "gyorsítótár a
+# gyorsítótár elé" -- ha egy percen belül többször kérik ugyanazt a
+# játékost, ne terheljük feleslegesen a Redis-t sem.
+_player_photo_memory_cache = {}
+_PLAYER_PHOTO_MEMORY_TTL = 300
+
+
+def _redis_available():
+    return bool(UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN)
+
+
+def _redis_get(key: str):
+    if not _redis_available():
+        return None
+
+    try:
+        response = requests.get(
+            f"{UPSTASH_REDIS_REST_URL}/get/{key}",
+            headers={
+                "Authorization": f"Bearer {UPSTASH_REDIS_REST_TOKEN}"
+            },
+            timeout=5
+        )
+
+        if response.status_code != 200:
+            return None
+
+        payload = response.json()
+
+        return payload.get("result")
+
+    except Exception:
+        return None
+
+
+def _redis_set(key: str, value: str, ex_seconds: int):
+    if not _redis_available():
+        return False
+
+    try:
+        response = requests.post(
+            f"{UPSTASH_REDIS_REST_URL}/set/{key}",
+            headers={
+                "Authorization": f"Bearer {UPSTASH_REDIS_REST_TOKEN}"
+            },
+            json=[value, "EX", ex_seconds],
+            timeout=5
+        )
+
+        return response.status_code == 200
+
+    except Exception:
+        return False
+
+
+def fetch_player_photo_url(player_id: str):
+    """
+    Egy adott Highlightly playerId fotó-URL-jét adja vissza.
+
+    Sorrend:
+      1. Rövid memóriás cache (ugyanaz a szerverfolyamat, elmúlt 5 perc)
+      2. Tartós Upstash Redis cache (túléli az újraindítást)
+      3. Élő Highlightly /players/{id}/statistics hívás -- CSAK ha az
+         előző kettőben nincs találat.
+    """
+
+    if not player_id or not HIGHLIGHTLY_KEY:
+        return None
+
+    player_id = str(player_id).strip()
+
+    if not player_id:
+        return None
+
+    now = time.time()
+
+    mem_hit = _player_photo_memory_cache.get(player_id)
+
+    if mem_hit and (now - mem_hit["ts"]) < _PLAYER_PHOTO_MEMORY_TTL:
+        return mem_hit["url"]
+
+    redis_key = f"player_photo:{player_id}"
+
+    cached_url = _redis_get(redis_key)
+
+    if cached_url:
+        _player_photo_memory_cache[player_id] = {
+            "url": cached_url,
+            "ts": now
+        }
+        return cached_url
+
+    try:
+        response = requests.get(
+            f"https://soccer.highlightly.net/players/{player_id}/statistics",
+            headers={
+                "x-rapidapi-key": HIGHLIGHTLY_KEY
+            },
+            timeout=8
+        )
+
+        if response.status_code != 200:
+            return None
+
+        payload = response.json()
+
+        entry = (
+            payload[0]
+            if isinstance(payload, list) and payload
+            else payload if isinstance(payload, dict)
+            else None
+        )
+
+        if not isinstance(entry, dict):
+            return None
+
+        logo_url = entry.get("logo")
+
+        if (
+            not isinstance(logo_url, str)
+            or not logo_url.strip()
+            or not logo_url.startswith(("http://", "https://"))
+        ):
+            return None
+
+        logo_url = logo_url.strip()
+
+        _redis_set(redis_key, logo_url, PLAYER_PHOTO_CACHE_TTL_SECONDS)
+
+        _player_photo_memory_cache[player_id] = {
+            "url": logo_url,
+            "ts": now
+        }
+
+        return logo_url
+
+    except Exception:
+        return None
+
+
 _detail_cache = {}
 _lineups_cache = {}
 _stats_cache = {}
@@ -1676,6 +1836,44 @@ def get_team_image(team_id: str):
         return Response(status_code=404)
 
 
+@app.get("/api/player-image/{player_id}")
+def get_player_image(player_id: str):
+    """
+    Játékosfotó proxy -- a Football Futár 2 (KÜLÖN Android app) Kezdő11
+    pályaképéhez.
+
+    Nem tölti le és tárolja saját maga a képbájtokat (ellentétben a fenti
+    /api/team-image/{team_id} végponttal) -- ehelyett a Highlightly által
+    adott fotó-URL-re irányítja át a klienst (307 redirect), miután az
+    URL-t egyszer megkereste és tartósan (Upstash Redis) elmentette.
+
+    Ez azért egyszerűbb és olcsóbb, mert a Highlightly fotó-URL-je
+    feltehetően stabil, nyilvánosan elérhető CDN-link (nem 5 percig
+    érvényes, mint a StatPal-é), így nincs szükség saját sávszélességre/
+    tárhelyre a kép bájtjaihoz, csak egy rövid URL-t kell cache-elni
+    játékosonként.
+
+    Ha a jövőben kiderülne, hogy a Highlightly URL-je mégis lejár vagy
+    API-kulcsot igényel a betöltéshez, ezt a végpontot át kell alakítani
+    a /api/team-image/{team_id} mintájára (tényleges bájt-proxy).
+    """
+
+    photo_url = fetch_player_photo_url(player_id)
+
+    if not photo_url:
+        return Response(status_code=404)
+
+    from fastapi.responses import RedirectResponse
+
+    return RedirectResponse(
+        url=photo_url,
+        status_code=307,
+        headers={
+            "Cache-Control": "public, max-age=86400"
+        }
+    )
+
+
 @app.get("/api/matches")
 def get_matches():
 
@@ -2868,7 +3066,14 @@ def get_status():
 
         "highlightly_match_cache_count": len(
             _highlightly_match_cache
-        )
+        ),
+
+        "player_photo_cache": {
+            "redis_connected": _redis_available(),
+            "memory_entries": len(
+                _player_photo_memory_cache
+            )
+        }
     }
 
 
