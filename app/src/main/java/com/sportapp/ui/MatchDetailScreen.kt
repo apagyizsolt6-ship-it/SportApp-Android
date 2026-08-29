@@ -16,6 +16,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.rememberScrollState
 
 import android.content.Intent
+import android.widget.Toast
 
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.fadeIn
@@ -458,6 +459,12 @@ fun MatchDetailDialog(
                             val next = !isFollowing
                             isFollowing = next
                             FcmRegistrar.setFollowing(ctx, match.id, next)
+                            Toast.makeText(
+                                ctx,
+                                if (next) "Értesítések BE – gól / lap / státusz"
+                                else "Értesítések KI",
+                                Toast.LENGTH_SHORT
+                            ).show()
                         }
                         .padding(12.dp),
                     verticalAlignment = Alignment.CenterVertically
