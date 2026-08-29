@@ -443,7 +443,7 @@ fun MatchDetailDialog(
                 }
 
 
-                // FCM követés
+                // FCM követés – gól / lap / kezdés / félidő / vége
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -459,25 +459,29 @@ fun MatchDetailDialog(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        if (isFollowing) "🔔" else "🔕",
+                        text = if (isFollowing) "🔔" else "🔕",
                         fontSize = 18.sp
                     )
-                    Spacer(Modifier.width(10.dp))
-                    Column(Modifier = Modifier.weight(1f)) {
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            if (isFollowing) "Értesítések bekapcsolva" else "Értesítések a meccsről",
+                            text = if (isFollowing) {
+                                "Értesítések bekapcsolva"
+                            } else {
+                                "Értesítések a meccsről"
+                            },
                             color = text,
                             fontSize = 13.sp,
                             fontWeight = FontWeight.SemiBold
                         )
                         Text(
-                            "Gól, lap, kezdés, félidő, vége",
+                            text = "Gól, lap, kezdés, félidő, vége",
                             color = sub,
                             fontSize = 11.sp
                         )
                     }
                     Text(
-                        if (isFollowing) "BE" else "KI",
+                        text = if (isFollowing) "BE" else "KI",
                         color = if (isFollowing) green else sub,
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Bold
