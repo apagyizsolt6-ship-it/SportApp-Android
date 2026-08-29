@@ -1700,6 +1700,16 @@ private fun PitchLineupCard(
     }
 }
 
+
+/** Játékosnév rövidítése a pályára (vezetéknév / utolsó tag). */
+private fun shortName(name: String?): String {
+    if (name.isNullOrBlank()) return "—"
+    val parts = name.trim().split(Regex("""\s+""")).filter { it.isNotBlank() }
+    if (parts.isEmpty()) return "—"
+    val last = parts.last()
+    return if (last.length <= 10) last else last.take(9) + "…"
+}
+
 private fun formationPitchPositions(formation: String, count: Int): List<Pair<Float, Float>> {
     val rows = formation
         .split("-", "–", "—")
