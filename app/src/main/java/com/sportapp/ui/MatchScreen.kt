@@ -459,13 +459,15 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
         searchQuery,
         favoriteMatchIds,
         favoriteLeagueNames,
-        selectedDateIso
+        selectedDateIso,
+        selectedDayOffset
     ) {
         matches.filter { match ->
-            // Naptár nap szűrés
-            val onDay = matchKickoffDate(match) == selectedDateIso
-            if (!onDay) return@filter false
-
+            // Naptár: más napokon kickoff_date; MA = teljes feed (ne essen ki timezone / null miatt)
+            if (selectedDayOffset != 0) {
+                val onDay = matchKickoffDate(match) == selectedDateIso
+                if (!onDay) return@filter false
+            }
 
             val leagueName = match.league ?: "EGYÉB BAJNOKSÁG"
 

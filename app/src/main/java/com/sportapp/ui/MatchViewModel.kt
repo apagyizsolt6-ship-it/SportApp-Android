@@ -10,6 +10,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import java.time.LocalDate
+import java.util.Calendar
+import java.text.SimpleDateFormat
+import java.util.Locale
 
 class MatchViewModel : ViewModel() {
 
@@ -36,7 +39,11 @@ class MatchViewModel : ViewModel() {
     }
 
     fun setDayOffset(offset: Int) {
-        if (dayOffset == offset) return
+        if (dayOffset == offset) {
+            // Ugyanaz a nap – ha üres a lista, próbáljuk újra
+            if (_matches.value.isEmpty()) fetchMatches(showLoading = true)
+            return
+        }
         dayOffset = offset
         fetchMatches(showLoading = true)
         autoJob?.cancel()
@@ -53,25 +60,45 @@ class MatchViewModel : ViewModel() {
         }
     }
 
+    private fun dateForOffset(offset: Int): String {
+        return try {
+            LocalDate.now().plusDays(offset.toLong()).toString()
+        } catch (_: Exception) {
+            val cal = Calendar.getInstance()
+            cal.add(Calendar.DAY_OF_YEAR, offset)
+            SimpleDateFormat("yyyy-MM-dd", Locale.US).format(cal.time)
+        }
+    }
+
     fun fetchMatches(showLoading: Boolean = true) {
         viewModelScope.launch {
             if (showLoading) _isLoading.value = true
             try {
-                _matches.value = if (dayOffset == 0) {
-                    RetrofitInstance.api.getMatches()
-                } else {
-                    val date = try {
-                        LocalDate.now().plusDays(dayOffset.toLong()).toString()
+                val offset = dayOffset
+                val list = if (offset == 0) {
+                    // Ma: először a gazdag StatPal lista (/api/matches)
+                    val main = try {
+                        RetrofitInstance.api.getMatches()
                     } catch (_: Exception) {
-                        val cal = java.util.Calendar.getInstance()
-                        cal.add(java.util.Calendar.DAY_OF_YEAR, dayOffset)
-                        java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
-                            .format(cal.time)
+                        emptyList()
                     }
-                    RetrofitInstance.api.getMatchesByDate(date)
+                    if (main.isNotEmpty()) {
+                        main
+                    } else {
+                        // Fallback: by-date
+                        try {
+                            RetrofitInstance.api.getMatchesByDate(dateForOffset(0))
+                        } catch (_: Exception) {
+                            emptyList()
+                        }
+                    }
+                } else {
+                    RetrofitInstance.api.getMatchesByDate(dateForOffset(offset))
                 }
+                _matches.value = list
             } catch (e: Exception) {
                 e.printStackTrace()
+                // Ne töröljük a régi listát hálózati hiba esetén
             } finally {
                 if (showLoading) _isLoading.value = false
             }
@@ -84,7 +111,6 @@ class MatchViewModel : ViewModel() {
             _aiAnalysis.value = null
             try {
                 val r = RetrofitInstance.api.getAiAnalysis(matchId)
-                // Mezőnevek repónként eltérhetnek – reflection nélkül toString fallback
                 val text = try {
                     val clazz = r.javaClass
                     listOf("summary", "analysis", "text", "message", "content")
