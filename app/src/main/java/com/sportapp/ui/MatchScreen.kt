@@ -1289,10 +1289,54 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                                         else
                                             favoriteMatchIds + match.id
                                 },
-                                onVideoClick = { },
-                                onAiClick = { },
-                                onMatchClick = { selectedMatchForDetail = it },
-                                onReminderClick = { },
+                                onVideoClick = { m ->
+                                    selectedMatchForMedia = m
+                                    highlightVideos = emptyList()
+                                    highlightError = null
+                                    showHighlightPicker = true
+                                    val highlightMatchId = m.highlightMatchId?.trim().orEmpty()
+                                    if (highlightMatchId.isNotBlank()) {
+                                        coroutineScope.launch {
+                                            isHighlightLoading = true
+                                            try {
+                                                val videos = RetrofitInstance.api.getMatchHighlights(highlightMatchId)
+                                                highlightVideos = videos.filter {
+                                                    !it.embedUrl.isNullOrBlank() || !it.url.isNullOrBlank()
+                                                }
+                                            } catch (e: Exception) {
+                                                highlightError = e.message
+                                            } finally {
+                                                isHighlightLoading = false
+                                            }
+                                        }
+                                    }
+                                },
+                                onAiClick = { m ->
+                                    selectedMatchForAi = m
+                                    viewModel.fetchAiAnalysis(m.id)
+                                },
+                                onMatchClick = { m ->
+                                    selectedMatchForDetail = m
+                                },
+                                onReminderClick = { m ->
+                                    val ok = scheduleMatchReminder(context, m)
+                                    if (ok) {
+                                        val next = reminderMatchIds + m.id
+                                        reminderMatchIds = next
+                                        reminderPrefs.edit().putStringSet("ids", next).apply()
+                                        Toast.makeText(
+                                            context,
+                                            "Emlékeztető beállítva (15 perccel kezdés előtt)",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                    } else {
+                                        Toast.makeText(
+                                            context,
+                                            "Nem sikerült (nincs kezdési idő vagy már elmúlt)",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                    }
+                                },
                                 onShareClick = {
                                     val score = "${match.homeScore ?: 0}–${match.awayScore ?: 0}"
                                     val body = "${match.homeTeam} $score ${match.awayTeam}\n${match.league.orEmpty()}"
@@ -1333,11 +1377,63 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                                         else
                                             favoriteMatchIds + match.id
                                 },
-                                onVideoClick = { },
-                                onAiClick = { },
-                                onMatchClick = { selectedMatchForDetail = it },
-                                onReminderClick = { },
-                                onShareClick = { }
+                                onVideoClick = { m ->
+                                    selectedMatchForMedia = m
+                                    highlightVideos = emptyList()
+                                    highlightError = null
+                                    showHighlightPicker = true
+                                    val highlightMatchId = m.highlightMatchId?.trim().orEmpty()
+                                    if (highlightMatchId.isNotBlank()) {
+                                        coroutineScope.launch {
+                                            isHighlightLoading = true
+                                            try {
+                                                val videos = RetrofitInstance.api.getMatchHighlights(highlightMatchId)
+                                                highlightVideos = videos.filter {
+                                                    !it.embedUrl.isNullOrBlank() || !it.url.isNullOrBlank()
+                                                }
+                                            } catch (e: Exception) {
+                                                highlightError = e.message
+                                            } finally {
+                                                isHighlightLoading = false
+                                            }
+                                        }
+                                    }
+                                },
+                                onAiClick = { m ->
+                                    selectedMatchForAi = m
+                                    viewModel.fetchAiAnalysis(m.id)
+                                },
+                                onMatchClick = { m ->
+                                    selectedMatchForDetail = m
+                                },
+                                onReminderClick = { m ->
+                                    val ok = scheduleMatchReminder(context, m)
+                                    if (ok) {
+                                        val next = reminderMatchIds + m.id
+                                        reminderMatchIds = next
+                                        reminderPrefs.edit().putStringSet("ids", next).apply()
+                                        Toast.makeText(
+                                            context,
+                                            "Emlékeztető beállítva (15 perccel kezdés előtt)",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                    } else {
+                                        Toast.makeText(
+                                            context,
+                                            "Nem sikerült (nincs kezdési idő vagy már elmúlt)",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                    }
+                                },
+                                onShareClick = {
+                                    val score = "${match.homeScore ?: 0}–${match.awayScore ?: 0}"
+                                    val body = "${match.homeTeam} $score ${match.awayTeam}\n${match.league.orEmpty()}"
+                                    val intent = Intent(Intent.ACTION_SEND).apply {
+                                        type = "text/plain"
+                                        putExtra(Intent.EXTRA_TEXT, body)
+                                    }
+                                    context.startActivity(Intent.createChooser(intent, "Megosztás"))
+                                }
                             )
                         }
                     }
@@ -1729,6 +1825,15 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                                                 Toast.LENGTH_SHORT
                                             ).show()
                                         }
+                                    },
+                                    onShareClick = {
+                                        val score = "${match.homeScore ?: 0}–${match.awayScore ?: 0}"
+                                        val body = "${match.homeTeam} $score ${match.awayTeam}\n${match.league.orEmpty()}"
+                                        val intent = Intent(Intent.ACTION_SEND).apply {
+                                            type = "text/plain"
+                                            putExtra(Intent.EXTRA_TEXT, body)
+                                        }
+                                        context.startActivity(Intent.createChooser(intent, "Megosztás"))
                                     }
                                 )
 
