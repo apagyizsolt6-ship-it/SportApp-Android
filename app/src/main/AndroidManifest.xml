@@ -24,6 +24,14 @@
             <receiver
             android:name=".MatchReminderReceiver"
             android:exported="false" />
+
+        <service
+            android:name=".fcm.SportFirebaseMessagingService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
     </application>
 
 </manifest>
