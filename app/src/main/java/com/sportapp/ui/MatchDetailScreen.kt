@@ -17,6 +17,9 @@ import androidx.compose.foundation.rememberScrollState
 
 import android.content.Intent
 
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -37,6 +40,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -1347,7 +1351,7 @@ private fun LineupsTab(
     }
 }
 
-/** Modern pálya + kezdő 11 elrendezés formáció alapján. */
+/** Modern, látványos pálya + kezdő 11. */
 @Composable
 private fun PitchLineupCard(
     title: String,
@@ -1362,219 +1366,195 @@ private fun PitchLineupCard(
     val positions = remember(formation, starters.size) {
         formationPitchPositions(formation, starters.size.coerceAtLeast(1))
     }
+    // Formáció animáció kulcs – új lineupnál újraindul
+    val animKey = remember(side?.teamName, formation, starters.size) {
+        "${side?.teamName}|$formation|${starters.size}"
+    }
+    val grassDark = Color(0xFF0D3B1E)
+    val grassMid = Color(0xFF1B7A3A)
+    val grassLight = Color(0xFF249B4A)
 
     Column(modifier = Modifier.fillMaxWidth()) {
-        Text(
-            text = "${side?.teamName ?: title}${if (formation.isNotBlank()) " · $formation" else ""}",
-            color = text,
-            fontWeight = FontWeight.Bold,
-            fontSize = 14.sp,
-            modifier = Modifier.padding(bottom = 8.dp)
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = side?.teamName ?: title,
+                color = text,
+                fontWeight = FontWeight.Bold,
+                fontSize = 14.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+            )
+            if (formation.isNotBlank()) {
+                val badgeAnim = remember(animKey) { Animatable(0f) }
+                LaunchedEffect(animKey) {
+                    badgeAnim.snapTo(0f)
+                    badgeAnim.animateTo(1f, tween(500, easing = FastOutSlowInEasing))
+                }
+                Text(
+                    text = formation,
+                    color = Color.White,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier
+                        .graphicsLayer {
+                            alpha = badgeAnim.value
+                            scaleX = 0.7f + 0.3f * badgeAnim.value
+                            scaleY = 0.7f + 0.3f * badgeAnim.value
+                        }
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(jerseyColor.copy(alpha = 0.9f))
+                        .padding(horizontal = 10.dp, vertical = 4.dp)
+                )
+            }
+        }
+        Spacer(Modifier.height(8.dp))
 
-        // --- Modern pálya ---
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(340.dp)
-                .clip(RoundedCornerShape(14.dp))
-                .border(1.dp, Color(0x33FFFFFF), RoundedCornerShape(14.dp))
+                .height(320.dp)
+                .clip(RoundedCornerShape(18.dp))
+                .border(1.5.dp, Color(0x55FFFFFF), RoundedCornerShape(18.dp))
         ) {
-            // Csíkos zöld pálya + fehér vonalak (Canvas)
+            // Pálya háttér – csíkos fű + ragyogás
             Canvas(modifier = Modifier.fillMaxSize()) {
                 val w = size.width
                 val h = size.height
-
-                // Alap gradiens zöld
+                // Alap zöld gradiens
                 drawRect(
                     brush = Brush.verticalGradient(
-                        colors = listOf(
-                            Color(0xFF1B5E20),
-                            Color(0xFF2E7D32),
-                            Color(0xFF1B5E20)
-                        )
+                        listOf(grassDark, grassMid, grassLight, grassMid, grassDark)
                     )
                 )
-
-                // Fűcsíkok (modern stadion hatás)
+                // Függőleges fűcsíkok
                 val stripeCount = 10
-                val stripeH = h / stripeCount
+                val stripeW = w / stripeCount
                 for (i in 0 until stripeCount) {
                     if (i % 2 == 0) {
                         drawRect(
                             color = Color(0x14000000),
-                            topLeft = Offset(0f, i * stripeH),
-                            size = Size(w, stripeH)
+                            topLeft = Offset(i * stripeW, 0f),
+                            size = Size(stripeW, h)
                         )
                     }
                 }
-
-                val line = Color(0xE6FFFFFF)
-                val stroke = 2.5f
-
-                // Külső keret
+                // Felső „stadion fény”
                 drawRect(
+                    brush = Brush.verticalGradient(
+                        listOf(Color(0x33FFFFFF), Color.Transparent),
+                        startY = 0f,
+                        endY = h * 0.35f
+                    )
+                )
+                val line = Color(0xEEFFFFFF)
+                val stroke = 2.5.dp.toPx()
+                // Keret
+                drawRoundRect(
                     color = line,
+                    topLeft = Offset(stroke, stroke),
+                    size = Size(w - 2 * stroke, h - 2 * stroke),
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(12.dp.toPx()),
                     style = Stroke(width = stroke)
                 )
-
-                // Félpálya vonal
-                drawLine(
-                    color = line,
-                    start = Offset(0f, h / 2),
-                    end = Offset(w, h / 2),
-                    strokeWidth = stroke
-                )
-
+                // Félpálya
+                drawLine(line, Offset(stroke, h / 2), Offset(w - stroke, h / 2), strokeWidth = stroke)
                 // Középkör
-                val midR = w * 0.14f
-                drawCircle(
-                    color = line,
-                    radius = midR,
-                    center = Offset(w / 2, h / 2),
-                    style = Stroke(width = stroke)
-                )
-                drawCircle(
-                    color = line,
-                    radius = 4f,
-                    center = Offset(w / 2, h / 2)
-                )
-
-                // Büntetőterületek (felső / alsó)
-                fun penaltyBox(top: Boolean) {
-                    val boxH = h * 0.18f
-                    val boxW = w * 0.62f
-                    val left = (w - boxW) / 2
-                    val topY = if (top) 0f else h - boxH
-                    drawRect(
-                        color = line,
-                        topLeft = Offset(left, topY),
-                        size = Size(boxW, boxH),
-                        style = Stroke(width = stroke)
-                    )
-                    // kapu előtti kisebb terület
-                    val smallH = h * 0.08f
-                    val smallW = w * 0.32f
-                    val sLeft = (w - smallW) / 2
-                    val sTop = if (top) 0f else h - smallH
-                    drawRect(
-                        color = line,
-                        topLeft = Offset(sLeft, sTop),
-                        size = Size(smallW, smallH),
-                        style = Stroke(width = stroke)
-                    )
-                    // büntetőpont
-                    val spotY = if (top) boxH * 0.65f else h - boxH * 0.65f
-                    drawCircle(color = line, radius = 3.5f, center = Offset(w / 2, spotY))
-                }
-                penaltyBox(top = true)
-                penaltyBox(top = false)
-
-                // Sarokívek
-                val cornerR = 18f
-                // top-left
-                drawArc(
-                    color = line,
-                    startAngle = 0f,
-                    sweepAngle = 90f,
-                    useCenter = false,
-                    topLeft = Offset(-cornerR, -cornerR),
-                    size = Size(cornerR * 2, cornerR * 2),
-                    style = Stroke(width = stroke)
-                )
-                // top-right
-                drawArc(
-                    color = line,
-                    startAngle = 90f,
-                    sweepAngle = 90f,
-                    useCenter = false,
-                    topLeft = Offset(w - cornerR, -cornerR),
-                    size = Size(cornerR * 2, cornerR * 2),
-                    style = Stroke(width = stroke)
-                )
-                // bottom-left
-                drawArc(
-                    color = line,
-                    startAngle = 270f,
-                    sweepAngle = 90f,
-                    useCenter = false,
-                    topLeft = Offset(-cornerR, h - cornerR),
-                    size = Size(cornerR * 2, cornerR * 2),
-                    style = Stroke(width = stroke)
-                )
-                // bottom-right
-                drawArc(
-                    color = line,
-                    startAngle = 180f,
-                    sweepAngle = 90f,
-                    useCenter = false,
-                    topLeft = Offset(w - cornerR, h - cornerR),
-                    size = Size(cornerR * 2, cornerR * 2),
-                    style = Stroke(width = stroke)
-                )
+                drawCircle(line, radius = w * 0.12f, center = Offset(w / 2, h / 2), style = Stroke(width = stroke))
+                drawCircle(line, radius = 4.dp.toPx(), center = Offset(w / 2, h / 2))
+                // Büntetőterületek
+                val boxW = w * 0.55f
+                val boxH = h * 0.16f
+                val boxX = (w - boxW) / 2
+                drawRect(line, Offset(boxX, stroke), Size(boxW, boxH), style = Stroke(width = stroke))
+                drawRect(line, Offset(boxX, h - stroke - boxH), Size(boxW, boxH), style = Stroke(width = stroke))
+                // Kapu területek
+                val sixW = w * 0.28f
+                val sixH = h * 0.07f
+                val sixX = (w - sixW) / 2
+                drawRect(line, Offset(sixX, stroke), Size(sixW, sixH), style = Stroke(width = stroke))
+                drawRect(line, Offset(sixX, h - stroke - sixH), Size(sixW, sixH), style = Stroke(width = stroke))
+                // Büntetőpontok
+                drawCircle(line, radius = 3.dp.toPx(), center = Offset(w / 2, boxH * 0.7f))
+                drawCircle(line, radius = 3.dp.toPx(), center = Offset(w / 2, h - boxH * 0.7f))
             }
 
-            // Játékosok a pályán
-            starters.forEachIndexed { index, player ->
-                val pos = positions.getOrElse(index) { 0.5f to 0.5f }
-                val xFrac = pos.first
-                val yFrac = pos.second
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(horizontal = 6.dp, vertical = 4.dp),
-                    contentAlignment = Alignment.TopStart
-                ) {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        modifier = Modifier
-                            .fillMaxWidth(0.22f)
-                            .align(Alignment.TopStart)
-                            .offset(
-                                x = ((xFrac * 1000).toInt() * 0.001f).let {
-                                    // relative placement via BoxWithConstraints would be better
-                                    0.dp
-                                },
-                                y = 0.dp
-                            )
-                    ) { }
-                }
-            }
-
-            // Pozíciók BoxWithConstraints-szel
+            // Játékosok
             BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
                 val pitchW = maxWidth
                 val pitchH = maxHeight
                 starters.forEachIndexed { index, player ->
                     val (xf, yf) = positions.getOrElse(index) { 0.5f to 0.5f }
-                    val chipW = 56.dp
-                    val chipH = 48.dp
+                    val chipW = 64.dp
+                    val chipH = 54.dp
                     val x = (pitchW * xf) - chipW / 2
                     val y = (pitchH * yf) - chipH / 2
+                    // Kapustól előre: soronként késleltetett fade + scale
+                    val appear = remember(animKey, index) { Animatable(0f) }
+                    LaunchedEffect(animKey, index) {
+                        appear.snapTo(0f)
+                        kotlinx.coroutines.delay(index * 55L + 80L)
+                        appear.animateTo(
+                            1f,
+                            animationSpec = tween(
+                                durationMillis = 420,
+                                easing = FastOutSlowInEasing
+                            )
+                        )
+                    }
+                    val a = appear.value
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         modifier = Modifier
                             .offset(
-                                x = x.coerceIn(0.dp, (pitchW - chipW).coerceAtLeast(0.dp)),
-                                y = y.coerceIn(0.dp, (pitchH - chipH).coerceAtLeast(0.dp))
+                                x = x.coerceIn(2.dp, (pitchW - chipW).coerceAtLeast(2.dp)),
+                                y = y.coerceIn(2.dp, (pitchH - chipH).coerceAtLeast(2.dp))
                             )
                             .width(chipW)
+                            .graphicsLayer {
+                                alpha = a
+                                scaleX = 0.55f + 0.45f * a
+                                scaleY = 0.55f + 0.45f * a
+                                translationY = (1f - a) * 28f
+                            }
                     ) {
-                        Box(
-                            modifier = Modifier
-                                .size(28.dp)
-                                .clip(CircleShape)
-                                .background(jerseyColor)
-                                .border(1.5.dp, Color.White, CircleShape),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = player.number?.toString() ?: "·",
-                                color = Color.White,
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold
+                        // Mez + árnyék
+                        Box(contentAlignment = Alignment.Center) {
+                            Box(
+                                modifier = Modifier
+                                    .size(32.dp)
+                                    .offset(y = 2.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(0x66000000))
                             )
+                            Box(
+                                modifier = Modifier
+                                    .size(30.dp)
+                                    .clip(CircleShape)
+                                    .background(
+                                        brush = Brush.verticalGradient(
+                                            listOf(
+                                                jerseyColor.copy(alpha = 1f),
+                                                jerseyColor.copy(alpha = 0.75f)
+                                            )
+                                        )
+                                    )
+                                    .border(2.dp, Color.White, CircleShape),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = player.number?.toString() ?: "·",
+                                    color = Color.White,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.ExtraBold
+                                )
+                            }
                         }
+                        Spacer(Modifier.height(2.dp))
                         Text(
                             text = shortName(player.name),
                             color = Color.White,
@@ -1584,70 +1564,74 @@ private fun PitchLineupCard(
                             overflow = TextOverflow.Ellipsis,
                             textAlign = TextAlign.Center,
                             modifier = Modifier
-                                .padding(top = 2.dp)
-                                .background(
-                                    Color(0x99000000),
-                                    RoundedCornerShape(3.dp)
-                                )
-                                .padding(horizontal = 3.dp, vertical = 1.dp)
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(Color(0xCC0A1628))
+                                .padding(horizontal = 4.dp, vertical = 1.dp)
+                                .fillMaxWidth()
                         )
                     }
                 }
             }
         }
 
-        // Pad lista
         if (bench.isNotEmpty()) {
-            Spacer(Modifier.height(8.dp))
-            Text("Pad", color = sub, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(4.dp))
-            bench.forEach { p ->
-                PlayerLine(p, text, sub)
+            Spacer(Modifier.height(10.dp))
+            Text("Pad", color = sub, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+            Spacer(Modifier.height(6.dp))
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Color(0x331A2D4D))
+                    .padding(10.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                bench.chunked(2).forEach { row ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        row.forEach { p ->
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(Color(0x221A2D4D))
+                                    .padding(horizontal = 8.dp, vertical = 6.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(22.dp)
+                                        .clip(CircleShape)
+                                        .background(jerseyColor.copy(alpha = 0.7f)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        p.number?.toString() ?: "·",
+                                        color = Color.White,
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                                Spacer(Modifier.width(6.dp))
+                                Text(
+                                    shortName(p.name),
+                                    color = text,
+                                    fontSize = 11.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+                        if (row.size == 1) Spacer(Modifier.weight(1f))
+                    }
+                }
             }
         }
     }
 }
 
-@Composable
-private fun PlayerLine(p: LineupPlayer, text: Color, sub: Color) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 3.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text(
-            text = p.number?.toString() ?: "-",
-            color = sub,
-            fontSize = 12.sp,
-            modifier = Modifier.width(28.dp)
-        )
-        Text(
-            text = p.name.orEmpty(),
-            color = text,
-            fontSize = 13.sp,
-            modifier = Modifier.weight(1f)
-        )
-        Text(
-            text = p.position.orEmpty(),
-            color = sub,
-            fontSize = 11.sp
-        )
-    }
-}
-
-/** Rövid név a pályára (vezetéknév). */
-private fun shortName(name: String?): String {
-    if (name.isNullOrBlank()) return "—"
-    val parts = name.trim().split(Regex("""\s+"""))
-    return parts.last().take(10)
-}
-
-/**
- * Formáció → (x, y) arányok a pályán.
- * y: 0 = kapu (felső), 1 = támadók (alsó) — egy csapat a pálya alsó felén.
- * A kezdő 11: [0]=kapus, utána védők → középpálya → támadók.
- */
 private fun formationPitchPositions(formation: String, count: Int): List<Pair<Float, Float>> {
     val rows = formation
         .split("-", "–", "—")
