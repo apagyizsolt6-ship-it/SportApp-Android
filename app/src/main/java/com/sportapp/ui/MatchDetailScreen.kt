@@ -59,6 +59,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.sportapp.api.RetrofitInstance
+import com.sportapp.fcm.FcmRegistrar
 import com.sportapp.api.StandingTeam
 import com.sportapp.models.HighlightVideo
 import com.sportapp.models.LineupPlayer
@@ -91,6 +92,10 @@ fun MatchDetailDialog(
     val glassBorder = if (isDarkMode) Color(0x33A0C4FF) else Color(0x55FFFFFF)
 
     var selectedTab by remember { mutableIntStateOf(0) }
+    val ctx = LocalContext.current
+    var isFollowing by remember {
+        mutableStateOf(FcmRegistrar.isFollowing(ctx, match.id))
+    }
     var previousTab by remember { mutableIntStateOf(0) }
     val tabs = listOf("Összefoglaló", "Események", "Statisztika", "Összeállítás", "Videók", "Tabella")
 
@@ -435,6 +440,48 @@ fun MatchDetailDialog(
                             }
                         )
                     }
+                }
+
+
+                // FCM követés
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 6.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(card)
+                        .clickable {
+                            val next = !isFollowing
+                            isFollowing = next
+                            FcmRegistrar.setFollowing(ctx, match.id, next)
+                        }
+                        .padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        if (isFollowing) "🔔" else "🔕",
+                        fontSize = 18.sp
+                    )
+                    Spacer(Modifier.width(10.dp))
+                    Column(Modifier = Modifier.weight(1f)) {
+                        Text(
+                            if (isFollowing) "Értesítések bekapcsolva" else "Értesítések a meccsről",
+                            color = text,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            "Gól, lap, kezdés, félidő, vége",
+                            color = sub,
+                            fontSize = 11.sp
+                        )
+                    }
+                    Text(
+                        if (isFollowing) "BE" else "KI",
+                        color = if (isFollowing) green else sub,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold
+                    )
                 }
 
                 if (loadingTab) {
