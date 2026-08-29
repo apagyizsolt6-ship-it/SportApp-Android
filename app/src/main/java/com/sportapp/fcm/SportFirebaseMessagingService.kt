@@ -9,6 +9,8 @@ import androidx.core.app.NotificationCompat
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
 import com.sportapp.MainActivity
+import com.sportapp.ui.NotifHistoryItem
+import com.sportapp.ui.NotifPrefs
 
 class SportFirebaseMessagingService : FirebaseMessagingService() {
 
@@ -27,6 +29,18 @@ class SportFirebaseMessagingService : FirebaseMessagingService() {
     }
 
     private fun showNotification(title: String, body: String, type: String, matchId: String?) {
+        if (type in setOf("yellow", "card") && NotifPrefs.isQuietNow(applicationContext)) return
+        NotifPrefs.pushHistory(
+            applicationContext,
+            NotifHistoryItem(
+                id = "${System.currentTimeMillis()}-$type",
+                title = title,
+                body = body,
+                type = type,
+                matchId = matchId.orEmpty(),
+                ts = System.currentTimeMillis()
+            )
+        )
         val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
         ensureChannels(nm)
         val channelId = when (type) {
