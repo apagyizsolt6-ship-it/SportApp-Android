@@ -5,6 +5,7 @@ import android.app.NotificationManager
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
+import android.util.Log
 import androidx.core.content.ContextCompat
 import com.google.firebase.messaging.FirebaseMessaging
 import com.sportapp.api.RetrofitInstance
@@ -12,9 +13,11 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.withContext
 
 object FcmRegistrar {
 
+    private const val TAG = "FcmRegistrar"
     private const val PREFS = "fcm_prefs"
     private const val KEY_TOKEN = "fcm_token"
     private const val KEY_FOLLOWED = "followed_matches"
@@ -24,11 +27,23 @@ object FcmRegistrar {
             context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         )
         CoroutineScope(Dispatchers.IO).launch {
+            val token = refreshToken(context) ?: return@launch
             try {
-                val token = FirebaseMessaging.getInstance().token.await()
-                saveToken(context, token)
-                RetrofitInstance.api.registerFcmToken(mapOf("token" to token))
-            } catch (_: Exception) {
+                val res = RetrofitInstance.api.registerFcmToken(mapOf("token" to token))
+                Log.i(TAG, "register ok: $res")
+            } catch (e: Exception) {
+                Log.e(TAG, "register failed", e)
+            }
+            // Újraindítás után újra feliratkozás
+            followedMatches(context).forEach { matchId ->
+                try {
+                    RetrofitInstance.api.fcmSubscribe(
+                        mapOf("token" to token, "match_id" to matchId)
+                    )
+                    Log.i(TAG, "re-subscribe $matchId")
+                } catch (e: Exception) {
+                    Log.e(TAG, "re-subscribe failed $matchId", e)
+                }
             }
         }
     }
@@ -38,8 +53,28 @@ object FcmRegistrar {
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 RetrofitInstance.api.registerFcmToken(mapOf("token" to token))
-            } catch (_: Exception) {
+                followedMatches(context).forEach { matchId ->
+                    RetrofitInstance.api.fcmSubscribe(
+                        mapOf("token" to token, "match_id" to matchId)
+                    )
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "onNewToken register failed", e)
             }
+        }
+    }
+
+    suspend fun refreshToken(context: Context): String? = withContext(Dispatchers.IO) {
+        try {
+            val token = FirebaseMessaging.getInstance().token.await()
+            if (token.isNotBlank()) {
+                saveToken(context, token)
+                Log.i(TAG, "FCM token: ${token.take(12)}…")
+                token
+            } else null
+        } catch (e: Exception) {
+            Log.e(TAG, "token fetch failed", e)
+            null
         }
     }
 
@@ -63,15 +98,41 @@ object FcmRegistrar {
         val set = prefs.getStringSet(KEY_FOLLOWED, emptySet())?.toMutableSet() ?: mutableSetOf()
         if (follow) set.add(matchId) else set.remove(matchId)
         prefs.edit().putStringSet(KEY_FOLLOWED, set).apply()
-        val token = getToken(context) ?: return
+
         CoroutineScope(Dispatchers.IO).launch {
+            val token = getToken(context) ?: refreshToken(context)
+            if (token.isNullOrBlank()) {
+                Log.e(TAG, "no FCM token – cannot subscribe")
+                return@launch
+            }
             try {
+                RetrofitInstance.api.registerFcmToken(mapOf("token" to token))
                 if (follow) {
-                    RetrofitInstance.api.fcmSubscribe(mapOf("token" to token, "match_id" to matchId))
+                    val res = RetrofitInstance.api.fcmSubscribe(
+                        mapOf("token" to token, "match_id" to matchId)
+                    )
+                    Log.i(TAG, "subscribe $matchId -> $res")
                 } else {
-                    RetrofitInstance.api.fcmUnsubscribe(mapOf("token" to token, "match_id" to matchId))
+                    RetrofitInstance.api.fcmUnsubscribe(
+                        mapOf("token" to token, "match_id" to matchId)
+                    )
+                    Log.i(TAG, "unsubscribe $matchId")
                 }
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                Log.e(TAG, "subscribe/unsubscribe failed", e)
+            }
+        }
+    }
+
+    /** Teszt push kérés a backendre */
+    fun requestTestPush(context: Context) {
+        CoroutineScope(Dispatchers.IO).launch {
+            val token = getToken(context) ?: refreshToken(context) ?: return@launch
+            try {
+                RetrofitInstance.api.fcmTest(mapOf("token" to token))
+                Log.i(TAG, "test push requested")
+            } catch (e: Exception) {
+                Log.e(TAG, "test push failed", e)
             }
         }
     }
