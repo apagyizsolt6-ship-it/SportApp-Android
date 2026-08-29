@@ -3078,6 +3078,7 @@ def fcm_register(body: dict):
     with _fcm_lock:
         _fcm_subs.setdefault(token, set())
     _ensure_fcm_worker()
+    _fcm_persist()
     return {"ok": True, "fcm_configured": bool(FCM_SERVER_KEY)}
 
 
@@ -3098,6 +3099,7 @@ def fcm_subscribe(body: dict):
             _fcm_check_match(match_id, detail)
     except Exception:
         pass
+    _fcm_persist()
     return {"ok": True, "match_id": match_id, "fcm_configured": bool(FCM_SERVER_KEY)}
 
 
@@ -3125,4 +3127,59 @@ def fcm_status():
             "followed_matches": len(_fcm_match_tokens),
             "worker": _fcm_worker_started,
         }
+
+
+@app.post("/api/fcm/test")
+def fcm_test(body: dict):
+    """Azonnali teszt értesítés a megadott tokenre."""
+    token = str((body or {}).get("token") or "").strip()
+    if not token:
+        return {"ok": False, "error": "token required"}
+    if not FCM_SERVER_KEY:
+        return {"ok": False, "error": "FCM_SERVER_KEY missing"}
+    ok = _fcm_send(
+        token,
+        "🔔 SportApp teszt",
+        "Ha ezt látod, az FCM push működik.",
+        "status",
+        "test",
+    )
+    return {"ok": ok, "fcm_configured": True}
+
+
+def _fcm_persist():
+    try:
+        import json
+        path = "/tmp/fcm_subs.json"
+        with _fcm_lock:
+            data = {
+                "subs": {k: list(v) for k, v in _fcm_subs.items()},
+                "match_tokens": {k: list(v) for k, v in _fcm_match_tokens.items()},
+            }
+        with open(path, "w") as f:
+            json.dump(data, f)
+    except Exception:
+        pass
+
+
+def _fcm_load():
+    try:
+        import json
+        path = "/tmp/fcm_subs.json"
+        if not os.path.exists(path):
+            return
+        with open(path) as f:
+            data = json.load(f)
+        with _fcm_lock:
+            for tok, mids in (data.get("subs") or {}).items():
+                _fcm_subs[tok] = set(mids)
+            for mid, toks in (data.get("match_tokens") or {}).items():
+                _fcm_match_tokens[mid] = set(toks)
+        if _fcm_match_tokens:
+            _ensure_fcm_worker()
+    except Exception:
+        pass
+
+
+_fcm_load()
 
