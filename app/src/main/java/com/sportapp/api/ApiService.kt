@@ -80,4 +80,8 @@ interface ApiService {
 
     @POST("api/fcm/unsubscribe")
     suspend fun fcmUnsubscribe(@Body body: Map<String, String>): Map<String, Any>
+
+    @POST("api/fcm/test")
+    suspend fun fcmTest(@Body body: Map<String, String>): Map<String, Any>
 }
+
