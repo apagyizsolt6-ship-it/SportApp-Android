@@ -60,6 +60,8 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.sportapp.api.RetrofitInstance
 import com.sportapp.fcm.FcmRegistrar
+import android.content.Intent
+import android.net.Uri
 import com.sportapp.api.StandingTeam
 import com.sportapp.models.HighlightVideo
 import com.sportapp.models.LineupPlayer
@@ -96,6 +98,9 @@ fun MatchDetailDialog(
     var isFollowing by remember {
         mutableStateOf(FcmRegistrar.isFollowing(ctx, match.id))
     }
+    var selectedPlayer by remember { mutableStateOf<com.sportapp.models.LineupPlayer?>(null) }
+    var selectedPlayerTeam by remember { mutableStateOf("") }
+    var teamDialogName by remember { mutableStateOf<String?>(null) }
     var previousTab by remember { mutableIntStateOf(0) }
     val tabs = listOf("Összefoglaló", "Események", "Statisztika", "Összeállítás", "Videók", "Tabella")
 
@@ -488,6 +493,57 @@ fun MatchDetailDialog(
                     )
                 }
 
+                if (selectedPlayer != null) {
+                    PlayerCardDialogWithOpen(
+                        player = selectedPlayer!!,
+                        teamHint = selectedPlayerTeam,
+                        onDismiss = { selectedPlayer = null },
+                        onYoutube = { q ->
+                            try {
+                                context.startActivity(
+                                    Intent(
+                                        Intent.ACTION_VIEW,
+                                        Uri.parse(
+                                            "https://www.youtube.com/results?search_query=" +
+                                                Uri.encode(q)
+                                        )
+                                    )
+                                )
+                            } catch (_: Exception) {
+                            }
+                        }
+                    )
+                }
+                if (teamDialogName != null) {
+                    TeamQuickDialog(
+                        teamName = teamDialogName!!,
+                        formLine = null,
+                        onDismiss = { teamDialogName = null },
+                        onYoutube = {
+                            try {
+                                context.startActivity(
+                                    Intent(
+                                        Intent.ACTION_VIEW,
+                                        Uri.parse(
+                                            "https://www.youtube.com/results?search_query=" +
+                                                Uri.encode(teamDialogName + " football")
+                                        )
+                                    )
+                                )
+                            } catch (_: Exception) {
+                            }
+                        }
+                    )
+                }
+                WhoWinsVote(
+                    match = detail,
+                    ctx = ctx,
+                    card = card,
+                    text = text,
+                    sub = sub,
+                    green = green
+                )
+                Spacer(modifier = Modifier.height(6.dp))
                 if (loadingTab) {
                     Box(
                         modifier = Modifier
@@ -575,7 +631,13 @@ fun MatchDetailDialog(
                         green = green
                     )
                     2 -> StatsTab(stats = stats, text = text, sub = sub, card = card, accent = accent)
-                    3 -> LineupsTab(lineups = lineups, text = text, sub = sub, card = card)
+                    3 -> LineupsTab(
+                        lineups = lineups, text = text, sub = sub, card = card,
+                        onPlayerClick = { pl, team ->
+                            selectedPlayer = pl
+                            selectedPlayerTeam = team
+                        }
+                    )
                     4 -> VideosTab(
                         videos = videos,
                         text = text,
@@ -1345,6 +1407,7 @@ private fun EventRow(
         if (!ev.assist.isNullOrBlank()) append(" (${ev.assist})")
         if (!ev.substituted.isNullOrBlank()) append(" → ${ev.substituted}")
     }
+    val badge = eventBadge(ev)
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -1353,6 +1416,19 @@ private fun EventRow(
             .padding(horizontal = 10.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        if (badge != null) {
+            Text(
+                text = badge.first,
+                color = Color.White,
+                fontSize = 9.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(badge.second)
+                    .padding(horizontal = 6.dp, vertical = 2.dp)
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+        }
         if (isHome) {
             Text(label, color = text, fontSize = 13.sp, modifier = Modifier.weight(1f))
             Text(minute, color = sub, fontSize = 12.sp, fontWeight = FontWeight.Bold)
@@ -1377,6 +1453,7 @@ private fun StatsTab(
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
+        item { XgMomentumCard(stats, "Hazai", "Vendég", card, text, sub) }
         if (stats.isEmpty()) {
             item { Text("Nincs statisztika.", color = sub, fontSize = 13.sp) }
         } else {
@@ -1433,7 +1510,8 @@ private fun LineupsTab(
     lineups: LineupsResponse?,
     text: Color,
     sub: Color,
-    card: Color
+    card: Color,
+    onPlayerClick: (com.sportapp.models.LineupPlayer, String) -> Unit = { _, _ -> }
 ) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -1449,7 +1527,8 @@ private fun LineupsTab(
                     side = lineups.home,
                     jerseyColor = Color(0xFF1E88E5),
                     text = text,
-                    sub = sub
+                    sub = sub,
+                    onPlayerClick = { onPlayerClick(it, lineups.home?.teamName.orEmpty()) }
                 )
             }
             item {
@@ -1458,7 +1537,8 @@ private fun LineupsTab(
                     side = lineups.away,
                     jerseyColor = Color(0xFFE53935),
                     text = text,
-                    sub = sub
+                    sub = sub,
+                    onPlayerClick = { onPlayerClick(it, lineups.away?.teamName.orEmpty()) }
                 )
             }
         }
@@ -1472,7 +1552,8 @@ private fun PitchLineupCard(
     side: com.sportapp.models.LineupSide?,
     jerseyColor: Color,
     text: Color,
-    sub: Color
+    sub: Color,
+    onPlayerClick: (com.sportapp.models.LineupPlayer) -> Unit = {}
 ) {
     val starters = side?.players?.filter { it.isBench != true }.orEmpty()
     val bench = side?.players?.filter { it.isBench == true }.orEmpty()
@@ -1685,6 +1766,7 @@ private fun PitchLineupCard(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(6.dp))
                                 .background(Color(0xCC0A1628))
+                                .clickable { onPlayerClick(player) }
                                 .padding(horizontal = 4.dp, vertical = 1.dp)
                                 .fillMaxWidth()
                         )
@@ -1717,6 +1799,7 @@ private fun PitchLineupCard(
                                     .weight(1f)
                                     .clip(RoundedCornerShape(8.dp))
                                     .background(Color(0x221A2D4D))
+                                    .clickable { onPlayerClick(p) }
                                     .padding(horizontal = 8.dp, vertical = 6.dp)
                             ) {
                                 Box(

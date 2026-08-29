@@ -49,6 +49,7 @@ import coil.compose.SubcomposeAsyncImage
 import com.sportapp.models.MatchResponse
 import com.sportapp.models.HighlightVideo
 import com.sportapp.api.RetrofitInstance
+import com.sportapp.fcm.FcmRegistrar
 import com.sportapp.api.StandingTeam
 import kotlinx.coroutines.launch
 import java.text.Collator
@@ -424,6 +425,34 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
         favoritePrefs.edit().putBoolean("leagues_seeded_v2", true).apply()
     }
 
+    var followedMatchIds by remember {
+        mutableStateOf(FcmRegistrar.followedMatches(context))
+    }
+    var showNotifHistory by remember { mutableStateOf(false) }
+    var showQuietHours by remember { mutableStateOf(false) }
+    var prevScores by remember { mutableStateOf(mapOf<String, Pair<Int?, Int?>>()) }
+    var flashMatchIds by remember { mutableStateOf(setOf<String>()) }
+    LaunchedEffect(matches) {
+        val nextFlash = mutableSetOf<String>()
+        val nextPrev = prevScores.toMutableMap()
+        matches.forEach { m ->
+            val old = prevScores[m.id]
+            if (old != null) {
+                val nh = m.homeScore
+                val na = m.awayScore
+                if ((nh != null && old.first != null && nh > old.first!!) ||
+                    (na != null && old.second != null && na > old.second!!)
+                ) nextFlash.add(m.id)
+            }
+            nextPrev[m.id] = m.homeScore to m.awayScore
+        }
+        prevScores = nextPrev
+        if (nextFlash.isNotEmpty()) {
+            flashMatchIds = flashMatchIds + nextFlash
+            kotlinx.coroutines.delay(2500)
+            flashMatchIds = flashMatchIds - nextFlash
+        }
+    }
     var onlyPinnedLeagues by remember { mutableStateOf(false) }
     var compactMode by remember {
         mutableStateOf(favoritePrefs.getBoolean("compact_mode", false))
@@ -591,22 +620,15 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
             val matchesSearch = matchesSmartSearch(match, searchQuery)
 
             val matchesTab = when (selectedTab) {
-
-                // ÉLŐ – FT/AET/PEN NEM élő
                 1 -> isMatchLive(match.status, match.minute)
-
-                // KEDVENC
                 2 -> isMatchFav || isLeagueFav
-
-                // MÉDIA – élő, befejezett, vagy van highlight
                 3 -> {
                     val hasHighlight = !match.highlightMatchId.isNullOrBlank()
                     val live = isMatchLive(match.status, match.minute)
                     val finished = isMatchFinished(match.status)
                     hasHighlight || live || finished
                 }
-
-                // ÖSSZES
+                4 -> isMatchFav || isLeagueFav || followedMatchIds.contains(match.id)
                 else -> true
             }
 
@@ -642,6 +664,14 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
         filteredMatches.filter { isStartingSoon(it, 90) }
             .sortedBy { matchKickoffMillis(it) ?: Long.MAX_VALUE }
             .take(12)
+    }
+    val worthWatchMatches = remember(matches, favoriteLeagueNames) {
+        matches.filter { !isMatchFinished(it.status) }
+            .map { it to worthWatchScore(it, favoriteLeagueNames) }
+            .filter { it.second >= 30 }
+            .sortedByDescending { it.second }
+            .take(5)
+            .map { it.first }
     }
     val spotlightMatches = remember(filteredMatches, favoriteLeagueNames) {
         filteredMatches
@@ -967,6 +997,16 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                     onClick = { compactMode = !compactMode },
                     label = { Text(if (compactMode) "Kompakt" else "Normál", fontSize = 11.sp) }
                 )
+                FilterChip(
+                    selected = false,
+                    onClick = { showNotifHistory = true },
+                    label = { Text("🔔 Előzmény", fontSize = 11.sp) }
+                )
+                FilterChip(
+                    selected = false,
+                    onClick = { showQuietHours = true },
+                    label = { Text("🌙 Csend", fontSize = 11.sp) }
+                )
             }
 
             // Élő ticker
@@ -1100,6 +1140,22 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                         } else {
                             subTextColor
                         },
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                Tab(
+                    selected = selectedTab == 4,
+                    onClick = {
+                        selectedTab = 4
+                        followedMatchIds = FcmRegistrar.followedMatches(context)
+                    }
+                ) {
+                    Text(
+                        "🔔 KÖVETETT",
+                        modifier = Modifier.padding(vertical = 10.dp),
+                        color = if (selectedTab == 4) Color(0xFFE040FB) else subTextColor,
                         fontSize = 10.sp,
                         fontWeight = FontWeight.Bold
                     )
@@ -1262,7 +1318,48 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                     modifier = Modifier.fillMaxSize()
                 ) {
                     // Spotlight
-                    if (spotlightMatches.isNotEmpty() && selectedTab == 0 && searchQuery.isEmpty() && !onlyPinnedLeagues) {
+                                        if (worthWatchMatches.isNotEmpty() && selectedTab == 0 && searchQuery.isEmpty()) {
+                        item {
+                            Text(
+                                "🔥 Ma este érdemes nézni",
+                                color = Color(0xFFFF6E40),
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
+                            )
+                        }
+                        items(worthWatchMatches, key = { "ww-${it.id}" }) { match ->
+                            PremiumMatchRow(
+                                match = match,
+                                isFavorite = favoriteMatchIds.contains(match.id),
+                                isReminderSet = reminderMatchIds.contains(match.id),
+                                cardBgColor = cardBgColor,
+                                textColor = textColor,
+                                subTextColor = subTextColor,
+                                primaryGreen = primaryGreen,
+                                compact = compactMode,
+                                scoreFlash = flashMatchIds.contains(match.id),
+                                onFavoriteToggle = {
+                                    favoriteMatchIds =
+                                        if (favoriteMatchIds.contains(match.id))
+                                            favoriteMatchIds - match.id
+                                        else favoriteMatchIds + match.id
+                                },
+                                onVideoClick = { m ->
+                                    selectedMatchForMedia = m
+                                    showHighlightPicker = true
+                                },
+                                onAiClick = { m ->
+                                    selectedMatchForAi = m
+                                    viewModel.fetchAiAnalysis(m.id)
+                                },
+                                onMatchClick = { selectedMatchForDetail = it },
+                                onReminderClick = { },
+                                onShareClick = { }
+                            )
+                        }
+                    }
+if (spotlightMatches.isNotEmpty() && selectedTab == 0 && searchQuery.isEmpty() && !onlyPinnedLeagues) {
                         item {
                             Text(
                                 "⭐ Mai spotlight",
@@ -1282,6 +1379,7 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                                 subTextColor = subTextColor,
                                 primaryGreen = primaryGreen,
                                 compact = compactMode,
+                                scoreFlash = flashMatchIds.contains(match.id),
                                 onFavoriteToggle = {
                                     favoriteMatchIds =
                                         if (favoriteMatchIds.contains(match.id))
@@ -1370,6 +1468,7 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                                 subTextColor = subTextColor,
                                 primaryGreen = primaryGreen,
                                 compact = compactMode,
+                                scoreFlash = flashMatchIds.contains(match.id),
                                 onFavoriteToggle = {
                                     favoriteMatchIds =
                                         if (favoriteMatchIds.contains(match.id))
@@ -1853,6 +1952,53 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
     // HIGHLIGHTLY VIDEÓK
     // ============================================================
 
+    if (showNotifHistory) {
+        AlertDialog(
+            onDismissRequest = { showNotifHistory = false },
+            title = { Text("Értesítés előzmények") },
+            text = {
+                val items = NotifPrefs.history(context)
+                Column {
+                    if (items.isEmpty()) Text("Még nincs értesítés.")
+                    else items.take(15).forEach { n ->
+                        Text(n.title, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                        Text(n.body, fontSize = 11.sp, color = subTextColor)
+                        Spacer(modifier = Modifier.height(8.dp))
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showNotifHistory = false }) { Text("OK") }
+            }
+        )
+    }
+    if (showQuietHours) {
+        val (qs, qe) = NotifPrefs.quietHours(context)
+        var startH by remember { mutableIntStateOf(qs) }
+        var endH by remember { mutableIntStateOf(qe) }
+        AlertDialog(
+            onDismissRequest = { showQuietHours = false },
+            title = { Text("Csendes órák") },
+            text = {
+                Column {
+                    Text("Sárga lap push kikapcsolva (pl. 23→7).", fontSize = 12.sp)
+                    Text("Kezdet: $startH:00")
+                    Slider(value = startH.toFloat(), onValueChange = { startH = it.toInt() }, valueRange = 0f..23f, steps = 22)
+                    Text("Vég: $endH:00")
+                    Slider(value = endH.toFloat(), onValueChange = { endH = it.toInt() }, valueRange = 0f..23f, steps = 22)
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    NotifPrefs.setQuietHours(context, startH, endH)
+                    showQuietHours = false
+                }) { Text("Mentés") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showQuietHours = false }) { Text("Mégse") }
+            }
+        )
+    }
     if (showHighlightPicker) {
         HighlightVideoPickerDialog(
             match = selectedMatchForMedia,
@@ -2448,6 +2594,7 @@ fun PremiumMatchRow(
     subTextColor: Color,
     primaryGreen: Color,
     compact: Boolean = false,
+    scoreFlash: Boolean = false,
     onFavoriteToggle: () -> Unit,
     onVideoClick: (MatchResponse) -> Unit,
     onAiClick: (MatchResponse) -> Unit,
@@ -2471,8 +2618,8 @@ fun PremiumMatchRow(
             .fillMaxWidth()
             .padding(horizontal = 8.dp, vertical = if (compact) 2.dp else 3.dp)
             .clip(RoundedCornerShape(14.dp))
-            .background(cardBgColor)
-            .border(1.dp, Color(0x28A0C4FF), RoundedCornerShape(14.dp))
+            .background(if (scoreFlash) Color(0x4400E5A8) else cardBgColor)
+            .border(1.dp, if (scoreFlash) primaryGreen else Color(0x28A0C4FF), RoundedCornerShape(14.dp))
             .clickable { onMatchClick(match) }
             .padding(
                 horizontal = 12.dp,
