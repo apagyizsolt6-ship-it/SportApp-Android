@@ -219,15 +219,16 @@ private fun topFiveRank(leagueName: String?, countryCode: String?): Int? {
         "LIGUE 2", "SERIE B", "SEGUNDA", "CHAMPIONSHIP",
         "PREMIER LEAGUE 2", "2. BUNDESLIGA", "BUNDESLIGA 2",
         "BUNDESLIGA II", "LA LIGA 2", "LALIGA2", "PRIMERA FEDERACION",
-        "U19", "U21", "U23", "YOUTH", "WOMEN", "FEMININE", "NŐI"
+        "U16", "U17", "U18", "U19", "U20", "U21", "U23",
+        "YOUTH", "JUNIOR", "RESERVE", "RESERVES",
+        "WOMEN", "FEMININE", "NŐI", "FEMENINA", "FEMMINILE"
     )
     if (secondTier.any { leagueOnly.contains(it) || normalized.contains(it) }) {
         return null
     }
 
     // 0 Premier League – csak Anglia
-    val isPremier = leagueOnly == "PREMIER LEAGUE" ||
-            (leagueOnly.startsWith("PREMIER LEAGUE") && !leagueOnly.contains("2"))
+    val isPremier = leagueOnly == "PREMIER LEAGUE" || leagueOnly == "ENGLISH PREMIER LEAGUE"
     if (isPremier && isCountry(
             setOf("GB", "UK", "EN", "ENG", "GB-ENG"),
             setOf("ANGLIA", "ENGLAND")
@@ -340,6 +341,21 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
         favoritePrefs.edit()
             .putStringSet("favorite_leagues", favoriteLeagueNames)
             .apply()
+    }
+
+    // Első indítás: TOP 5 kiemelésbe, utána szabadon törölhető
+    LaunchedEffect(matches) {
+        if (matches.isEmpty()) return@LaunchedEffect
+        if (favoritePrefs.getBoolean("leagues_seeded_v2", false)) return@LaunchedEffect
+        val seeds = matches.mapNotNull { m ->
+            val name = m.league?.trim().orEmpty()
+            if (name.isEmpty()) return@mapNotNull null
+            if (topFiveRank(name, m.countryCode) != null) name else null
+        }.distinct()
+        if (seeds.isNotEmpty()) {
+            favoriteLeagueNames = favoriteLeagueNames + seeds
+        }
+        favoritePrefs.edit().putBoolean("leagues_seeded_v2", true).apply()
     }
 
     var selectedVideo by remember { mutableStateOf<HighlightVideo?>(null) }
@@ -547,20 +563,24 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
             val aName = a.key.trim()
             val bName = b.key.trim()
 
-            // Országkód: a csoport első meccséből
+            val aFav = favoriteLeagueNames.contains(aName)
+            val bFav = favoriteLeagueNames.contains(bName)
+
+            when {
+                aFav && !bFav -> return@Comparator -1
+                !aFav && bFav -> return@Comparator 1
+            }
+
             val aCountry = a.value.firstOrNull()?.countryCode
             val bCountry = b.value.firstOrNull()?.countryCode
-
             val aRank = topFiveRank(aName, aCountry)
             val bRank = topFiveRank(bName, bCountry)
 
             when {
-                aRank != null && bRank != null ->
-                    aRank.compareTo(bRank)
-
-                aRank != null -> -1
-                bRank != null -> 1
-
+                aFav && bFav && aRank != null && bRank != null -> aRank.compareTo(bRank)
+                aFav && bFav && aRank != null -> -1
+                aFav && bFav && bRank != null -> 1
+                aFav && bFav -> hungarianCollator.compare(aName, bName)
                 else -> hungarianCollator.compare(aName, bName)
             }
         })
@@ -1055,25 +1075,16 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                         item {
 
                             val leagueHeaderColor = when {
-
-                                isTopFive && isDarkMode ->
+                                isLeagueFav && isDarkMode ->
                                     Color(0xFF2A3F6A)
-
-                                isTopFive ->
+                                isLeagueFav ->
                                     Color(0xFFB8D4FF)
-
-                                isUserHighlighted && isDarkMode ->
-                                    Color(0xFF1E3A5F)
-
-                                isUserHighlighted ->
-                                    Color(0xFFC5DDFF)
-
                                 else ->
                                     leagueBgColor
                             }
 
                             val leagueHeaderTextColor =
-                                if (isTopFive) {
+                                if (isLeagueFav) {
                                     if (isDarkMode) Color(0xFF9EC9FF) else Color(0xFF1A4A8A)
                                 } else {
                                     textColor
@@ -1131,23 +1142,15 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
 
                                     Text(
                                         text =
-                                            if (
-                                                isTopFive ||
-                                                isLeagueFav
-                                            ) {
+                                            if (isLeagueFav) {
                                                 "★"
                                             } else {
                                                 "☆"
                                             },
 
                                         color = when {
-
-                                            isTopFive ->
-                                                Color(0xFFFFB300)
-
                                             isLeagueFav ->
-                                                Color(0xFFFF9100)
-
+                                                Color(0xFFFFB300)
                                             else ->
                                                 subTextColor
                                         },
@@ -1157,34 +1160,16 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                                         modifier = Modifier
                                             .then(
 
-                                                // A TOP 5 csillaga fix.
-                                                //
-                                                // A többi liga csillaga
-                                                // továbbra is kedvenccé
-                                                // tehető.
-                                                if (!isTopFive) {
-
-                                                    Modifier.clickable {
-
-                                                        favoriteLeagueNames =
-                                                            if (isLeagueFav) {
-
-                                                                favoriteLeagueNames
-                                                                    .filter {
-                                                                        it != leagueName
-                                                                    }
-                                                                    .toSet()
-
-                                                            } else {
-
-                                                                favoriteLeagueNames +
-                                                                        leagueName
-                                                            }
-                                                    }
-
-                                                } else {
-
-                                                    Modifier
+                                                // Bármely liga kiemelhető / törölhető
+                                                Modifier.clickable {
+                                                    favoriteLeagueNames =
+                                                        if (isLeagueFav) {
+                                                            favoriteLeagueNames
+                                                                .filter { it != leagueName }
+                                                                .toSet()
+                                                        } else {
+                                                            favoriteLeagueNames + leagueName
+                                                        }
                                                 }
                                             )
                                             .padding(end = 6.dp)
