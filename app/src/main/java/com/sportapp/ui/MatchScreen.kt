@@ -57,7 +57,7 @@ import java.util.Locale
 import org.json.JSONArray
 import org.json.JSONObject
 
-private fun isMatchFinished(status: String?): Boolean {
+internal fun isMatchFinished(status: String?): Boolean {
     val s = status?.trim()?.uppercase()?.replace(".", "")?.replace(" ", "") ?: return false
     return s in setOf(
         "FT", "AET", "PEN", "PENS", "PSO", "FINISHED", "FULLTIME", "FULL-TIME",
@@ -65,7 +65,7 @@ private fun isMatchFinished(status: String?): Boolean {
     )
 }
 
-private fun isMatchLive(status: String?, minute: Int?): Boolean {
+internal fun isMatchLive(status: String?, minute: Int?): Boolean {
     if (isMatchFinished(status)) return false
     val s = status?.trim()?.uppercase()?.replace(".", "") ?: ""
     if (s in setOf("1H", "2H", "HT", "LIVE", "ET", "INPLAY")) return true
@@ -84,7 +84,7 @@ private fun isMatchLive(status: String?, minute: Int?): Boolean {
 
 
 /** Kickoff millis, vagy null. */
-private fun matchKickoffMillis(match: MatchResponse): Long? {
+internal fun matchKickoffMillis(match: MatchResponse): Long? {
     val timeStr = match.kickoffTime?.trim()?.takeIf { it.contains(":") }
         ?: match.status.trim().takeIf { it.contains(":") && it.length <= 5 }
         ?: return null
@@ -110,14 +110,14 @@ private fun matchKickoffMillis(match: MatchResponse): Long? {
     }
 }
 
-private fun isStartingSoon(match: MatchResponse, withinMinutes: Int = 90): Boolean {
+internal fun isStartingSoon(match: MatchResponse, withinMinutes: Int = 90): Boolean {
     if (isMatchLive(match.status, match.minute) || isMatchFinished(match.status)) return false
     val ko = matchKickoffMillis(match) ?: return false
     val diff = ko - System.currentTimeMillis()
     return diff in 0..(withinMinutes * 60_000L)
 }
 
-private fun matchesSmartSearch(match: MatchResponse, query: String): Boolean {
+internal fun matchesSmartSearch(match: MatchResponse, query: String): Boolean {
     if (query.isBlank()) return true
     val q = query.trim().lowercase()
     val league = match.league.orEmpty().lowercase()
@@ -253,7 +253,7 @@ private fun dayLabel(offset: Int): String {
     }
 }
 
-private fun topFiveRank(leagueName: String?, countryCode: String?): Int? {
+internal fun topFiveRank(leagueName: String?, countryCode: String?): Int? {
     if (leagueName.isNullOrBlank()) return null
 
     val normalized = leagueName

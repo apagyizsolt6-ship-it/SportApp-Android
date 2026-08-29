@@ -60,7 +60,6 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.sportapp.api.RetrofitInstance
 import com.sportapp.fcm.FcmRegistrar
-import android.content.Intent
 import android.net.Uri
 import com.sportapp.api.StandingTeam
 import com.sportapp.models.HighlightVideo

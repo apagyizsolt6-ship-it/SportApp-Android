@@ -270,7 +270,7 @@ fun PlayerCardDialogWithOpen(
             shape = RoundedCornerShape(16.dp),
             colors = CardDefaults.cardColors(containerColor = Color(0xFF152238))
         ) {
-            Column(Modifier = Modifier.padding(16.dp)) {
+            Column(modifier = Modifier.padding(16.dp)) {
                 Text(name, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
                 player.number?.let {
                     Text("#$it", color = Color(0xFF9BB0C9), fontSize = 13.sp)
@@ -306,7 +306,7 @@ fun TeamQuickDialog(
             shape = RoundedCornerShape(16.dp),
             colors = CardDefaults.cardColors(containerColor = Color(0xFF152238))
         ) {
-            Column(Modifier = Modifier.padding(16.dp)) {
+            Column(modifier = Modifier.padding(16.dp)) {
                 Text(teamName, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
                 if (!formLine.isNullOrBlank()) {
                     Spacer(modifier = Modifier.height(8.dp))
