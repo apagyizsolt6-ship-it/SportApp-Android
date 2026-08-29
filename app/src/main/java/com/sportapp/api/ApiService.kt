@@ -7,7 +7,9 @@ import com.sportapp.models.StatisticsResponse
 import com.sportapp.models.AiAnalysisResponse
 import com.sportapp.models.H2hResponse
 import com.sportapp.models.FormResponse
+import retrofit2.http.Body
 import retrofit2.http.GET
+import retrofit2.http.POST
 import retrofit2.http.Path
 
 data class StandingTeam(
@@ -69,4 +71,13 @@ interface ApiService {
     suspend fun getMatchesByDate(
         @Path("date") date: String
     ): List<MatchResponse>
+
+    @POST("api/fcm/register")
+    suspend fun registerFcmToken(@Body body: Map<String, String>): Map<String, Any>
+
+    @POST("api/fcm/subscribe")
+    suspend fun fcmSubscribe(@Body body: Map<String, String>): Map<String, Any>
+
+    @POST("api/fcm/unsubscribe")
+    suspend fun fcmUnsubscribe(@Body body: Map<String, String>): Map<String, Any>
 }
