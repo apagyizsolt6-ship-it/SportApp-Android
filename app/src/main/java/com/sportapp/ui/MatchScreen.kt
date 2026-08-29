@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -79,6 +80,71 @@ private fun isMatchLive(status: String?, minute: Int?): Boolean {
 
 /** 0..4 = TOP sorrend, null = nem TOP. */
 
+
+
+/** Kickoff millis, vagy null. */
+private fun matchKickoffMillis(match: MatchResponse): Long? {
+    val timeStr = match.kickoffTime?.trim()?.takeIf { it.contains(":") }
+        ?: match.status.trim().takeIf { it.contains(":") && it.length <= 5 }
+        ?: return null
+    val parts = timeStr.split(":")
+    if (parts.size < 2) return null
+    val hour = parts[0].toIntOrNull() ?: return null
+    val minute = parts[1].toIntOrNull() ?: return null
+    return try {
+        val cal = Calendar.getInstance()
+        val d = match.kickoffDate?.take(10)
+        if (d != null && d.length >= 10) {
+            cal.set(Calendar.YEAR, d.substring(0, 4).toInt())
+            cal.set(Calendar.MONTH, d.substring(5, 7).toInt() - 1)
+            cal.set(Calendar.DAY_OF_MONTH, d.substring(8, 10).toInt())
+        }
+        cal.set(Calendar.HOUR_OF_DAY, hour)
+        cal.set(Calendar.MINUTE, minute)
+        cal.set(Calendar.SECOND, 0)
+        cal.set(Calendar.MILLISECOND, 0)
+        cal.timeInMillis
+    } catch (_: Exception) {
+        null
+    }
+}
+
+private fun isStartingSoon(match: MatchResponse, withinMinutes: Int = 90): Boolean {
+    if (isMatchLive(match.status, match.minute) || isMatchFinished(match.status)) return false
+    val ko = matchKickoffMillis(match) ?: return false
+    val diff = ko - System.currentTimeMillis()
+    return diff in 0..(withinMinutes * 60_000L)
+}
+
+private fun matchesSmartSearch(match: MatchResponse, query: String): Boolean {
+    if (query.isBlank()) return true
+    val q = query.trim().lowercase()
+    val league = match.league.orEmpty().lowercase()
+    val home = match.homeTeam.lowercase()
+    val away = match.awayTeam.lowercase()
+    if (home.contains(q) || away.contains(q) || league.contains(q)) return true
+    val aliases = mapOf(
+        "pl" to listOf("premier league"),
+        "epl" to listOf("premier league"),
+        "laliga" to listOf("la liga", "laliga"),
+        "seriea" to listOf("serie a"),
+        "bundes" to listOf("bundesliga"),
+        "ligue1" to listOf("ligue 1"),
+        "fradi" to listOf("ferencvaros", "ferencváros", "ftc"),
+        "liv" to listOf("liverpool"),
+        "barca" to listOf("barcelona"),
+        "ucl" to listOf("champions league", "bajnokok"),
+        "uel" to listOf("europa league"),
+        "ecl" to listOf("conference league")
+    )
+    aliases[q]?.forEach { a ->
+        if (league.contains(a) || home.contains(a) || away.contains(a)) return true
+    }
+    if (q in listOf("elo", "élő", "live") && isMatchLive(match.status, match.minute)) return true
+    return false
+}
+
+enum class MatchSortMode { LEAGUE, TIME, LIVE_FIRST }
 
 /** 15 perccel a kickoff előtt értesítés. Siker: true. */
 private fun scheduleMatchReminder(context: android.content.Context, match: MatchResponse): Boolean {
@@ -358,6 +424,28 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
         favoritePrefs.edit().putBoolean("leagues_seeded_v2", true).apply()
     }
 
+    var onlyPinnedLeagues by remember { mutableStateOf(false) }
+    var compactMode by remember {
+        mutableStateOf(favoritePrefs.getBoolean("compact_mode", false))
+    }
+    var sortMode by remember {
+        mutableStateOf(
+            try {
+                MatchSortMode.valueOf(
+                    favoritePrefs.getString("sort_mode", "LEAGUE") ?: "LEAGUE"
+                )
+            } catch (_: Exception) {
+                MatchSortMode.LEAGUE
+            }
+        )
+    }
+    LaunchedEffect(compactMode) {
+        favoritePrefs.edit().putBoolean("compact_mode", compactMode).apply()
+    }
+    LaunchedEffect(sortMode) {
+        favoritePrefs.edit().putString("sort_mode", sortMode.name).apply()
+    }
+
     var selectedVideo by remember { mutableStateOf<HighlightVideo?>(null) }
     var selectedMatchForMedia by remember { mutableStateOf<MatchResponse?>(null) }
 
@@ -464,7 +552,15 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
     // akkor az adott liga mérkőzései elrejtésre kerülnek.
     //
     var collapsedLeagueNames by remember {
-        mutableStateOf(setOf<String>())
+        mutableStateOf(
+            favoritePrefs.getStringSet("collapsed_leagues", emptySet())?.toSet()
+                ?: emptySet()
+        )
+    }
+    LaunchedEffect(collapsedLeagueNames) {
+        favoritePrefs.edit()
+            .putStringSet("collapsed_leagues", collapsedLeagueNames)
+            .apply()
     }
 
     val selectedDateIso = remember(selectedDayOffset) { dateIsoWithOffset(selectedDayOffset) }
@@ -476,7 +572,8 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
         favoriteMatchIds,
         favoriteLeagueNames,
         selectedDateIso,
-        selectedDayOffset
+        selectedDayOffset,
+        onlyPinnedLeagues
     ) {
         matches.filter { match ->
             // Naptár: más napokon kickoff_date; MA = teljes feed (ne essen ki timezone / null miatt)
@@ -490,20 +587,8 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
             val isLeagueFav = favoriteLeagueNames.contains(leagueName)
             val isMatchFav = favoriteMatchIds.contains(match.id)
 
-            val matchesSearch =
-                searchQuery.isEmpty() ||
-                        match.homeTeam.contains(
-                            searchQuery,
-                            ignoreCase = true
-                        ) ||
-                        match.awayTeam.contains(
-                            searchQuery,
-                            ignoreCase = true
-                        ) ||
-                        leagueName.contains(
-                            searchQuery,
-                            ignoreCase = true
-                        )
+            if (onlyPinnedLeagues && !isLeagueFav) return@filter false
+            val matchesSearch = matchesSmartSearch(match, searchQuery)
 
             val matchesTab = when (selectedTab) {
 
@@ -550,40 +635,74 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
     // A TOP ligák fix sorrendben maradnak legelöl. Minden más liga
     // magyar ABC szerint követi őket. A kedvenc státusz nem írhatja
     // felül ezt a sorrendet.
+    val liveMatches = remember(filteredMatches) {
+        filteredMatches.filter { isMatchLive(it.status, it.minute) }
+    }
+    val soonMatches = remember(filteredMatches) {
+        filteredMatches.filter { isStartingSoon(it, 90) }
+            .sortedBy { matchKickoffMillis(it) ?: Long.MAX_VALUE }
+            .take(12)
+    }
+    val spotlightMatches = remember(filteredMatches, favoriteLeagueNames) {
+        filteredMatches
+            .filter {
+                favoriteLeagueNames.contains(it.league ?: "") ||
+                    topFiveRank(it.league, it.countryCode) != null
+            }
+            .sortedWith(
+                compareByDescending<MatchResponse> { isMatchLive(it.status, it.minute) }
+                    .thenBy { matchKickoffMillis(it) ?: Long.MAX_VALUE }
+            )
+            .take(3)
+    }
+
     val groupedMatchesList = remember(
         filteredMatches,
         favoriteLeagueNames,
-        hungarianCollator
+        hungarianCollator,
+        sortMode
     ) {
-        val groups = filteredMatches.groupBy {
-            it.league ?: "EGYÉB BAJNOKSÁG"
+        when (sortMode) {
+            MatchSortMode.TIME -> {
+                val sorted = filteredMatches.sortedBy {
+                    matchKickoffMillis(it) ?: Long.MAX_VALUE
+                }
+                listOf("IDŐREND" to sorted)
+            }
+            MatchSortMode.LIVE_FIRST -> {
+                val sorted = filteredMatches.sortedWith(
+                    compareByDescending<MatchResponse> { isMatchLive(it.status, it.minute) }
+                        .thenBy { matchKickoffMillis(it) ?: Long.MAX_VALUE }
+                )
+                listOf("ÉLŐ / IDŐREND" to sorted)
+            }
+            MatchSortMode.LEAGUE -> {
+                val groups = filteredMatches.groupBy {
+                    it.league ?: "EGYÉB BAJNOKSÁG"
+                }
+                groups.entries.sortedWith(Comparator { a, b ->
+                    val aName = a.key.trim()
+                    val bName = b.key.trim()
+                    val aFav = favoriteLeagueNames.contains(aName)
+                    val bFav = favoriteLeagueNames.contains(bName)
+                    when {
+                        aFav && !bFav -> return@Comparator -1
+                        !aFav && bFav -> return@Comparator 1
+                    }
+                    val aCountry = a.value.firstOrNull()?.countryCode
+                    val bCountry = b.value.firstOrNull()?.countryCode
+                    val aRank = topFiveRank(aName, aCountry)
+                    val bRank = topFiveRank(bName, bCountry)
+                    when {
+                        aFav && bFav && aRank != null && bRank != null -> aRank.compareTo(bRank)
+                        aFav && bFav && aRank != null -> -1
+                        aFav && bFav && bRank != null -> 1
+                        aFav && bFav -> hungarianCollator.compare(aName, bName)
+                        else -> hungarianCollator.compare(aName, bName)
+                    }
+                }).map { it.toPair() }
+            }
         }
-
-        groups.entries.sortedWith(Comparator { a, b ->
-            val aName = a.key.trim()
-            val bName = b.key.trim()
-
-            val aFav = favoriteLeagueNames.contains(aName)
-            val bFav = favoriteLeagueNames.contains(bName)
-
-            when {
-                aFav && !bFav -> return@Comparator -1
-                !aFav && bFav -> return@Comparator 1
-            }
-
-            val aCountry = a.value.firstOrNull()?.countryCode
-            val bCountry = b.value.firstOrNull()?.countryCode
-            val aRank = topFiveRank(aName, aCountry)
-            val bRank = topFiveRank(bName, bCountry)
-
-            when {
-                aFav && bFav && aRank != null && bRank != null -> aRank.compareTo(bRank)
-                aFav && bFav && aRank != null -> -1
-                aFav && bFav && bRank != null -> 1
-                aFav && bFav -> hungarianCollator.compare(aName, bName)
-                else -> hungarianCollator.compare(aName, bName)
-            }
-        })
     }
 
     // ============================================================
@@ -809,6 +928,78 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                     }
                 }
             }
+
+            // Eszközsáv
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                FilterChip(
+                    selected = onlyPinnedLeagues,
+                    onClick = { onlyPinnedLeagues = !onlyPinnedLeagues },
+                    label = { Text("★ Kiemelt", fontSize = 11.sp) }
+                )
+                FilterChip(
+                    selected = sortMode != MatchSortMode.LEAGUE,
+                    onClick = {
+                        sortMode = when (sortMode) {
+                            MatchSortMode.LEAGUE -> MatchSortMode.LIVE_FIRST
+                            MatchSortMode.LIVE_FIRST -> MatchSortMode.TIME
+                            MatchSortMode.TIME -> MatchSortMode.LEAGUE
+                        }
+                    },
+                    label = {
+                        Text(
+                            when (sortMode) {
+                                MatchSortMode.LEAGUE -> "Sorrend: liga"
+                                MatchSortMode.LIVE_FIRST -> "Sorrend: élő"
+                                MatchSortMode.TIME -> "Sorrend: idő"
+                            },
+                            fontSize = 11.sp
+                        )
+                    }
+                )
+                FilterChip(
+                    selected = compactMode,
+                    onClick = { compactMode = !compactMode },
+                    label = { Text(if (compactMode) "Kompakt" else "Normál", fontSize = 11.sp) }
+                )
+            }
+
+            // Élő ticker
+            if (liveMatches.isNotEmpty() && selectedTab != 3) {
+                LazyRow(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                    contentPadding = PaddingValues(horizontal = 10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(liveMatches.size) { i ->
+                        val lm = liveMatches[i]
+                        Row(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(20.dp))
+                                .background(Color(0x3300E5A8))
+                                .border(1.dp, primaryGreen.copy(alpha = 0.45f), RoundedCornerShape(20.dp))
+                                .clickable { selectedMatchForDetail = lm }
+                                .padding(horizontal = 12.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("● ", color = primaryGreen, fontSize = 10.sp)
+                            Text(
+                                text = "${lm.homeTeam.take(12)} ${lm.homeScore ?: 0}–${lm.awayScore ?: 0} ${lm.awayTeam.take(12)}",
+                                color = textColor,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1
+                            )
+                        }
+                    }
+                }
+            }
+
 
             // ====================================================
             // SZŰRŐ FÜLEK
@@ -1041,11 +1232,115 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                     }
                 )
 
+            } else if (filteredMatches.isEmpty() && !isLoading) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(32.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    Text("Nincs megjeleníthető meccs", color = textColor, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "Próbáld másik napot, töröld a szűrőt, vagy húzd le a frissítést.",
+                        color = subTextColor,
+                        fontSize = 13.sp,
+                        textAlign = TextAlign.Center
+                    )
+                    Spacer(Modifier.height(16.dp))
+                    Button(
+                        onClick = { viewModel.fetchMatches(showLoading = true) },
+                        colors = ButtonDefaults.buttonColors(containerColor = primaryGreen)
+                    ) {
+                        Text("Frissítés", color = Color.Black)
+                    }
+                }
             } else {
 
                 LazyColumn(
                     modifier = Modifier.fillMaxSize()
                 ) {
+                    // Spotlight
+                    if (spotlightMatches.isNotEmpty() && selectedTab == 0 && searchQuery.isEmpty() && !onlyPinnedLeagues) {
+                        item {
+                            Text(
+                                "⭐ Mai spotlight",
+                                color = primaryGreen,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
+                            )
+                        }
+                        items(spotlightMatches, key = { "sp-${it.id}" }) { match ->
+                            PremiumMatchRow(
+                                match = match,
+                                isFavorite = favoriteMatchIds.contains(match.id),
+                                isReminderSet = reminderMatchIds.contains(match.id),
+                                cardBgColor = cardBgColor,
+                                textColor = textColor,
+                                subTextColor = subTextColor,
+                                primaryGreen = primaryGreen,
+                                compact = compactMode,
+                                onFavoriteToggle = {
+                                    favoriteMatchIds =
+                                        if (favoriteMatchIds.contains(match.id))
+                                            favoriteMatchIds - match.id
+                                        else
+                                            favoriteMatchIds + match.id
+                                },
+                                onVideoClick = { },
+                                onAiClick = { },
+                                onMatchClick = { selectedMatchForDetail = it },
+                                onReminderClick = { },
+                                onShareClick = {
+                                    val score = "${match.homeScore ?: 0}–${match.awayScore ?: 0}"
+                                    val body = "${match.homeTeam} $score ${match.awayTeam}\n${match.league.orEmpty()}"
+                                    val intent = Intent(Intent.ACTION_SEND).apply {
+                                        type = "text/plain"
+                                        putExtra(Intent.EXTRA_TEXT, body)
+                                    }
+                                    context.startActivity(Intent.createChooser(intent, "Megosztás"))
+                                }
+                            )
+                        }
+                    }
+                    // Hamarosan
+                    if (soonMatches.isNotEmpty() && selectedTab == 0) {
+                        item {
+                            Text(
+                                "⏰ Hamarosan kezdődik",
+                                color = Color(0xFFFFD54F),
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
+                            )
+                        }
+                        items(soonMatches.take(6), key = { "soon-${it.id}" }) { match ->
+                            PremiumMatchRow(
+                                match = match,
+                                isFavorite = favoriteMatchIds.contains(match.id),
+                                isReminderSet = reminderMatchIds.contains(match.id),
+                                cardBgColor = cardBgColor,
+                                textColor = textColor,
+                                subTextColor = subTextColor,
+                                primaryGreen = primaryGreen,
+                                compact = compactMode,
+                                onFavoriteToggle = {
+                                    favoriteMatchIds =
+                                        if (favoriteMatchIds.contains(match.id))
+                                            favoriteMatchIds - match.id
+                                        else
+                                            favoriteMatchIds + match.id
+                                },
+                                onVideoClick = { },
+                                onAiClick = { },
+                                onMatchClick = { selectedMatchForDetail = it },
+                                onReminderClick = { },
+                                onShareClick = { }
+                            )
+                        }
+                    }
 
                     groupedMatchesList.forEach {
                             (leagueName, leagueMatches) ->
@@ -2047,29 +2342,51 @@ fun PremiumMatchRow(
     textColor: Color,
     subTextColor: Color,
     primaryGreen: Color,
+    compact: Boolean = false,
     onFavoriteToggle: () -> Unit,
     onVideoClick: (MatchResponse) -> Unit,
     onAiClick: (MatchResponse) -> Unit,
     onMatchClick: (MatchResponse) -> Unit = {},
-    onReminderClick: (MatchResponse) -> Unit = {}
+    onReminderClick: (MatchResponse) -> Unit = {},
+    onShareClick: () -> Unit = {}
 ) {
+    val isLive = isMatchLive(match.status, match.minute)
+    val isFinished = isMatchFinished(match.status)
+    val statusBarColor = when {
+        isLive -> primaryGreen
+        match.status == "HT" -> Color(0xFFFFD54F)
+        isFinished -> Color(0xFF6B7C8F)
+        else -> Color(0xFF4DA3FF)
+    }
+    val vPad = if (compact) 6.dp else 10.dp
 
+    Column(modifier = Modifier.fillMaxWidth()) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 8.dp, vertical = 3.dp)
+            .padding(horizontal = 8.dp, vertical = if (compact) 2.dp else 3.dp)
             .clip(RoundedCornerShape(14.dp))
             .background(cardBgColor)
             .border(1.dp, Color(0x28A0C4FF), RoundedCornerShape(14.dp))
             .clickable { onMatchClick(match) }
             .padding(
                 horizontal = 12.dp,
-                vertical = 10.dp
+                vertical = vPad
             ),
 
         verticalAlignment =
             Alignment.CenterVertically
     ) {
+        // Státusz sáv
+        Box(
+            modifier = Modifier
+                .width(3.dp)
+                .height(if (compact) 28.dp else 36.dp)
+                .clip(RoundedCornerShape(2.dp))
+                .background(statusBarColor)
+        )
+        Spacer(Modifier.width(8.dp))
+
 
         // ============================================================
         // MECCS KEDVENC
@@ -2334,8 +2651,49 @@ fun PremiumMatchRow(
                     fontSize = 12.sp
                 )
             }
+
+            // Megosztás
+            Box(
+                modifier = Modifier
+                    .size(30.dp)
+                    .clip(CircleShape)
+                    .background(Color(0xFF546E7A))
+                    .clickable { onShareClick() },
+                contentAlignment = Alignment.Center
+            ) {
+                Text(text = "↗", color = Color.White, fontSize = 12.sp)
+            }
         }
     }
+
+    // Odds sor (ha van)
+    if (match.oddsHome != null || match.oddsDraw != null || match.oddsAway != null) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 48.dp, end = 12.dp, bottom = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            listOf(
+                "1" to match.oddsHome,
+                "X" to match.oddsDraw,
+                "2" to match.oddsAway
+            ).forEach { (label, v) ->
+                if (v != null) {
+                    Text(
+                        text = "$label ${"%.2f".format(v)}",
+                        color = subTextColor,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+            }
+            if (match.isValueBet == true) {
+                Text("ÉRTÉKES", color = Color(0xFFFFD54F), fontSize = 10.sp, fontWeight = FontWeight.Bold)
+            }
+        }
+    }
+    } // Column
 }
 
 // ================================================================
