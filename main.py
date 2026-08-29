@@ -11,7 +11,7 @@ app = FastAPI()
 STATPAL_KEY = os.getenv("STATPAL_KEY")
 HIGHLIGHTLY_KEY = os.getenv("HIGHLIGHTLY_KEY")
 
-STATPAL_CACHE_TTL = 20
+STATPAL_CACHE_TTL = 30
 HIGHLIGHTLY_CACHE_TTL = 90
 TEAM_IMAGE_CACHE_TTL = 21600
 IMAGE_PROXY_BASE_URL = os.getenv(
@@ -1281,6 +1281,7 @@ def _team_image_url(team_id):
 
 
 def fetch_statpal_matches():
+    """StatPal today/live – stale cache ha a hálózat timeoutol."""
     now = time.time()
 
     if (
@@ -1290,36 +1291,28 @@ def fetch_statpal_matches():
         return _statpal_cache["data"]
 
     headers = {"Accept": "application/json"}
+    last_err = None
 
-    url = (
-        "https://statpal.io/api/v2/soccer/matches/today"
-        f"?access_key={STATPAL_KEY}"
-    )
+    for path in ("matches/today", "matches/live"):
+        try:
+            url = f"https://statpal.io/api/v2/soccer/{path}?access_key={STATPAL_KEY}"
+            response = requests.get(url, headers=headers, timeout=25)
+            if response.status_code != 200:
+                last_err = f"HTTP {response.status_code}"
+                continue
+            data = response.json()
+            _statpal_cache["data"] = data
+            _statpal_cache["ts"] = now
+            return data
+        except Exception as e:
+            last_err = e
+            continue
 
-    response = requests.get(
-        url,
-        headers=headers,
-        timeout=10
-    )
+    # Stale cache (akár 10 percig) – jobb mint üres / hiba kártya
+    if _statpal_cache["data"] is not None and (now - _statpal_cache["ts"]) < 600:
+        return _statpal_cache["data"]
 
-    if response.status_code != 200:
-        url = (
-            "https://statpal.io/api/v2/soccer/matches/live"
-            f"?access_key={STATPAL_KEY}"
-        )
-
-        response = requests.get(
-            url,
-            headers=headers,
-            timeout=10
-        )
-
-    data = response.json()
-
-    _statpal_cache["data"] = data
-    _statpal_cache["ts"] = now
-
-    return data
+    raise RuntimeError(f"StatPal unreachable: {last_err}")
 
 
 def fetch_highlightly_highlights():
@@ -1357,7 +1350,7 @@ def fetch_highlightly_highlights():
         # A dokumentációban a limit akár 100 is lehet.
         # Több oldalt töltünk le, hogy a mai meccsek nagyobb eséllyel
         # bekerüljenek a listába.
-        for offset in (0, 40, 80, 120):
+        for offset in (0, 40, 80):
 
             resp = requests.get(
                 base_url,
@@ -1367,7 +1360,7 @@ def fetch_highlightly_highlights():
                     "limit": 40,
                     "offset": offset
                 },
-                timeout=8
+                timeout=6
             )
 
             if resp.status_code != 200:
@@ -1672,9 +1665,13 @@ def get_matches():
             live_matches_data.get("league")
         )
 
-        # A Highlightly lista egyszer töltődik le,
-        # utána ebből párosítjuk a meccseket.
-        highlights_data = fetch_highlightly_highlights()
+        # Highlightly opcionális – timeout ne dobja el a teljes mai listát
+        try:
+            highlights_data = fetch_highlightly_highlights()
+        except Exception:
+            highlights_data = []
+        if not isinstance(highlights_data, list):
+            highlights_data = []
 
         for league in leagues:
 
@@ -2156,17 +2153,32 @@ def get_matches():
         return matches_list
 
     except Exception as e:
-
+        # Utolsó esély: Highlightly mai meccsek (ne "API Hiba" kártya)
+        try:
+            today = datetime.now().strftime("%Y-%m-%d")
+            hl_raw = fetch_highlightly_matches_by_date(today, limit=100)
+            result = []
+            for m in hl_raw:
+                item = _normalize_hl_match_item(m)
+                if item.get("id"):
+                    result.append(item)
+            if result:
+                return result
+        except Exception:
+            pass
+        # Stale full list ha valaha volt sikeres get_matches cache – nincs;
+        # minimum üres lista helyett informatív hiba
         return [{
             "id": "err",
             "league_id": "0",
             "league": "Szerver hiba",
-            "home_team": "API Hiba",
-            "away_team": str(e)[:20],
+            "home_team": "API átmenetileg",
+            "away_team": "nem elérhető",
             "home_score": None,
             "away_score": None,
             "status": "error",
-            "minute": 0
+            "minute": 0,
+            "kickoff_date": datetime.now().strftime("%Y-%m-%d"),
         }]
 
 
