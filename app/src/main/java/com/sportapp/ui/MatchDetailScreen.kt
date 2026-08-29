@@ -17,8 +17,17 @@ import androidx.compose.foundation.rememberScrollState
 
 import android.content.Intent
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -82,6 +91,7 @@ fun MatchDetailDialog(
     val glassBorder = if (isDarkMode) Color(0x33A0C4FF) else Color(0x55FFFFFF)
 
     var selectedTab by remember { mutableIntStateOf(0) }
+    var previousTab by remember { mutableIntStateOf(0) }
     val tabs = listOf("Összefoglaló", "Események", "Statisztika", "Összeállítás", "Videók", "Tabella")
 
     var detail by remember { mutableStateOf(match) }
@@ -412,6 +422,7 @@ fun MatchDetailDialog(
                         Tab(
                             selected = selectedTab == index,
                             onClick = {
+                                previousTab = selectedTab
                                 selectedTab = index
                                 loadTab(index)
                             },
@@ -446,7 +457,50 @@ fun MatchDetailDialog(
                     )
                 }
 
-                when (selectedTab) {
+                AnimatedContent(
+                    targetState = selectedTab,
+                    transitionSpec = {
+                        val forward = targetState >= initialState
+                        val slideIn = if (forward) {
+                            slideInHorizontally(
+                                animationSpec = spring(
+                                    dampingRatio = Spring.DampingRatioNoBouncy,
+                                    stiffness = Spring.StiffnessMediumLow
+                                ),
+                                initialOffsetX = { it / 6 }
+                            )
+                        } else {
+                            slideInHorizontally(
+                                animationSpec = spring(
+                                    dampingRatio = Spring.DampingRatioNoBouncy,
+                                    stiffness = Spring.StiffnessMediumLow
+                                ),
+                                initialOffsetX = { -it / 6 }
+                            )
+                        }
+                        val slideOut = if (forward) {
+                            slideOutHorizontally(
+                                animationSpec = spring(
+                                    dampingRatio = Spring.DampingRatioNoBouncy,
+                                    stiffness = Spring.StiffnessMediumLow
+                                ),
+                                targetOffsetX = { -it / 6 }
+                            )
+                        } else {
+                            slideOutHorizontally(
+                                animationSpec = spring(
+                                    dampingRatio = Spring.DampingRatioNoBouncy,
+                                    stiffness = Spring.StiffnessMediumLow
+                                ),
+                                targetOffsetX = { it / 6 }
+                            )
+                        }
+                        (slideIn + fadeIn(animationSpec = tween(200))) togetherWith
+                            (slideOut + fadeOut(animationSpec = tween(160)))
+                    },
+                    label = "detailTab"
+                ) { tab ->
+                when (tab) {
                     0 -> SummaryTab(
                         match = detail,
                         events = events,
@@ -487,6 +541,7 @@ fun MatchDetailDialog(
                         awayTeam = match.awayTeam,
                         accent = accent
                     )
+                }
                 }
             }
             } // Box (gradiens + tartalom)
@@ -1298,8 +1353,16 @@ private fun StatsTab(
                     if (h != null && a != null && h + a > 0) {
                         Spacer(Modifier.height(6.dp))
                         val ratio = (h / (h + a)).coerceIn(0f, 1f)
+                        val animatedRatio by animateFloatAsState(
+                            targetValue = ratio,
+                            animationSpec = spring(
+                                dampingRatio = Spring.DampingRatioNoBouncy,
+                                stiffness = Spring.StiffnessLow
+                            ),
+                            label = "statBar"
+                        )
                         LinearProgressIndicator(
-                            progress = ratio,
+                            progress = animatedRatio,
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(6.dp)
@@ -1393,7 +1456,10 @@ private fun PitchLineupCard(
                 val badgeAnim = remember(animKey) { Animatable(0f) }
                 LaunchedEffect(animKey) {
                     badgeAnim.snapTo(0f)
-                    badgeAnim.animateTo(1f, tween(500, easing = FastOutSlowInEasing))
+                    badgeAnim.animateTo(
+                        1f,
+                        spring(dampingRatio = 0.65f, stiffness = 320f)
+                    )
                 }
                 Text(
                     text = formation,
@@ -1497,12 +1563,13 @@ private fun PitchLineupCard(
                     val appear = remember(animKey, index) { Animatable(0f) }
                     LaunchedEffect(animKey, index) {
                         appear.snapTo(0f)
-                        kotlinx.coroutines.delay(index * 55L + 80L)
+                        // Kapus → csatár hullám; enyhe késleltetés
+                        kotlinx.coroutines.delay(index * 48L + 60L)
                         appear.animateTo(
                             1f,
-                            animationSpec = tween(
-                                durationMillis = 420,
-                                easing = FastOutSlowInEasing
+                            animationSpec = spring(
+                                dampingRatio = 0.72f, // kis overshoot
+                                stiffness = 380f
                             )
                         )
                     }
@@ -1516,10 +1583,11 @@ private fun PitchLineupCard(
                             )
                             .width(chipW)
                             .graphicsLayer {
-                                alpha = a
-                                scaleX = 0.55f + 0.45f * a
-                                scaleY = 0.55f + 0.45f * a
-                                translationY = (1f - a) * 28f
+                                alpha = a.coerceIn(0f, 1f)
+                                val s = 0.72f + 0.28f * a
+                                scaleX = s
+                                scaleY = s
+                                translationY = (1f - a) * 22f
                             }
                     ) {
                         // Mez + árnyék
