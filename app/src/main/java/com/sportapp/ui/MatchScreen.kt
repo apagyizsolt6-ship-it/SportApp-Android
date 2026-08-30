@@ -2143,9 +2143,10 @@ if (spotlightMatches.isNotEmpty() && selectedTab == 0 && searchQuery.isEmpty() &
                         text = aiAnalysis ?: "Nincs elérhető elemzés.",
                         color = textColor,
                         fontSize = 13.sp,
-                        lineHeight = 18.sp,
+                        lineHeight = 20.sp,
                         modifier = Modifier
-                            .heightIn(max = 360.dp)
+                            .fillMaxWidth()
+                            .heightIn(min = 120.dp, max = 520.dp)
                             .verticalScroll(aiScroll)
                     )
                 }
