@@ -1274,6 +1274,83 @@ private fun OddsRow(
     val a = oddsAway ?: match.oddsAway
     if (h == null && d == null && a == null && oddsMarkets.isEmpty()) return
 
+    data class MarketLine(
+        val marketKey: String,
+        val marketTitle: String,
+        val bookmaker: String,
+        val values: List<Pair<String, Double>>
+    )
+
+    fun marketCategory(name: String): Pair<Int, String> {
+        val n = name.lowercase()
+        return when {
+            listOf("full time", "1x2", "match winner", "match result", "match odds", "ft result")
+                .any { it in n } -> 0 to "1X2 – Végeredmény"
+            "both teams" in n || "btts" in n || "gg" in n -> 1 to "Mindkét csapat gól (BTTS)"
+            "double chance" in n -> 2 to "Kettős esély"
+            "asian handicap" in n || n.startsWith("handicap") -> 3 to "Ázsiai handicap"
+            "corner" in n -> 4 to "Szögletek"
+            any(x in n for x in listOf("card", "booking", "yellow", "red card", "total cards")) ->
+                5 to "Lapok (sárga/piros)"
+            "total goals" in n || "over/under" in n || ("total" in n && ("goal" in n || "over" in n || "under" in n) && "corner" !in n && "card" !in n) ->
+                6 to "Gólszám (Over/Under)"
+            "correct score" in n || "exact score" in n -> 7 to "Pontos eredmény"
+            "draw no bet" in n -> 8 to "Döntetlennél visszajár"
+            "first half" in n || "1st half" in n -> 9 to "1. félidő"
+            "second half" in n || "2nd half" in n -> 10 to "2. félidő"
+            else -> 11 to "Egyéb piacok"
+        }
+    }
+
+    fun parseValues(valuesRaw: Any?): List<Pair<String, Double>> {
+        if (valuesRaw !is List<*>) return emptyList()
+        return valuesRaw.mapNotNull { v ->
+            if (v !is Map<*, *>) return@mapNotNull null
+            val lab = (v["label"] ?: v["value"] ?: v["name"])?.toString() ?: return@mapNotNull null
+            val odd = when (val o = v["odd"] ?: v["price"]) {
+                is Number -> o.toDouble()
+                is String -> o.toDoubleOrNull()
+                else -> null
+            } ?: return@mapNotNull null
+            lab to odd
+        }
+    }
+
+    fun huLabel(lab: String): String {
+        val l = lab.trim().lowercase()
+        return when (l) {
+            "home", "1" -> "1"
+            "draw", "x" -> "X"
+            "away", "2" -> "2"
+            "over" -> "Over"
+            "under" -> "Under"
+            "yes" -> "Igen"
+            "no" -> "Nem"
+            else -> lab.take(20)
+        }
+    }
+
+    val lines = oddsMarkets.mapNotNull { market ->
+        val marketName = market["market"]?.toString().orEmpty()
+        if (marketName.isBlank()) return@mapNotNull null
+        val bookie = market["bookmaker"]?.toString().orEmpty()
+        val values = parseValues(market["values"])
+        if (values.isEmpty()) return@mapNotNull null
+        val (cat, title) = marketCategory(marketName)
+        // kulcs: kategória + eredeti market név (pl. Total Goals 2.5)
+        MarketLine(
+            marketKey = "$cat|$marketName",
+            marketTitle = marketName,
+            bookmaker = bookie,
+            values = values
+        )
+    }
+
+    // Csoport: kategória cím -> (marketTitle -> legjobb values + bookmaker lista)
+    val grouped = lines.groupBy { marketCategory(it.marketTitle).second }
+
+    var expandedCategory by remember { mutableStateOf<String?>(null) }
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -1287,20 +1364,15 @@ private fun OddsRow(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            val src = when {
-                oddsSource == "highlightly" -> " · HL"
-                oddsSource == "statpal" -> " · SP"
-                else -> ""
-            }
-            Text("Szorzók$src", color = sub, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+            Text("Szorzók (prematch)", color = sub, fontSize = 12.sp, fontWeight = FontWeight.Medium)
             if (match.isValueBet == true) {
                 Text("ÉRTÉKES", color = Color(0xFFFFD54F), fontSize = 11.sp, fontWeight = FontWeight.Bold)
             }
         }
 
-        // 1X2 kiemelve
+        // Kiemelt 1X2
         if (h != null || d != null || a != null) {
-            Text("1X2 (végeredmény)", color = text, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+            Text("1X2 – Végeredmény", color = text, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OddsChip("1", h, text, green, Modifier.weight(1f))
                 OddsChip("X", d, text, green, Modifier.weight(1f))
@@ -1308,62 +1380,133 @@ private fun OddsRow(
             }
         }
 
-        // Összes többi piac
-        oddsMarkets.forEach { market ->
-            val marketName = market["market"]?.toString().orEmpty()
-            if (marketName.isBlank()) return@forEach
-            val low = marketName.lowercase()
-            // 1X2 már fent – ne ismételjük, ha ugyanaz
-            val is1x2 = listOf("full time", "1x2", "match winner", "match result", "ft result")
-                .any { it in low }
-            if (is1x2 && (h != null || d != null || a != null)) return@forEach
+        val categoryOrder = listOf(
+            "1X2 – Végeredmény",
+            "Mindkét csapat gól (BTTS)",
+            "Kettős esély",
+            "Gólszám (Over/Under)",
+            "Ázsiai handicap",
+            "Szögletek",
+            "Lapok (sárga/piros)",
+            "Döntetlennél visszajár",
+            "1. félidő",
+            "2. félidő",
+            "Pontos eredmény",
+            "Egyéb piacok"
+        )
 
-            val bookie = market["bookmaker"]?.toString().orEmpty()
-            val valuesRaw = market["values"]
-            val values: List<Pair<String, Double>> = when (valuesRaw) {
-                is List<*> -> valuesRaw.mapNotNull { v ->
-                    if (v is Map<*, *>) {
-                        val lab = v["label"]?.toString() ?: return@mapNotNull null
-                        val odd = when (val o = v["odd"]) {
-                            is Number -> o.toDouble()
-                            is String -> o.toDoubleOrNull()
-                            else -> null
-                        } ?: return@mapNotNull null
-                        lab to odd
-                    } else null
-                }
-                else -> emptyList()
+        categoryOrder.forEach { catTitle ->
+            val catLines = grouped[catTitle] ?: return@forEach
+            // 1X2 kategóriát ne ismételjük, ha már van kiemelt
+            if (catTitle.startsWith("1X2") && (h != null || d != null || a != null)) {
+                // csak „további irodák” összecsukva
             }
-            if (values.isEmpty()) return@forEach
 
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            // marketTitle szerint alcsoport (pl. Total Goals 2.5)
+            val byMarket = catLines.groupBy { it.marketTitle }
+
+            val isExpanded = expandedCategory == catTitle
+            val showFull = catTitle != "Pontos eredmény" // pontos eredmény mindig összecsukva alapból
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(Color(0xFF152238))
+                    .clickable {
+                        expandedCategory = if (isExpanded) null else catTitle
+                    }
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 Text(
-                    text = if (bookie.isNotBlank()) "$marketName · $bookie" else marketName,
+                    text = "$catTitle (${byMarket.size})",
                     color = text,
                     fontSize = 12.sp,
                     fontWeight = FontWeight.SemiBold
                 )
-                // sorokba tördelve max 3 chip / sor
-                values.chunked(3).forEach { row ->
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        row.forEach { (lab, odd) ->
-                            OddsChip(
-                                label = lab.take(18),
-                                value = odd,
-                                text = text,
-                                green = green,
-                                modifier = Modifier.weight(1f)
-                            )
+                Text(
+                    text = if (isExpanded) "▲" else "▼",
+                    color = sub,
+                    fontSize = 11.sp
+                )
+            }
+
+            if (isExpanded || (showFull && catTitle != "Pontos eredmény" && expandedCategory == null && catTitle in listOf("Gólszám (Over/Under)", "Mindkét csapat gól (BTTS)", "Kettős esély"))) {
+                // Alapból mutassuk a legfontosabbakat kinyitva, ha semmi nincs expandálva
+                val autoOpen = expandedCategory == null && catTitle in listOf(
+                    "Gólszám (Over/Under)",
+                    "Mindkét csapat gól (BTTS)",
+                    "Kettős esély"
+                )
+                if (!isExpanded && !autoOpen) return@forEach
+
+                byMarket.entries
+                    .sortedBy { it.key }
+                    .take(if (catTitle == "Pontos eredmény") 12 else 30)
+                    .forEach { (marketTitle, bookLines) ->
+                        // Legjobb odd / kimenet: max odd per label (value bet style) – vagy min odd?
+                        // Fogadásnál a magasabb odd jobb a játékosnak
+                        val bestByLabel = linkedMapOf<String, Pair<Double, String>>()
+                        bookLines.forEach { line ->
+                            line.values.forEach { (lab, odd) ->
+                                val key = huLabel(lab)
+                                val prev = bestByLabel[key]
+                                if (prev == null || odd > prev.first) {
+                                    bestByLabel[key] = odd to line.bookmaker
+                                }
+                            }
                         }
-                        // kitöltés ha < 3
-                        repeat(3 - row.size) {
-                            Spacer(modifier = Modifier.weight(1f))
+                        if (bestByLabel.isEmpty()) return@forEach
+
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(
+                                text = marketTitle,
+                                color = sub,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                            val entries = bestByLabel.entries.toList()
+                            entries.chunked(3).forEach { row ->
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    row.forEach { (lab, pair) ->
+                                        val (odd, bookie) = pair
+                                        Column(
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .background(Color(0xFF1A2D4D))
+                                                .padding(vertical = 6.dp, horizontal = 4.dp),
+                                            horizontalAlignment = Alignment.CenterHorizontally
+                                        ) {
+                                            Text(lab, color = green, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                            Text(
+                                                String.format("%.2f", odd),
+                                                color = text,
+                                                fontSize = 13.sp,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                            if (bookie.isNotBlank()) {
+                                                Text(
+                                                    bookie.take(12),
+                                                    color = sub,
+                                                    fontSize = 9.sp,
+                                                    maxLines = 1
+                                                )
+                                            }
+                                        }
+                                    }
+                                    repeat(3 - row.size) {
+                                        Spacer(modifier = Modifier.weight(1f))
+                                    }
+                                }
+                            }
                         }
                     }
-                }
             }
         }
     }
