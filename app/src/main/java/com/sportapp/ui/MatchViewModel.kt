@@ -118,9 +118,15 @@ class MatchViewModel : ViewModel() {
             _aiAnalysis.value = null
             try {
                 val r = RetrofitInstance.api.getAiAnalysis(matchId)
-                val text = try {
+                // AiAnalysisResponse.analysis – elsődleges
+                val direct = try {
+                    r.analysis.takeIf { it.isNotBlank() }
+                } catch (_: Exception) {
+                    null
+                }
+                val text = direct ?: try {
                     val clazz = r.javaClass
-                    listOf("summary", "analysis", "text", "message", "content")
+                    listOf("analysis", "summary", "text", "message", "content")
                         .mapNotNull { name ->
                             try {
                                 val f = clazz.declaredFields.find { it.name == name }
@@ -135,9 +141,10 @@ class MatchViewModel : ViewModel() {
                 } catch (_: Exception) {
                     null
                 }
-                _aiAnalysis.value = text ?: "AI válasz érkezett."
+                _aiAnalysis.value = text ?: "AI válasz üres."
             } catch (e: Exception) {
-                _aiAnalysis.value = "AI elemzés jelenleg nem elérhető."
+                e.printStackTrace()
+                _aiAnalysis.value = "AI elemzés jelenleg nem elérhető. (${e.message ?: "hiba"})"
             } finally {
                 _isLoadingAi.value = false
             }
