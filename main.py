@@ -387,8 +387,11 @@ def _find_statpal_raw_match(match_id: str):
     return None, None
 
 
-def _highlightly_headers():
-    return {"x-rapidapi-key": HIGHLIGHTLY_KEY}
+def _highlightly_headers(rapidapi_host: bool = False):
+    h = {"x-rapidapi-key": HIGHLIGHTLY_KEY}
+    if rapidapi_host:
+        h["x-rapidapi-host"] = "football-highlights-api.p.rapidapi.com"
+    return h
 
 
 def _normalize_date_str(raw) -> str:
@@ -658,6 +661,7 @@ def _normalize_hl_match_item(m: dict) -> dict:
 
 
 _odds_cache = {}  # key -> {ts, data, odds_type}
+_odds_last_meta = {}
 
 
 def _odds_cache_ttl(odds_type: str, status: str = None, kickoff_date: str = None, kickoff_time: str = None) -> int:
@@ -683,59 +687,147 @@ def _odds_cache_ttl(odds_type: str, status: str = None, kickoff_date: str = None
     return 7 * 3600  # ~7 óra prematch
 
 
+def _label_to_1x2(label: str):
+    lab = (label or "").strip().lower()
+    if lab in ("home", "1", "hazai", "h", "team1", "home team"):
+        return "h"
+    if lab in ("draw", "x", "döntetlen", "dontetlen", "tie", "d"):
+        return "d"
+    if lab in ("away", "2", "vendég", "vendeg", "a", "team2", "away team"):
+        return "a"
+    # "Home (Chelsea)" stb.
+    if lab.startswith("home"):
+        return "h"
+    if lab.startswith("away"):
+        return "a"
+    if lab.startswith("draw"):
+        return "d"
+    return None
+
+
+def _is_1x2_market(market: str) -> bool:
+    m = (market or "").lower()
+    if not m:
+        return True  # próbáljuk
+    keys = (
+        "full time", "fulltime", "1x2", "1 x 2", "match winner", "match result",
+        "ft result", "ft result", "home/away", "home - away", "3-way", "three way",
+        "match odds", "winner", "result",
+    )
+    return any(k in m for k in keys)
+
+
 def _parse_hl_1x2(odds_list) -> tuple:
-    """Highlightly odds lista → (home, draw, away) Full Time Result."""
+    """Highlightly odds lista → (home, draw, away). Nagyon megengedő parse."""
     if not isinstance(odds_list, list):
         return None, None, None
     best = (None, None, None)
+
+    def consider(h, d, a):
+        nonlocal best
+        if h is not None and d is not None and a is not None:
+            return True  # signal complete
+        if best[0] is None and (h is not None or d is not None or a is not None):
+            best = (h, d, a)
+        return False
+
     for entry in odds_list:
         if not isinstance(entry, dict):
             continue
-        # entry can be {matchId, odds: [...]} or direct bookmaker block
-        blocks = entry.get("odds") if isinstance(entry.get("odds"), list) else [entry]
+        blocks = entry.get("odds") if isinstance(entry.get("odds"), list) else None
+        if blocks is None:
+            blocks = [entry]
         for b in blocks:
             if not isinstance(b, dict):
                 continue
-            market = str(b.get("market") or b.get("name") or "").lower()
-            if market and "full time" not in market and "1x2" not in market and market not in (
-                "match winner", "match result", "ft result", "home/away"
-            ):
-                # allow empty market if values look like 1X2
-                vals = b.get("values") or b.get("odds") or []
-                if not isinstance(vals, list):
-                    continue
-            vals = b.get("values") or []
+            market = str(b.get("market") or b.get("name") or b.get("bet") or "")
+            if market and not _is_1x2_market(market):
+                continue
+            vals = b.get("values") or b.get("odds") or b.get("outcomes") or []
+            if isinstance(vals, dict):
+                # {home: 1.5, draw: 3.2, away: 4.1}
+                try:
+                    h = float(vals["home"]) if vals.get("home") is not None else None
+                    d = float(vals.get("draw") or vals.get("x") or vals.get("X") or 0) or None
+                    a = float(vals["away"]) if vals.get("away") is not None else None
+                    if vals.get("draw") is None and vals.get("x") is None:
+                        d = None
+                    if consider(h, d, a):
+                        return h, d, a
+                except Exception:
+                    pass
+                continue
             if not isinstance(vals, list):
                 continue
             h = d = a = None
             for v in vals:
                 if not isinstance(v, dict):
                     continue
-                label = str(v.get("value") or v.get("label") or v.get("name") or "").strip().lower()
+                label = str(
+                    v.get("value") or v.get("label") or v.get("name")
+                    or v.get("selection") or v.get("outcome") or ""
+                )
+                side = _label_to_1x2(label)
+                raw_odd = v.get("odd")
+                if raw_odd is None:
+                    raw_odd = v.get("price") or v.get("odds") or v.get("decimal")
                 try:
-                    odd = float(v.get("odd") if v.get("odd") is not None else v.get("price"))
+                    odd = float(raw_odd)
                 except Exception:
                     continue
-                if label in ("home", "1", "hazai"):
+                if side == "h":
                     h = odd
-                elif label in ("draw", "x", "döntetlen", "dontetlen"):
+                elif side == "d":
                     d = odd
-                elif label in ("away", "2", "vendég", "vendeg"):
+                elif side == "a":
                     a = odd
-            if h is not None or d is not None or a is not None:
-                # prefer first complete set
-                if h is not None and d is not None and a is not None:
-                    return h, d, a
-                if best[0] is None:
-                    best = (h, d, a)
+            if consider(h, d, a):
+                return h, d, a
     return best
+
+
+def _odds_from_predictions(pred) -> tuple:
+    """Valószínűség → közelítő decimal odds (1/p)."""
+    if not isinstance(pred, dict):
+        return None, None, None
+    # nested
+    for key in ("fullTime", "match", "probabilities", "predict", "prediction"):
+        if isinstance(pred.get(key), dict):
+            pred = pred[key]
+            break
+    try:
+        def pget(*keys):
+            for k in keys:
+                if pred.get(k) is not None:
+                    return float(pred[k])
+            return None
+        ph = pget("home", "homeWin", "1", "home_prob")
+        pd = pget("draw", "x", "X", "draw_prob")
+        pa = pget("away", "awayWin", "2", "away_prob")
+        # ha százalék 0–100
+        if ph is not None and ph > 1:
+            ph /= 100.0
+        if pd is not None and pd > 1:
+            pd /= 100.0
+        if pa is not None and pa > 1:
+            pa /= 100.0
+        def to_odd(p):
+            if p is None or p <= 0.01:
+                return None
+            return round(1.0 / p, 2)
+        return to_odd(ph), to_odd(pd), to_odd(pa)
+    except Exception:
+        return None, None, None
 
 
 def fetch_highlightly_odds(highlight_match_id: str, odds_type: str = "prematch"):
     """
     GET /odds?matchId=&oddsType=prematch|live
+    Próbál: soccer.highlightly.net + RapidAPI host.
     Cache: prematch ~7h, live ~3 perc.
+    Visszaad: list vagy None. plan tier üzenet a _odds_last_meta-ban.
     """
+    global _odds_last_meta
     if not HIGHLIGHTLY_KEY or not highlight_match_id:
         return None
     hid = str(highlight_match_id).strip()
@@ -747,23 +839,65 @@ def fetch_highlightly_odds(highlight_match_id: str, odds_type: str = "prematch")
     if cached and (now - cached.get("ts", 0)) < ttl:
         return cached.get("data")
 
+    bases = [
+        ("https://soccer.highlightly.net/odds", False),
+        ("https://football-highlights-api.p.rapidapi.com/odds", True),
+    ]
+    params_list = [
+        {"matchId": hid, "oddsType": ot, "limit": 50},
+        {"matchId": hid, "oddsType": ot},
+        {"matchId": hid},
+    ]
+    last_plan = None
     try:
-        resp = requests.get(
-            "https://soccer.highlightly.net/odds",
-            headers=_highlightly_headers(),
-            params={"matchId": hid, "oddsType": ot, "limit": 50},
-            timeout=10,
-        )
-        if resp.status_code != 200:
-            if cached:
-                return cached.get("data")
-            return None
-        payload = resp.json()
-        data = payload.get("data") if isinstance(payload, dict) else payload
-        if not isinstance(data, list):
-            data = []
-        _odds_cache[cache_key] = {"ts": now, "data": data, "odds_type": ot}
-        return data
+        for base, use_host in bases:
+            for params in params_list:
+                try:
+                    r = requests.get(
+                        base,
+                        headers=_highlightly_headers(rapidapi_host=use_host),
+                        params=params,
+                        timeout=12,
+                    )
+                    if r.status_code != 200:
+                        continue
+                    payload = r.json()
+                    if isinstance(payload, dict):
+                        last_plan = payload.get("plan")
+                        data = payload.get("data")
+                    else:
+                        data = payload
+                    if not isinstance(data, list):
+                        data = []
+                    # ha van tényleges odds blokk
+                    has_values = False
+                    for entry in data:
+                        if not isinstance(entry, dict):
+                            continue
+                        odds = entry.get("odds")
+                        if isinstance(odds, list) and len(odds) > 0:
+                            has_values = True
+                            break
+                        if entry.get("values"):
+                            has_values = True
+                            break
+                    _odds_last_meta = {
+                        "plan": last_plan,
+                        "match_id": hid,
+                        "odds_type": ot,
+                        "has_values": has_values,
+                        "source_url": base,
+                    }
+                    if has_values or data:
+                        _odds_cache[cache_key] = {"ts": now, "data": data, "odds_type": ot}
+                        return data
+                except Exception:
+                    continue
+        if last_plan is not None:
+            _odds_last_meta = {"plan": last_plan, "match_id": hid, "odds_type": ot, "has_values": False}
+        if cached:
+            return cached.get("data")
+        return None
     except Exception:
         if cached:
             return cached.get("data")
@@ -771,26 +905,44 @@ def fetch_highlightly_odds(highlight_match_id: str, odds_type: str = "prematch")
 
 
 def enrich_odds_from_highlightly(payload: dict) -> dict:
-    """Ha StatPal odds üres, Highlightly 1X2-t tölt be (cache-elve)."""
+    """Ha StatPal odds üres, Highlightly 1X2 / predictions fallback."""
     if not isinstance(payload, dict):
         return payload
     if payload.get("odds_home") is not None or payload.get("odds_draw") is not None:
         return payload
     hid = payload.get("highlight_match_id")
-    if not hid:
-        return payload
-    st = str(payload.get("status") or "").upper()
-    ot = "live" if st in ("1H", "2H", "HT", "LIVE", "ET") else "prematch"
-    raw = fetch_highlightly_odds(str(hid), ot)
-    if not raw and ot == "live":
-        raw = fetch_highlightly_odds(str(hid), "prematch")
-    h, d, a = _parse_hl_1x2(raw or [])
+    st = str(payload.get("status") or "").upper().replace(".", "")
+    ot = "live" if st in ("1H", "2H", "HT", "LIVE", "ET", "INPLAY") else "prematch"
+    h = d = a = None
+    source = None
+    if hid:
+        raw = fetch_highlightly_odds(str(hid), ot)
+        if not raw and ot == "live":
+            raw = fetch_highlightly_odds(str(hid), "prematch")
+            ot = "prematch"
+        h, d, a = _parse_hl_1x2(raw or [])
+        if h is not None or d is not None or a is not None:
+            source = "highlightly"
+        # match detail predictions
+        if h is None and d is None:
+            try:
+                det = fetch_highlightly_match_detail(str(hid))
+                if isinstance(det, dict):
+                    h, d, a = _odds_from_predictions(det.get("predictions") or det.get("forecast") or {})
+                    if h is not None:
+                        source = "highlightly_pred"
+            except Exception:
+                pass
+    if h is None and d is None:
+        h, d, a = _odds_from_predictions(payload.get("predictions") or payload.get("forecast") or {})
+        if h is not None:
+            source = source or "prediction"
     if h is not None or d is not None or a is not None:
         payload = dict(payload)
         payload["odds_home"] = h
         payload["odds_draw"] = d
         payload["odds_away"] = a
-        payload["odds_source"] = "highlightly"
+        payload["odds_source"] = source
         payload["odds_type"] = ot
     return payload
 
@@ -3455,9 +3607,12 @@ def get_match_odds(match_id: str):
             "source": None,
         }
     detail = enrich_odds_from_highlightly(detail)
+    meta = _odds_last_meta if isinstance(_odds_last_meta, dict) else {}
+    plan = meta.get("plan") if isinstance(meta.get("plan"), dict) else {}
+    available = detail.get("odds_home") is not None or detail.get("odds_draw") is not None
     return {
         "match_id": str(match_id),
-        "available": detail.get("odds_home") is not None or detail.get("odds_draw") is not None,
+        "available": available,
         "odds_home": detail.get("odds_home"),
         "odds_draw": detail.get("odds_draw"),
         "odds_away": detail.get("odds_away"),
@@ -3465,6 +3620,14 @@ def get_match_odds(match_id: str):
         "source": detail.get("odds_source") or ("statpal" if detail.get("odds_home") is not None else None),
         "odds_type": detail.get("odds_type"),
         "highlight_match_id": detail.get("highlight_match_id"),
+        "plan_tier": plan.get("tier"),
+        "plan_message": plan.get("message"),
+        "hint": (
+            None if available else (
+                "Highlightly odds a BASIC/FREE csomagban rejtve lehet – Ultra / fizetős odds hozzáférés kell. "
+                "StatPal Starter in-play odds a live feedben jön, ha a provider kitölti."
+            )
+        ),
     }
 
 
