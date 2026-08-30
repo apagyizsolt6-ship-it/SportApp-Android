@@ -3592,7 +3592,8 @@ def _call_gemini(prompt: str) -> Optional[str]:
 @app.get("/api/matches/{match_id}/odds")
 def get_match_odds(match_id: str):
     """
-    1X2 odds: StatPal mezők, ha üres → Highlightly /odds (cache 6–8h prematch).
+    Teljes odds: 1X2 + az összes Highlightly piac (bookmakerenként).
+    Cache: prematch ~7h, live ~3 perc.
     """
     try:
         detail = get_match_detail(match_id)
@@ -3604,12 +3605,37 @@ def get_match_odds(match_id: str):
             "odds_home": None,
             "odds_draw": None,
             "odds_away": None,
+            "markets": [],
             "source": None,
         }
     detail = enrich_odds_from_highlightly(detail)
+    markets = []
+    hid = detail.get("highlight_match_id")
+    st = str(detail.get("status") or "").upper().replace(".", "")
+    ot = "live" if st in ("1H", "2H", "HT", "LIVE", "ET", "INPLAY") else "prematch"
+    if hid:
+        raw = fetch_highlightly_odds(str(hid), ot)
+        if not raw and ot == "live":
+            raw = fetch_highlightly_odds(str(hid), "prematch")
+            ot = "prematch"
+        markets = _normalize_all_odds_markets(raw or [])
+        # 1X2 pótlás a marketsből, ha még üres
+        if detail.get("odds_home") is None and markets:
+            h, d, a = _parse_hl_1x2(raw or [])
+            if h is not None or d is not None or a is not None:
+                detail = dict(detail)
+                detail["odds_home"] = h
+                detail["odds_draw"] = d
+                detail["odds_away"] = a
+                detail["odds_source"] = detail.get("odds_source") or "highlightly"
+                detail["odds_type"] = ot
     meta = _odds_last_meta if isinstance(_odds_last_meta, dict) else {}
     plan = meta.get("plan") if isinstance(meta.get("plan"), dict) else {}
-    available = detail.get("odds_home") is not None or detail.get("odds_draw") is not None
+    available = (
+        detail.get("odds_home") is not None
+        or detail.get("odds_draw") is not None
+        or bool(markets)
+    )
     return {
         "match_id": str(match_id),
         "available": available,
@@ -3618,17 +3644,19 @@ def get_match_odds(match_id: str):
         "odds_away": detail.get("odds_away"),
         "value_bet": detail.get("value_bet"),
         "source": detail.get("odds_source") or ("statpal" if detail.get("odds_home") is not None else None),
-        "odds_type": detail.get("odds_type"),
+        "odds_type": detail.get("odds_type") or ot,
         "highlight_match_id": detail.get("highlight_match_id"),
+        "markets": markets,
+        "markets_count": len(markets),
         "plan_tier": plan.get("tier"),
         "plan_message": plan.get("message"),
         "hint": (
             None if available else (
-                "Highlightly odds a BASIC/FREE csomagban rejtve lehet – Ultra / fizetős odds hozzáférés kell. "
-                "StatPal Starter in-play odds a live feedben jön, ha a provider kitölti."
+                "Nincs elérhető odds ehhez a meccshez (Highlightly / StatPal)."
             )
         ),
     }
+
 
 
 @app.get("/api/ai-analysis/{match_id}")
