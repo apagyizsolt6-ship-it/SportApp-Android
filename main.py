@@ -3673,6 +3673,113 @@ def _normalize_all_odds_markets(odds_list) -> list:
     return out
 
 
+
+def _compact_odds_markets(markets: list, max_bookmakers: int = 3) -> list:
+    """
+    1500+ sor → rendezett, rövid lista.
+    - market+label szerint legjobb odd (1 bookmaker)
+    - Correct Score: csak 0:0–3:3
+    - max_bookmakers: opcionálisan top N bookmaker / market (alapból 1 legjobb / kimenet)
+    Vissza: [{market, category, values: [{label, odd, bookmaker}]}]
+    """
+    if not isinstance(markets, list):
+        return []
+
+    def category(name: str) -> str:
+        n = (name or "").lower()
+        if any(x in n for x in ("full time", "1x2", "match winner", "match result", "match odds")):
+            return "1x2"
+        if "both teams" in n or "btts" in n:
+            return "btts"
+        if "double chance" in n:
+            return "double_chance"
+        if "asian handicap" in n or (n.startswith("handicap") and "card" not in n):
+            return "asian_handicap"
+        if "total goals" in n or ("total" in n and "goal" in n and "corner" not in n and "card" not in n):
+            return "total_goals"
+        # Szögletek
+        if "corner" in n:
+            return "corners"
+        # Lapok (sárga / piros / booking)
+        if any(x in n for x in ("card", "booking", "bookings", "yellow", "red card", "total cards")):
+            return "cards"
+        if "correct score" in n or "exact score" in n:
+            return "correct_score"
+        if "draw no bet" in n:
+            return "dnb"
+        if "odd or even" in n or n in ("odd/even", "odd even"):
+            return "odd_even"
+        if "first half" in n or "1st half" in n:
+            return "first_half"
+        if "first team to score" in n:
+            return "first_goal"
+        return "other"
+
+    def allow_correct_score(label: str) -> bool:
+        # "0:0", "1:2", "3:3" – max 3-3
+        s = (label or "").replace(" ", "")
+        if ":" not in s:
+            return True
+        try:
+            a, b = s.split(":", 1)
+            return 0 <= int(a) <= 3 and 0 <= int(b) <= 3
+        except Exception:
+            return False
+
+    # key: (market_name, label) -> best (odd, bookmaker)
+    best = {}
+    for m in markets:
+        if not isinstance(m, dict):
+            continue
+        market = str(m.get("market") or "").strip()
+        if not market:
+            continue
+        bookie = str(m.get("bookmaker") or "").strip()
+        cat = category(market)
+        for v in m.get("values") or []:
+            if not isinstance(v, dict):
+                continue
+            label = str(v.get("label") or v.get("value") or "").strip()
+            if not label:
+                continue
+            if cat == "correct_score" and not allow_correct_score(label):
+                continue
+            try:
+                odd = float(v.get("odd"))
+            except Exception:
+                continue
+            key = (market, label)
+            prev = best.get(key)
+            if prev is None or odd > prev[0]:
+                best[key] = (odd, bookie, cat)
+
+    # group by market
+    by_market = {}
+    for (market, label), (odd, bookie, cat) in best.items():
+        by_market.setdefault(market, {"market": market, "category": cat, "values": []})
+        by_market[market]["values"].append({
+            "label": label,
+            "odd": round(odd, 2),
+            "bookmaker": bookie or None,
+        })
+
+    order = {
+        "1x2": 0, "btts": 1, "double_chance": 2, "total_goals": 3,
+        "asian_handicap": 4, "corners": 5, "cards": 6,
+        "dnb": 7, "first_half": 8, "first_goal": 9,
+        "odd_even": 10, "correct_score": 11, "other": 12,
+    }
+    out = list(by_market.values())
+    out.sort(key=lambda x: (order.get(x.get("category"), 99), x.get("market") or ""))
+    # limit total markets soft-cap
+    if len(out) > 80:
+        # keep priority categories fully, trim correct_score/other
+        primary = [x for x in out if x.get("category") not in ("correct_score", "other")]
+        secondary = [x for x in out if x.get("category") in ("correct_score", "other")]
+        out = primary + secondary[: max(0, 80 - len(primary))]
+    return out
+
+
 @app.get("/api/matches/{match_id}/odds")
 def get_match_odds(match_id: str):
     """
@@ -3710,6 +3817,7 @@ def get_match_odds(match_id: str):
                     raw = fetch_highlightly_odds(str(hid), "live")
                     ot = "live"
                 markets = _normalize_all_odds_markets(raw or [])
+                markets = _compact_odds_markets(markets)
             except Exception as e:
                 markets = []
             if detail.get("odds_home") is None and raw:
