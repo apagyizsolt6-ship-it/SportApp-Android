@@ -52,6 +52,7 @@ import com.sportapp.api.RetrofitInstance
 import com.sportapp.fcm.FcmRegistrar
 import com.sportapp.api.StandingTeam
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 import java.text.Collator
 import java.util.Locale
 import org.json.JSONArray
@@ -2682,6 +2683,21 @@ fun PremiumMatchRow(
 
             val isLive = isMatchLive(match.status, match.minute)
 
+            // Helyi perc-tik a szerver frissítések között (nem vesz el semmit)
+            var localMinute by remember(match.id, match.minute) {
+                mutableIntStateOf(match.minute ?: 0)
+            }
+            LaunchedEffect(match.id, match.minute, isLive) {
+                localMinute = match.minute ?: 0
+                if (!isLive) return@LaunchedEffect
+                while (true) {
+                    delay(20_000)
+                    if (match.status.equals("HT", ignoreCase = true)) continue
+                    localMinute = (localMinute + 1).coerceAtMost(130)
+                }
+            }
+            val shownMinute = if (isLive) localMinute else (match.minute ?: 0)
+
             val statusText =
                 when {
                     match.status == "FT" -> "Vége"
@@ -2718,7 +2734,7 @@ fun PremiumMatchRow(
 
                     Text(
                         text =
-                            "${match.minute}'",
+                            "${shownMinute}'",
 
                         color =
                             primaryGreen,

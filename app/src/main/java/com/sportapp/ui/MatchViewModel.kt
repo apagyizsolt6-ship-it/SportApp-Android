@@ -28,7 +28,9 @@ class MatchViewModel : ViewModel() {
     private val _isLoadingAi = MutableStateFlow(false)
     val isLoadingAi: StateFlow<Boolean> = _isLoadingAi
 
-    private val REFRESH_INTERVAL_MS = 20_000L
+    /** Élő meccsnél sűrűbb poll, egyébként kímélőbb. */
+    private val REFRESH_INTERVAL_MS = 12_000L
+    private val REFRESH_IDLE_MS = 22_000L
 
     /** 0 = ma; -1 tegnap; +1 holnap … */
     private var dayOffset: Int = 0
@@ -55,7 +57,12 @@ class MatchViewModel : ViewModel() {
         autoJob = viewModelScope.launch {
             while (true) {
                 fetchMatches(showLoading = _matches.value.isEmpty())
-                delay(REFRESH_INTERVAL_MS)
+                val hasLive = _matches.value.any { m ->
+                    val s = m.status.trim().uppercase().replace(".", "")
+                    s in setOf("1H", "2H", "HT", "LIVE", "ET", "INPLAY") ||
+                        ((m.minute ?: 0) > 0 && s !in setOf("FT", "AET", "PEN", "NS", "TBD", "PST", "CANC"))
+                }
+                delay(if (hasLive) REFRESH_INTERVAL_MS else REFRESH_IDLE_MS)
             }
         }
     }
