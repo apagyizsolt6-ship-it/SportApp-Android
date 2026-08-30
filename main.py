@@ -3110,6 +3110,48 @@ def _gemini_list_models(key: str) -> list:
     return ids
 
 
+def _clean_gemini_text(text: str) -> str:
+    """Draft / thinking / markdown zaj kiszűrése – csak a végleges elemzés."""
+    if not text:
+        return text
+    # Ha van egyértelmű végleges blokk
+    for marker in (
+        "Draft 2 (Fully integrated)",
+        "Fully integrated",
+        "Végleges elemzés",
+        "Összegzés:",
+        "**Összegzés**",
+    ):
+        idx = text.find(marker)
+        if idx >= 0:
+            # vegyük a markertől (vagy utána) a végéig
+            chunk = text[idx:]
+            # ha a marker angol draft, ugorjuk a sort
+            if marker.lower().startswith("draft") or "polish" in marker.lower():
+                nl = chunk.find("\n")
+                chunk = chunk[nl + 1 :] if nl >= 0 else chunk
+            text = chunk
+            break
+    lines = []
+    for line in text.splitlines():
+        low = line.strip().lower()
+        if not low:
+            lines.append(line)
+            continue
+        if low.startswith("let's polish") or low.startswith("lets polish"):
+            continue
+        if "draft 1" in low or "draft 2" in low or "draft 3" in low:
+            continue
+        if low.startswith("*draft") or low.startswith("**draft"):
+            continue
+        if "thinking" in low and len(low) < 40:
+            continue
+        lines.append(line)
+    out = "\n".join(lines).strip()
+    # markdown ** egyszerűsítés opcionális – hagyjuk
+    return out
+
+
 def _call_gemini(prompt: str) -> Optional[str]:
     """Gemini generateContent – GEMINI_KEY; 3.5+ modellek előnyben."""
     global _gemini_last_error
@@ -3146,7 +3188,7 @@ def _call_gemini(prompt: str) -> Optional[str]:
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
         "generationConfig": {
             "temperature": 0.7,
-            "maxOutputTokens": 1200,
+            "maxOutputTokens": 4096,
         },
     }
     errors = []
@@ -3178,8 +3220,10 @@ def _call_gemini(prompt: str) -> Optional[str]:
                 ]
                 text = "\n".join(texts).strip()
                 if text:
-                    _gemini_last_error = ""
-                    return text
+                    text = _clean_gemini_text(text)
+                    if text:
+                        _gemini_last_error = ""
+                        return text
                 errors.append(f"{model}/{ver}: üres szöveg")
             except Exception as e:
                 errors.append(f"{model}/{ver}: {type(e).__name__}: {e}")
@@ -3258,22 +3302,30 @@ def get_ai_analysis(match_id: str):
         return payload
 
     score_txt = f"{home_score}-{away_score}" if home_score is not None and away_score is not None else "–"
-    prompt = f"""Te egy futball-elemző vagy. Írj MAGYARUL részletes, de tömör meccselemzést (max 250 szó).
+    prompt = f"""Te magyar futball-elemző vagy. CSAK a kész, végleges elemzést írd ki MAGYARUL.
+TILOS: angol megjegyzés, draft, "Let's polish", gondolkodás hangosan, meta-szöveg.
+Írj teljes, befejezett szöveget (kb. 180–320 szó), ne vágd félbe a mondatokat.
 
 Meccs: {home} vs {away}
 Bajnokság: {league or "ismeretlen"}
 Állás: {score_txt}
 Státusz: {status or "ismeretlen"}{"  Perc: " + str(minute) if minute else ""}
 Események: {events_txt or "nincs adat"}
-Forma / H2H (nyers): {form_txt[:400] if form_txt else "nincs"} | {h2h_txt[:400] if h2h_txt else "nincs"}
+Forma / H2H: {form_txt[:500] if form_txt else "nincs"} | {h2h_txt[:500] if h2h_txt else "nincs"}
 
-Szerkezet:
-1) Rövid összegzés (1-2 mondat)
-2) Kulcsmomentumok / mi dönthet
-3) Erősségek-gyengeségek mindkét oldalon
-4) Várható forgatókönyv / tipp (óvatosan, nem fogadási tanács)
+Formátum (mind a 4 pont kötelező, teljes mondatokkal):
+**Összegzés**
+(2–3 mondat)
 
-Kerüld a sablonos "hamarosan" szöveget. Legyél konkrét."""
+**Kulcspontok**
+(mi dönthet a meccsen)
+
+**Csapatok**
+(erősség / gyengeség mindkét oldalon)
+
+**Forgatókönyv**
+(várható alakulás; nem fogadási tanács)
+"""
 
     gemini_text = _call_gemini(prompt)
     if gemini_text:
