@@ -905,25 +905,35 @@ def fetch_highlightly_odds(highlight_match_id: str, odds_type: str = "prematch")
 
 
 def enrich_odds_from_highlightly(payload: dict) -> dict:
-    """Ha StatPal odds üres, Highlightly 1X2 / predictions fallback."""
+    """1X2 + teljes markets lista Highlightly-ből. 1X2 megléte mellett is betölti a piacokat."""
     if not isinstance(payload, dict):
-        return payload
-    if payload.get("odds_home") is not None or payload.get("odds_draw") is not None:
         return payload
     hid = payload.get("highlight_match_id")
     st = str(payload.get("status") or "").upper().replace(".", "")
-    ot = "live" if st in ("1H", "2H", "HT", "LIVE", "ET", "INPLAY") else "prematch"
-    h = d = a = None
-    source = None
+    is_live = st in ("1H", "2H", "HT", "LIVE", "ET", "INPLAY")
+    # Elsődleges: PREMATCH (még élő meccsnél is – a user prematch piacokat akar)
+    ot = "prematch"
+    h = payload.get("odds_home")
+    d = payload.get("odds_draw")
+    a = payload.get("odds_away")
+    source = payload.get("odds_source")
+    markets = list(payload.get("odds_markets") or []) if isinstance(payload.get("odds_markets"), list) else []
+    raw = None
     if hid:
-        raw = fetch_highlightly_odds(str(hid), ot)
-        if not raw and ot == "live":
+        try:
             raw = fetch_highlightly_odds(str(hid), "prematch")
-            ot = "prematch"
-        h, d, a = _parse_hl_1x2(raw or [])
-        if h is not None or d is not None or a is not None:
-            source = "highlightly"
-        # match detail predictions
+            # Élőnél ha prematch üres, próbáljuk a live-ot másodjára
+            if not raw and is_live:
+                raw = fetch_highlightly_odds(str(hid), "live")
+                ot = "live"
+            if raw:
+                markets = _normalize_all_odds_markets(raw)
+                if h is None and d is None:
+                    h, d, a = _parse_hl_1x2(raw)
+                    if h is not None or d is not None or a is not None:
+                        source = "highlightly"
+        except Exception:
+            pass
         if h is None and d is None:
             try:
                 det = fetch_highlightly_match_detail(str(hid))
@@ -937,13 +947,17 @@ def enrich_odds_from_highlightly(payload: dict) -> dict:
         h, d, a = _odds_from_predictions(payload.get("predictions") or payload.get("forecast") or {})
         if h is not None:
             source = source or "prediction"
-    if h is not None or d is not None or a is not None:
+    if h is not None or d is not None or a is not None or markets:
         payload = dict(payload)
-        payload["odds_home"] = h
-        payload["odds_draw"] = d
-        payload["odds_away"] = a
-        payload["odds_source"] = source
-        payload["odds_type"] = ot
+        if h is not None or d is not None or a is not None:
+            payload["odds_home"] = h
+            payload["odds_draw"] = d
+            payload["odds_away"] = a
+            payload["odds_source"] = source
+            payload["odds_type"] = ot
+        if markets:
+            payload["odds_markets"] = markets
+            payload["odds_markets_count"] = len(markets)
     return payload
 
 
@@ -3590,16 +3604,155 @@ def _call_gemini(prompt: str) -> Optional[str]:
 
 
 @app.get("/api/matches/{match_id}/odds")
+
+def _normalize_all_odds_markets(odds_list) -> list:
+    """
+    Highlightly odds → egységes piaclista:
+    [{ market, bookmaker, bookmaker_id, type, values: [{label, odd}] }]
+    """
+    out = []
+    if not isinstance(odds_list, list):
+        return out
+    for entry in odds_list:
+        if not isinstance(entry, dict):
+            continue
+        blocks = entry.get("odds") if isinstance(entry.get("odds"), list) else None
+        if blocks is None:
+            blocks = [entry]
+        for b in blocks:
+            if not isinstance(b, dict):
+                continue
+            market = str(b.get("market") or b.get("name") or b.get("bet") or "Piac").strip()
+            bookmaker = str(b.get("bookmakerName") or b.get("bookmaker") or "").strip()
+            bookmaker_id = b.get("bookmakerId") or b.get("bookmaker_id")
+            otype = str(b.get("type") or b.get("oddsType") or "").strip() or None
+            vals_raw = b.get("values") or b.get("odds") or b.get("outcomes") or []
+            values = []
+            if isinstance(vals_raw, dict):
+                for k, v in vals_raw.items():
+                    try:
+                        values.append({"label": str(k), "odd": float(v)})
+                    except Exception:
+                        continue
+            elif isinstance(vals_raw, list):
+                for v in vals_raw:
+                    if not isinstance(v, dict):
+                        continue
+                    label = str(
+                        v.get("value") or v.get("label") or v.get("name")
+                        or v.get("selection") or v.get("outcome") or ""
+                    ).strip()
+                    raw_odd = v.get("odd")
+                    if raw_odd is None:
+                        raw_odd = v.get("price") or v.get("odds") or v.get("decimal")
+                    try:
+                        odd = float(raw_odd)
+                    except Exception:
+                        continue
+                    if label:
+                        values.append({"label": label, "odd": odd})
+            if not values:
+                continue
+            out.append({
+                "market": market,
+                "bookmaker": bookmaker or None,
+                "bookmaker_id": bookmaker_id,
+                "type": otype,
+                "values": values,
+            })
+    def rank(m):
+        name = (m.get("market") or "").lower()
+        if any(x in name for x in ("full time", "1x2", "match winner", "match result", "ft result")):
+            return (0, name)
+        if "both teams" in name or "btts" in name:
+            return (1, name)
+        if "over" in name or "under" in name or "total" in name:
+            return (2, name)
+        if "double chance" in name:
+            return (3, name)
+        return (9, name)
+    out.sort(key=rank)
+    return out
+
+
 def get_match_odds(match_id: str):
     """
     Teljes odds: 1X2 + az összes Highlightly piac (bookmakerenként).
-    Cache: prematch ~7h, live ~3 perc.
+    Cache: prematch ~7h, live ~3 perc. Soha ne dobjon 500-at.
     """
     try:
-        detail = get_match_detail(match_id)
-    except Exception:
-        detail = None
-    if not isinstance(detail, dict) or detail.get("error"):
+        try:
+            detail = get_match_detail(match_id)
+        except Exception:
+            detail = None
+        if not isinstance(detail, dict) or detail.get("error"):
+            return {
+                "available": False,
+                "odds_home": None,
+                "odds_draw": None,
+                "odds_away": None,
+                "markets": [],
+                "source": None,
+            }
+        try:
+            detail = enrich_odds_from_highlightly(detail)
+        except Exception:
+            pass
+        markets = []
+        hid = detail.get("highlight_match_id")
+        st = str(detail.get("status") or "").upper().replace(".", "")
+        is_live = st in ("1H", "2H", "HT", "LIVE", "ET", "INPLAY")
+        ot = "prematch"  # elsődleges: prematch odds / piacok
+        raw = None
+        if hid:
+            try:
+                raw = fetch_highlightly_odds(str(hid), "prematch")
+                if not raw and is_live:
+                    raw = fetch_highlightly_odds(str(hid), "live")
+                    ot = "live"
+                markets = _normalize_all_odds_markets(raw or [])
+            except Exception as e:
+                markets = []
+            if detail.get("odds_home") is None and raw:
+                try:
+                    h, d, a = _parse_hl_1x2(raw or [])
+                    if h is not None or d is not None or a is not None:
+                        detail = dict(detail)
+                        detail["odds_home"] = h
+                        detail["odds_draw"] = d
+                        detail["odds_away"] = a
+                        detail["odds_source"] = detail.get("odds_source") or "highlightly"
+                        detail["odds_type"] = ot
+                except Exception:
+                    pass
+        meta = {}
+        try:
+            meta = _odds_last_meta if isinstance(_odds_last_meta, dict) else {}
+        except Exception:
+            meta = {}
+        plan = meta.get("plan") if isinstance(meta.get("plan"), dict) else {}
+        available = (
+            detail.get("odds_home") is not None
+            or detail.get("odds_draw") is not None
+            or bool(markets)
+        )
+        return {
+            "match_id": str(match_id),
+            "available": available,
+            "odds_home": detail.get("odds_home"),
+            "odds_draw": detail.get("odds_draw"),
+            "odds_away": detail.get("odds_away"),
+            "value_bet": detail.get("value_bet"),
+            "source": detail.get("odds_source") or ("statpal" if detail.get("odds_home") is not None else None),
+            "odds_type": detail.get("odds_type") or ot,
+            "highlight_match_id": detail.get("highlight_match_id"),
+            "markets": markets,
+            "markets_count": len(markets),
+            "plan_tier": plan.get("tier") if isinstance(plan, dict) else None,
+            "plan_message": plan.get("message") if isinstance(plan, dict) else None,
+            "hint": None if available else "Nincs elérhető odds ehhez a meccshez.",
+        }
+    except Exception as e:
         return {
             "available": False,
             "odds_home": None,
@@ -3607,55 +3760,8 @@ def get_match_odds(match_id: str):
             "odds_away": None,
             "markets": [],
             "source": None,
+            "error": str(e)[:200],
         }
-    detail = enrich_odds_from_highlightly(detail)
-    markets = []
-    hid = detail.get("highlight_match_id")
-    st = str(detail.get("status") or "").upper().replace(".", "")
-    ot = "live" if st in ("1H", "2H", "HT", "LIVE", "ET", "INPLAY") else "prematch"
-    if hid:
-        raw = fetch_highlightly_odds(str(hid), ot)
-        if not raw and ot == "live":
-            raw = fetch_highlightly_odds(str(hid), "prematch")
-            ot = "prematch"
-        markets = _normalize_all_odds_markets(raw or [])
-        # 1X2 pótlás a marketsből, ha még üres
-        if detail.get("odds_home") is None and markets:
-            h, d, a = _parse_hl_1x2(raw or [])
-            if h is not None or d is not None or a is not None:
-                detail = dict(detail)
-                detail["odds_home"] = h
-                detail["odds_draw"] = d
-                detail["odds_away"] = a
-                detail["odds_source"] = detail.get("odds_source") or "highlightly"
-                detail["odds_type"] = ot
-    meta = _odds_last_meta if isinstance(_odds_last_meta, dict) else {}
-    plan = meta.get("plan") if isinstance(meta.get("plan"), dict) else {}
-    available = (
-        detail.get("odds_home") is not None
-        or detail.get("odds_draw") is not None
-        or bool(markets)
-    )
-    return {
-        "match_id": str(match_id),
-        "available": available,
-        "odds_home": detail.get("odds_home"),
-        "odds_draw": detail.get("odds_draw"),
-        "odds_away": detail.get("odds_away"),
-        "value_bet": detail.get("value_bet"),
-        "source": detail.get("odds_source") or ("statpal" if detail.get("odds_home") is not None else None),
-        "odds_type": detail.get("odds_type") or ot,
-        "highlight_match_id": detail.get("highlight_match_id"),
-        "markets": markets,
-        "markets_count": len(markets),
-        "plan_tier": plan.get("tier"),
-        "plan_message": plan.get("message"),
-        "hint": (
-            None if available else (
-                "Nincs elérhető odds ehhez a meccshez (Highlightly / StatPal)."
-            )
-        ),
-    }
 
 
 
