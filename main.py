@@ -908,6 +908,57 @@ def _normalize_lineups(raw):
 
 
 
+
+STAT_LABEL_HU = {
+    "ball possession": "Labdabirtoklás",
+    "possession": "Labdabirtoklás",
+    "shots on goal": "Kapura lövések",
+    "shots on target": "Kapura lövések",
+    "shots off goal": "Kapu mellé",
+    "shots off target": "Kapu mellé",
+    "total shots": "Összes lövés",
+    "shots total": "Összes lövés",
+    "blocked shots": "Blokkolt lövések",
+    "shots blocked": "Blokkolt lövések",
+    "shots insidebox": "Lövések a 16-oson belül",
+    "shots outsidebox": "Lövések a 16-oson kívül",
+    "fouls": "Szabálytalanságok",
+    "corner kicks": "Szögletek",
+    "corners": "Szögletek",
+    "offsides": "Lesek",
+    "ball safe": "Biztonságos labda",
+    "yellow cards": "Sárga lapok",
+    "red cards": "Piros lapok",
+    "goalkeeper saves": "Kapus védések",
+    "saves": "Védések",
+    "total passes": "Összes passz",
+    "passes": "Passzok",
+    "accurate passes": "Pontos passzok",
+    "passes %": "Passzpontosság %",
+    "passes percentage": "Passzpontosság %",
+    "expected goals": "Várható gól (xG)",
+    "expected goals (xg)": "Várható gól (xG)",
+    "xg": "Várható gól (xG)",
+    "big chances": "Nagy helyzetek",
+    "big chances scored": "Kihagyott nagy helyzetekből gól",
+    "big chances missed": "Kihagyott nagy helyzetek",
+    "tackles": "Szerelések",
+    "interceptions": "Labdaszerzések",
+    "clearances": "Kimentések",
+    "crosses": "Beadások",
+    "accurate crosses": "Pontos beadások",
+    "duels won": "Nyert párharcok",
+    "aerials won": "Nyert fejpárbajok",
+    "dribbles": "Cseltámadások",
+    "successful dribbles": "Sikeres cselek",
+    "throw ins": "Bedobások",
+    "goal kicks": "Kapusrúgások",
+    "free kicks": "Szabadrúgások",
+    "hits woodwork": "Kapufák",
+    "counter attacks": "Kontrák",
+}
+
+
 def _stat_label_hu(name: str) -> str:
     """Először pontos egyezés – ne legyen minden 'Passzok'."""
     if not name:
@@ -3008,43 +3059,132 @@ def get_matches_by_date(date: str):
 _ai_analysis_cache = {}
 AI_ANALYSIS_TTL = 600  # 10 perc
 
+_gemini_last_error = ""
+_gemini_models_cache = {"ts": 0.0, "ids": []}
+
+
+def _gemini_list_models(key: str) -> list:
+    """A kulcshoz elérhető generateContent modellek (cache 1 óra)."""
+    now = time.time()
+    if _gemini_models_cache["ids"] and (now - _gemini_models_cache["ts"]) < 3600:
+        return list(_gemini_models_cache["ids"])
+    ids = []
+    try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models?key={key}"
+        resp = requests.get(url, timeout=15)
+        if resp.status_code == 200:
+            for m in (resp.json().get("models") or []):
+                name = (m.get("name") or "").replace("models/", "")
+                methods = m.get("supportedGenerationMethods") or m.get("supported_generation_methods") or []
+                if not name:
+                    continue
+                if methods and "generateContent" not in methods:
+                    continue
+                ids.append(name)
+    except Exception:
+        pass
+    # Preferencia: újabb flash/pro elöl (3.5 → 2.5 → 2.0 …)
+    def _rank(mid: str) -> tuple:
+        s = mid.lower()
+        score = 0
+        if "3.5" in s or "3-5" in s:
+            score = 50
+        elif "2.5" in s or "2-5" in s:
+            score = 40
+        elif "2.0" in s or "2-0" in s:
+            score = 30
+        elif "1.5" in s:
+            score = 10
+        if "flash" in s:
+            score += 3
+        if "pro" in s:
+            score += 2
+        if "exp" in s or "preview" in s:
+            score -= 1
+        return (-score, s)
+
+    ids = sorted(set(ids), key=_rank)
+    if ids:
+        _gemini_models_cache["ids"] = ids
+        _gemini_models_cache["ts"] = now
+    return ids
+
+
 def _call_gemini(prompt: str) -> Optional[str]:
-    """Gemini generateContent – GEMINI_KEY env szükséges."""
-    key = (GEMINI_KEY or "").strip()
+    """Gemini generateContent – GEMINI_KEY; 3.5+ modellek előnyben."""
+    global _gemini_last_error
+    key = (GEMINI_KEY or "").strip().strip('"').strip("'")
     if not key:
+        _gemini_last_error = "GEMINI_KEY üres"
         return None
-    models = [
+
+    # Először a kulcshoz listázott modellek (3.5 / 2.5 elöl), aztán fallback lista
+    preferred = [
+        "gemini-3.5-flash",
+        "gemini-3.5-pro",
+        "gemini-3.0-flash",
+        "gemini-3.0-pro",
+        "gemini-2.5-flash",
+        "gemini-2.5-flash-preview-05-20",
+        "gemini-2.5-pro",
+        "gemini-2.5-pro-preview-05-06",
         "gemini-2.0-flash",
+        "gemini-2.0-flash-001",
         "gemini-1.5-flash",
-        "gemini-1.5-flash-latest",
+        "gemini-1.5-pro",
     ]
+    listed = _gemini_list_models(key)
+    # listed elöl, aztán preferred – duplikátum nélkül
+    models = []
+    for m in listed + preferred:
+        if m not in models:
+            models.append(m)
+    if not models:
+        models = preferred
+
     body = {
-        "contents": [{"parts": [{"text": prompt}]}],
+        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
         "generationConfig": {
             "temperature": 0.7,
-            "maxOutputTokens": 1024,
+            "maxOutputTokens": 1200,
         },
     }
-    for model in models:
-        try:
-            url = (
-                f"https://generativelanguage.googleapis.com/v1beta/models/"
-                f"{model}:generateContent?key={key}"
-            )
-            resp = requests.post(url, json=body, timeout=25)
-            if resp.status_code != 200:
+    errors = []
+    for model in models[:12]:  # max 12 próba
+        for ver in ("v1beta", "v1"):
+            try:
+                url = (
+                    f"https://generativelanguage.googleapis.com/{ver}/models/"
+                    f"{model}:generateContent?key={key}"
+                )
+                resp = requests.post(url, json=body, timeout=35)
+                if resp.status_code != 200:
+                    try:
+                        err = resp.json()
+                        msg = (err.get("error") or {}).get("message") or resp.text[:180]
+                    except Exception:
+                        msg = resp.text[:180]
+                    errors.append(f"{model}/{ver}: HTTP {resp.status_code} {msg}")
+                    continue
+                data = resp.json()
+                cands = data.get("candidates") or []
+                if not cands:
+                    errors.append(f"{model}/{ver}: üres candidates")
+                    continue
+                parts = (cands[0].get("content") or {}).get("parts") or []
+                texts = [
+                    p.get("text") for p in parts
+                    if isinstance(p, dict) and p.get("text")
+                ]
+                text = "\n".join(texts).strip()
+                if text:
+                    _gemini_last_error = ""
+                    return text
+                errors.append(f"{model}/{ver}: üres szöveg")
+            except Exception as e:
+                errors.append(f"{model}/{ver}: {type(e).__name__}: {e}")
                 continue
-            data = resp.json()
-            cands = data.get("candidates") or []
-            if not cands:
-                continue
-            parts = (cands[0].get("content") or {}).get("parts") or []
-            texts = [p.get("text") for p in parts if isinstance(p, dict) and p.get("text")]
-            text = "\n".join(texts).strip()
-            if text:
-                return text
-        except Exception:
-            continue
+    _gemini_last_error = " | ".join(errors[:5]) if errors else "ismeretlen hiba"
     return None
 
 
@@ -3141,10 +3281,17 @@ Kerüld a sablonos "hamarosan" szöveget. Legyél konkrét."""
         available = True
     else:
         # Fallback ha nincs kulcs / API hiba – mégis hasznos, nem üres
+        err = _gemini_last_error or "nincs részlet"
+        if not (GEMINI_KEY or "").strip():
+            hint = "A GEMINI_KEY nincs beállítva a Render Environment-ben."
+        else:
+            hint = (
+                "A GEMINI_KEY be van állítva, de az API nem adott választ. "
+                f"Részlet: {err}"
+            )
         summary = (
             f"{home} vs {away}. Állás: {score_txt}. Státusz: {status or 'ismeretlen'}.\n\n"
-            f"A Gemini kulcs nincs beállítva vagy az API nem válaszolt. "
-            f"Állítsd be a Renderen a GEMINI_KEY környezeti változót a részletes elemzéshez."
+            f"{hint}"
         )
         if events_txt:
             summary += f"\n\nIsmert események: {events_txt}"
