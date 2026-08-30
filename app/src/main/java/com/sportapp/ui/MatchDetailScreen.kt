@@ -113,6 +113,7 @@ fun MatchDetailDialog(
     var oddsDrawUi by remember { mutableStateOf(match.oddsDraw) }
     var oddsAwayUi by remember { mutableStateOf(match.oddsAway) }
     var oddsSource by remember { mutableStateOf<String?>(null) }
+    var oddsMarkets by remember { mutableStateOf<List<Map<String, Any?>>>(emptyList()) }
     var standings by remember { mutableStateOf<List<StandingTeam>>(emptyList()) }
     var loadingTab by remember { mutableStateOf(false) }
     var errorMsg by remember { mutableStateOf<String?>(null) }
@@ -172,7 +173,6 @@ fun MatchDetailDialog(
 
     // Élő meccs + Statisztika tab: stats is 20 mp-enként
     LaunchedEffect(match.id) {
-        if (oddsHomeUi != null || oddsDrawUi != null) return@LaunchedEffect
         try {
             val o = RetrofitInstance.api.getMatchOdds(match.id)
             fun num(key: String): Double? {
@@ -187,6 +187,14 @@ fun MatchDetailDialog(
             oddsDrawUi = num("odds_draw")
             oddsAwayUi = num("odds_away")
             oddsSource = o["source"]?.toString()
+            val rawMarkets = o["markets"]
+            if (rawMarkets is List<*>) {
+                oddsMarkets = rawMarkets.mapNotNull { item ->
+                    if (item is Map<*, *>) {
+                        item.entries.associate { (k, v) -> k.toString() to v }
+                    } else null
+                }
+            }
         } catch (_: Exception) {
         }
     }
@@ -665,7 +673,8 @@ fun MatchDetailDialog(
                         oddsHome = oddsHomeUi,
                         oddsDraw = oddsDrawUi,
                         oddsAway = oddsAwayUi,
-                        oddsSource = oddsSource
+                        oddsSource = oddsSource,
+                        oddsMarkets = oddsMarkets
                     )
                     1 -> EventsTab(
                         events = events,
@@ -1041,7 +1050,8 @@ private fun SummaryTab(
     oddsHome: Double? = null,
     oddsDraw: Double? = null,
     oddsAway: Double? = null,
-    oddsSource: String? = null
+    oddsSource: String? = null,
+    oddsMarkets: List<Map<String, Any?>> = emptyList()
 ) {
     val goals = events.filter {
         val ty = it.type?.lowercase().orEmpty()
@@ -1078,7 +1088,7 @@ private fun SummaryTab(
 
         // Odds
         item {
-            OddsRow(match, text, sub, card, green, oddsHome, oddsDraw, oddsAway, oddsSource)
+            OddsRow(match, text, sub, card, green, oddsHome, oddsDraw, oddsAway, oddsSource, oddsMarkets)
         }
 
         // Forma (W-D-L)
@@ -1256,18 +1266,21 @@ private fun OddsRow(
     oddsHome: Double? = null,
     oddsDraw: Double? = null,
     oddsAway: Double? = null,
-    oddsSource: String? = null
+    oddsSource: String? = null,
+    oddsMarkets: List<Map<String, Any?>> = emptyList()
 ) {
     val h = oddsHome ?: match.oddsHome
     val d = oddsDraw ?: match.oddsDraw
     val a = oddsAway ?: match.oddsAway
-    if (h == null && d == null && a == null && match.isValueBet != true) return
+    if (h == null && d == null && a == null && oddsMarkets.isEmpty()) return
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(8.dp))
             .background(card)
-            .padding(12.dp)
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -1279,17 +1292,78 @@ private fun OddsRow(
                 oddsSource == "statpal" -> " · SP"
                 else -> ""
             }
-            Text("Szorzók 1X2$src", color = sub, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+            Text("Szorzók$src", color = sub, fontSize = 12.sp, fontWeight = FontWeight.Medium)
             if (match.isValueBet == true) {
                 Text("ÉRTÉKES", color = Color(0xFFFFD54F), fontSize = 11.sp, fontWeight = FontWeight.Bold)
             }
         }
+
+        // 1X2 kiemelve
         if (h != null || d != null || a != null) {
-            Spacer(modifier = Modifier.height(8.dp))
+            Text("1X2 (végeredmény)", color = text, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OddsChip("1", h, text, green, Modifier.weight(1f))
                 OddsChip("X", d, text, green, Modifier.weight(1f))
                 OddsChip("2", a, text, green, Modifier.weight(1f))
+            }
+        }
+
+        // Összes többi piac
+        oddsMarkets.forEach { market ->
+            val marketName = market["market"]?.toString().orEmpty()
+            if (marketName.isBlank()) return@forEach
+            val low = marketName.lowercase()
+            // 1X2 már fent – ne ismételjük, ha ugyanaz
+            val is1x2 = listOf("full time", "1x2", "match winner", "match result", "ft result")
+                .any { it in low }
+            if (is1x2 && (h != null || d != null || a != null)) return@forEach
+
+            val bookie = market["bookmaker"]?.toString().orEmpty()
+            val valuesRaw = market["values"]
+            val values: List<Pair<String, Double>> = when (valuesRaw) {
+                is List<*> -> valuesRaw.mapNotNull { v ->
+                    if (v is Map<*, *>) {
+                        val lab = v["label"]?.toString() ?: return@mapNotNull null
+                        val odd = when (val o = v["odd"]) {
+                            is Number -> o.toDouble()
+                            is String -> o.toDoubleOrNull()
+                            else -> null
+                        } ?: return@mapNotNull null
+                        lab to odd
+                    } else null
+                }
+                else -> emptyList()
+            }
+            if (values.isEmpty()) return@forEach
+
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(
+                    text = if (bookie.isNotBlank()) "$marketName · $bookie" else marketName,
+                    color = text,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+                // sorokba tördelve max 3 chip / sor
+                values.chunked(3).forEach { row ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        row.forEach { (lab, odd) ->
+                            OddsChip(
+                                label = lab.take(18),
+                                value = odd,
+                                text = text,
+                                green = green,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                        // kitöltés ha < 3
+                        repeat(3 - row.size) {
+                            Spacer(modifier = Modifier.weight(1f))
+                        }
+                    }
+                }
             }
         }
     }
