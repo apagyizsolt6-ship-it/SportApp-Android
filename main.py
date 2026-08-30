@@ -656,6 +656,145 @@ def _normalize_hl_match_item(m: dict) -> dict:
 
 
 
+
+_odds_cache = {}  # key -> {ts, data, odds_type}
+
+
+def _odds_cache_ttl(odds_type: str, status: str = None, kickoff_date: str = None, kickoff_time: str = None) -> int:
+    """Prematch 6–8h; kickoff előtt rövid; live rövid."""
+    ot = (odds_type or "prematch").lower()
+    st = (status or "").upper().replace(".", "")
+    if ot == "live" or st in ("1H", "2H", "HT", "LIVE", "ET", "INPLAY"):
+        return 180  # 3 perc
+    # kickoff ablak
+    try:
+        if kickoff_date and kickoff_time and ":" in str(kickoff_time):
+            parts = str(kickoff_time).strip().split(":")
+            hh, mm = int(parts[0]), int(parts[1]) if len(parts) > 1 else 0
+            dt = datetime.strptime(str(kickoff_date)[:10], "%Y-%m-%d").replace(
+                hour=hh, minute=mm
+            )
+            # Europe/Budapest közelítés: local server time
+            delta_sec = (dt - datetime.now()).total_seconds()
+            if 0 < delta_sec < 3 * 3600:
+                return 2700  # 45 perc
+    except Exception:
+        pass
+    return 7 * 3600  # ~7 óra prematch
+
+
+def _parse_hl_1x2(odds_list) -> tuple:
+    """Highlightly odds lista → (home, draw, away) Full Time Result."""
+    if not isinstance(odds_list, list):
+        return None, None, None
+    best = (None, None, None)
+    for entry in odds_list:
+        if not isinstance(entry, dict):
+            continue
+        # entry can be {matchId, odds: [...]} or direct bookmaker block
+        blocks = entry.get("odds") if isinstance(entry.get("odds"), list) else [entry]
+        for b in blocks:
+            if not isinstance(b, dict):
+                continue
+            market = str(b.get("market") or b.get("name") or "").lower()
+            if market and "full time" not in market and "1x2" not in market and market not in (
+                "match winner", "match result", "ft result", "home/away"
+            ):
+                # allow empty market if values look like 1X2
+                vals = b.get("values") or b.get("odds") or []
+                if not isinstance(vals, list):
+                    continue
+            vals = b.get("values") or []
+            if not isinstance(vals, list):
+                continue
+            h = d = a = None
+            for v in vals:
+                if not isinstance(v, dict):
+                    continue
+                label = str(v.get("value") or v.get("label") or v.get("name") or "").strip().lower()
+                try:
+                    odd = float(v.get("odd") if v.get("odd") is not None else v.get("price"))
+                except Exception:
+                    continue
+                if label in ("home", "1", "hazai"):
+                    h = odd
+                elif label in ("draw", "x", "döntetlen", "dontetlen"):
+                    d = odd
+                elif label in ("away", "2", "vendég", "vendeg"):
+                    a = odd
+            if h is not None or d is not None or a is not None:
+                # prefer first complete set
+                if h is not None and d is not None and a is not None:
+                    return h, d, a
+                if best[0] is None:
+                    best = (h, d, a)
+    return best
+
+
+def fetch_highlightly_odds(highlight_match_id: str, odds_type: str = "prematch"):
+    """
+    GET /odds?matchId=&oddsType=prematch|live
+    Cache: prematch ~7h, live ~3 perc.
+    """
+    if not HIGHLIGHTLY_KEY or not highlight_match_id:
+        return None
+    hid = str(highlight_match_id).strip()
+    ot = "live" if str(odds_type).lower() == "live" else "prematch"
+    cache_key = f"{hid}:{ot}"
+    now = time.time()
+    cached = _odds_cache.get(cache_key)
+    ttl = _odds_cache_ttl(ot)
+    if cached and (now - cached.get("ts", 0)) < ttl:
+        return cached.get("data")
+
+    try:
+        resp = requests.get(
+            "https://soccer.highlightly.net/odds",
+            headers=_highlightly_headers(),
+            params={"matchId": hid, "oddsType": ot, "limit": 50},
+            timeout=10,
+        )
+        if resp.status_code != 200:
+            if cached:
+                return cached.get("data")
+            return None
+        payload = resp.json()
+        data = payload.get("data") if isinstance(payload, dict) else payload
+        if not isinstance(data, list):
+            data = []
+        _odds_cache[cache_key] = {"ts": now, "data": data, "odds_type": ot}
+        return data
+    except Exception:
+        if cached:
+            return cached.get("data")
+        return None
+
+
+def enrich_odds_from_highlightly(payload: dict) -> dict:
+    """Ha StatPal odds üres, Highlightly 1X2-t tölt be (cache-elve)."""
+    if not isinstance(payload, dict):
+        return payload
+    if payload.get("odds_home") is not None or payload.get("odds_draw") is not None:
+        return payload
+    hid = payload.get("highlight_match_id")
+    if not hid:
+        return payload
+    st = str(payload.get("status") or "").upper()
+    ot = "live" if st in ("1H", "2H", "HT", "LIVE", "ET") else "prematch"
+    raw = fetch_highlightly_odds(str(hid), ot)
+    if not raw and ot == "live":
+        raw = fetch_highlightly_odds(str(hid), "prematch")
+    h, d, a = _parse_hl_1x2(raw or [])
+    if h is not None or d is not None or a is not None:
+        payload = dict(payload)
+        payload["odds_home"] = h
+        payload["odds_draw"] = d
+        payload["odds_away"] = a
+        payload["odds_source"] = "highlightly"
+        payload["odds_type"] = ot
+    return payload
+
+
 def resolve_highlightly_match_id(home_name: str, away_name: str, date_iso: str = None):
     """
     Highlightly match ID feloldás:
@@ -716,7 +855,7 @@ def fetch_highlightly_match_detail(highlight_match_id: str):
     now = time.time()
     cached = _detail_cache.get(cache_key)
     if cached and (now - cached["ts"]) < DETAIL_CACHE_TTL:
-        return cached["data"]
+        return enrich_odds_from_highlightly(dict(cached["data"]) if isinstance(cached["data"], dict) else cached["data"])
     try:
         resp = requests.get(
             f"https://soccer.highlightly.net/matches/{cache_key}",
@@ -2852,6 +2991,7 @@ def get_match_detail(match_id: str):
                                 item["highlight_match_id"] = hid
                         except Exception:
                             pass
+                    item = enrich_odds_from_highlightly(dict(item) if isinstance(item, dict) else item)
                     _detail_cache[cache_key] = {"data": item, "ts": now}
                     return item
     except Exception:
@@ -2957,6 +3097,7 @@ def get_match_detail(match_id: str):
     except Exception:
         pass
 
+    payload = enrich_odds_from_highlightly(payload if isinstance(payload, dict) else {})
     _detail_cache[cache_key] = {"data": payload, "ts": now}
     return payload
 
@@ -3293,6 +3434,38 @@ def _call_gemini(prompt: str) -> Optional[str]:
                 continue
     _gemini_last_error = " | ".join(errors[:5]) if errors else "ismeretlen hiba"
     return None
+
+
+
+@app.get("/api/matches/{match_id}/odds")
+def get_match_odds(match_id: str):
+    """
+    1X2 odds: StatPal mezők, ha üres → Highlightly /odds (cache 6–8h prematch).
+    """
+    try:
+        detail = get_match_detail(match_id)
+    except Exception:
+        detail = None
+    if not isinstance(detail, dict) or detail.get("error"):
+        return {
+            "available": False,
+            "odds_home": None,
+            "odds_draw": None,
+            "odds_away": None,
+            "source": None,
+        }
+    detail = enrich_odds_from_highlightly(detail)
+    return {
+        "match_id": str(match_id),
+        "available": detail.get("odds_home") is not None or detail.get("odds_draw") is not None,
+        "odds_home": detail.get("odds_home"),
+        "odds_draw": detail.get("odds_draw"),
+        "odds_away": detail.get("odds_away"),
+        "value_bet": detail.get("value_bet"),
+        "source": detail.get("odds_source") or ("statpal" if detail.get("odds_home") is not None else None),
+        "odds_type": detail.get("odds_type"),
+        "highlight_match_id": detail.get("highlight_match_id"),
+    }
 
 
 @app.get("/api/ai-analysis/{match_id}")
