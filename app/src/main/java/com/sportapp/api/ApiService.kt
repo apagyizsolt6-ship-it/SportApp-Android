@@ -50,6 +50,17 @@ interface ApiService {
         @Path("highlight_match_id") highlightMatchId: String
     ): StatisticsResponse
 
+    /** HL id nélkül is: backend feloldja a Highlightly id-t. */
+    @GET("api/matches/{match_id}/lineups")
+    suspend fun getMatchLineupsByMatchId(
+        @Path("match_id") matchId: String
+    ): LineupsResponse
+
+    @GET("api/matches/{match_id}/statistics")
+    suspend fun getMatchStatisticsByMatchId(
+        @Path("match_id") matchId: String
+    ): StatisticsResponse
+
     // AI elemzés – a GitHub-on lévő MatchViewModel hivatkozik rá.
     // Ha a backend még nem ad valódi AI-t, üres/placeholder válasz jön.
     @GET("api/ai-analysis/{match_id}")
