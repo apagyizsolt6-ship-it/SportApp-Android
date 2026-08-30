@@ -963,16 +963,18 @@ def _stat_label_hu(name: str) -> str:
     """Először pontos egyezés – ne legyen minden 'Passzok'."""
     if not name:
         return name
+    try:
+        labels = STAT_LABEL_HU if isinstance(STAT_LABEL_HU, dict) else {}
+    except NameError:
+        labels = {}
     key = " ".join(str(name).strip().lower().split())
-    if key in STAT_LABEL_HU:
-        return STAT_LABEL_HU[key]
-    # hosszabb kulcsok előbb (pl. accurate passes > passes)
-    for en in sorted(STAT_LABEL_HU.keys(), key=len, reverse=True):
+    if key in labels:
+        return labels[key]
+    for en in sorted(labels.keys(), key=len, reverse=True):
         if en == key:
-            return STAT_LABEL_HU[en]
-        # csak teljes szóhatáros tartalmazás, min. 8 karakteres kulcs
+            return labels[en]
         if len(en) >= 8 and en in key:
-            return STAT_LABEL_HU[en]
+            return labels[en]
     return str(name).strip()
 
 
@@ -2733,26 +2735,87 @@ def get_highlightly_match_detail(highlight_match_id: str):
 
 @app.get("/api/matches/highlightly/{highlight_match_id}/lineups")
 def get_match_lineups(highlight_match_id: str):
-    """Highlightly összeállítás (kezdő + pad)."""
-    raw = fetch_highlightly_lineups(highlight_match_id)
-    if not raw:
-        return {"home": None, "away": None, "available": False}
-    normalized = _normalize_lineups(raw)
-    normalized["available"] = bool(
-        (normalized.get("home") and normalized["home"].get("players"))
-        or (normalized.get("away") and normalized["away"].get("players"))
-    )
-    return normalized
+    """Highlightly összeállítás (kezdő + pad) – soha ne dobjon 500-at."""
+    try:
+        raw = fetch_highlightly_lineups(highlight_match_id)
+        if not raw:
+            return {"home": None, "away": None, "available": False}
+        normalized = _normalize_lineups(raw)
+        if not isinstance(normalized, dict):
+            return {"home": None, "away": None, "available": False}
+        normalized["available"] = bool(
+            (normalized.get("home") and normalized["home"].get("players"))
+            or (normalized.get("away") and normalized["away"].get("players"))
+        )
+        return normalized
+    except Exception as e:
+        return {"home": None, "away": None, "available": False, "error": str(e)[:120]}
 
 
 @app.get("/api/matches/highlightly/{highlight_match_id}/statistics")
 def get_match_statistics(highlight_match_id: str):
-    """Highlightly meccs statisztika (birtoklás, lövések, stb.)."""
-    raw = fetch_highlightly_statistics(highlight_match_id)
-    return {
-        "items": _normalize_statistics(raw),
-        "available": bool(raw),
-    }
+    """Highlightly meccs statisztika – soha ne dobjon 500-at."""
+    try:
+        raw = fetch_highlightly_statistics(highlight_match_id)
+        items = _normalize_statistics(raw) if raw else []
+        if not isinstance(items, list):
+            items = []
+        return {
+            "items": items,
+            "available": bool(items),
+        }
+    except Exception as e:
+        return {
+            "items": [],
+            "available": False,
+            "error": str(e)[:120],
+        }
+
+
+
+
+def _resolve_hl_id_for_match(match_id: str):
+    """StatPal match_id → Highlightly id (detail + név-alapú resolve)."""
+    try:
+        detail = get_match_detail(match_id)
+    except Exception:
+        detail = None
+    if not isinstance(detail, dict) or detail.get("error"):
+        return None, detail
+    hid = detail.get("highlight_match_id")
+    if hid:
+        return str(hid).strip(), detail
+    try:
+        hid = resolve_highlightly_match_id(
+            detail.get("home_team") or "",
+            detail.get("away_team") or "",
+            detail.get("kickoff_date"),
+        )
+        if hid:
+            detail = dict(detail)
+            detail["highlight_match_id"] = hid
+            return str(hid), detail
+    except Exception:
+        pass
+    return None, detail
+
+
+@app.get("/api/matches/{match_id}/lineups")
+def get_match_lineups_by_statpal(match_id: str):
+    """Összeállítás StatPal match id-ról – HL feloldással."""
+    hid, _ = _resolve_hl_id_for_match(match_id)
+    if not hid:
+        return {"home": None, "away": None, "available": False, "reason": "no_highlightly_id"}
+    return get_match_lineups(hid)
+
+
+@app.get("/api/matches/{match_id}/statistics")
+def get_match_statistics_by_statpal(match_id: str):
+    """Statisztika StatPal match id-ról – HL feloldással."""
+    hid, _ = _resolve_hl_id_for_match(match_id)
+    if not hid:
+        return {"items": [], "available": False, "reason": "no_highlightly_id"}
+    return get_match_statistics(hid)
 
 
 @app.get("/api/matches/{match_id}")
