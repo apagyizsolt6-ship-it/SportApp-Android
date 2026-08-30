@@ -194,22 +194,36 @@ fun MatchDetailDialog(
             try {
                 when (index) {
                     2 -> { // stats
-                        if (hlId.isNotBlank()) {
-                            val r = RetrofitInstance.api.getMatchStatistics(hlId)
+                        if (stats.isEmpty()) {
+                            val r = try {
+                                if (hlId.isNotBlank()) {
+                                    RetrofitInstance.api.getMatchStatistics(hlId)
+                                } else {
+                                    RetrofitInstance.api.getMatchStatisticsByMatchId(match.id)
+                                }
+                            } catch (_: Exception) {
+                                RetrofitInstance.api.getMatchStatisticsByMatchId(match.id)
+                            }
                             stats = r.items.orEmpty()
-                            if (stats.isEmpty()) errorMsg = "Nincs elérhető statisztika."
-                        } else {
-                            errorMsg = "Ehhez a meccshez nincs Highlightly azonosító (stats/lineups/videó ehhez kell)."
+                            if (stats.isEmpty()) {
+                                errorMsg = "Ehhez a meccshez még nincs statisztika (alsóbb ligáknál gyakran hiányzik)."
+                            }
                         }
                     }
                     3 -> { // lineups
-                        if (hlId.isNotBlank() && lineups == null) {
-                            lineups = RetrofitInstance.api.getMatchLineups(hlId)
-                            if (lineups?.available != true) {
-                                errorMsg = "Az összeállítás még nem elérhető."
+                        if (lineups == null || lineups?.available != true) {
+                            lineups = try {
+                                if (hlId.isNotBlank()) {
+                                    RetrofitInstance.api.getMatchLineups(hlId)
+                                } else {
+                                    RetrofitInstance.api.getMatchLineupsByMatchId(match.id)
+                                }
+                            } catch (_: Exception) {
+                                RetrofitInstance.api.getMatchLineupsByMatchId(match.id)
                             }
-                        } else if (hlId.isBlank()) {
-                            errorMsg = "Ehhez a meccshez nincs Highlightly azonosító (stats/lineups/videó ehhez kell)."
+                            if (lineups?.available != true) {
+                                errorMsg = "Az összeállítás ehhez a meccshez nem érhető el."
+                            }
                         }
                     }
                     4 -> { // videos
@@ -1461,7 +1475,7 @@ private fun StatsTab(
     ) {
         item { XgMomentumCard(stats, "Hazai", "Vendég", card, text, sub) }
         if (stats.isEmpty()) {
-            item { Text("Nincs statisztika.", color = sub, fontSize = 13.sp) }
+            item { Text("Nincs megjeleníthető statisztika ehhez a meccshez.", color = sub, fontSize = 13.sp) }
         } else {
             items(stats) { s ->
                 val homeVal = formatStatValue(s.name, s.home)
@@ -1525,7 +1539,7 @@ private fun LineupsTab(
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         if (lineups == null || lineups.available != true) {
-            item { Text("Összeállítás nem elérhető.", color = sub, fontSize = 13.sp) }
+            item { Text("Az API nem adott kezdőcsapatot ehhez a meccshez (gyakori alsóbb ligáknál).", color = sub, fontSize = 13.sp) }
         } else {
             item {
                 PitchLineupCard(
