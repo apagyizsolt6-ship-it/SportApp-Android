@@ -5,12 +5,14 @@ import re
 import os
 import time
 from datetime import datetime, timezone, timedelta
+from typing import Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 app = FastAPI()
 
 STATPAL_KEY = os.getenv("STATPAL_KEY")
 HIGHLIGHTLY_KEY = os.getenv("HIGHLIGHTLY_KEY")
+GEMINI_KEY = os.getenv("GEMINI_KEY") or os.getenv("GOOGLE_API_KEY")
 
 STATPAL_CACHE_TTL = 18
 HIGHLIGHTLY_CACHE_TTL = 90
@@ -3003,48 +3005,161 @@ def get_matches_by_date(date: str):
 
 
 
+_ai_analysis_cache = {}
+AI_ANALYSIS_TTL = 600  # 10 perc
+
+def _call_gemini(prompt: str) -> Optional[str]:
+    """Gemini generateContent – GEMINI_KEY env szükséges."""
+    key = (GEMINI_KEY or "").strip()
+    if not key:
+        return None
+    models = [
+        "gemini-2.0-flash",
+        "gemini-1.5-flash",
+        "gemini-1.5-flash-latest",
+    ]
+    body = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "temperature": 0.7,
+            "maxOutputTokens": 1024,
+        },
+    }
+    for model in models:
+        try:
+            url = (
+                f"https://generativelanguage.googleapis.com/v1beta/models/"
+                f"{model}:generateContent?key={key}"
+            )
+            resp = requests.post(url, json=body, timeout=25)
+            if resp.status_code != 200:
+                continue
+            data = resp.json()
+            cands = data.get("candidates") or []
+            if not cands:
+                continue
+            parts = (cands[0].get("content") or {}).get("parts") or []
+            texts = [p.get("text") for p in parts if isinstance(p, dict) and p.get("text")]
+            text = "\n".join(texts).strip()
+            if text:
+                return text
+        except Exception:
+            continue
+    return None
+
+
 @app.get("/api/ai-analysis/{match_id}")
 def get_ai_analysis(match_id: str):
     """
-    Placeholder AI elemzés endpoint.
-    A mobil kliens MatchViewModel getAiAnalysis hívását szolgálja ki.
-    Később ide köthető valódi modell / prompt.
+    Valódi AI elemzés Gemini-vel (GEMINI_KEY).
+    A mobil kliens MatchViewModel / MatchDetail getAiAnalysis hívását szolgálja ki.
     """
+    mid = str(match_id)
+    now = time.time()
+    cached = _ai_analysis_cache.get(mid)
+    if cached and (now - cached.get("ts", 0)) < AI_ANALYSIS_TTL:
+        return cached["payload"]
+
     detail = None
     try:
         detail = get_match_detail(match_id)
     except Exception:
         detail = None
 
-    home = away = status = ""
+    home = away = status = league = ""
     home_score = away_score = None
+    minute = None
+    events_txt = ""
     if isinstance(detail, dict) and "error" not in detail:
         home = detail.get("home_team") or ""
         away = detail.get("away_team") or ""
         status = detail.get("status") or ""
+        league = detail.get("league") or ""
         home_score = detail.get("home_score")
         away_score = detail.get("away_score")
+        minute = detail.get("minute")
+        evs = detail.get("events") or []
+        if isinstance(evs, list) and evs:
+            bits = []
+            for e in evs[:12]:
+                if not isinstance(e, dict):
+                    continue
+                m = e.get("minute_display") or (f"{e.get('minute')}'" if e.get("minute") is not None else "")
+                bits.append(
+                    f"{m} {e.get('type') or ''} {e.get('player') or ''} ({e.get('team') or ''})".strip()
+                )
+            events_txt = "; ".join(bits)
 
-    if home and away:
-        score_txt = ""
-        if home_score is not None and away_score is not None:
-            score_txt = f" Állás: {home_score}-{away_score}."
-        summary = (
-            f"{home} vs {away}.{score_txt} "
-            f"Státusz: {status or 'ismeretlen'}. "
-            "Részletes AI elemzés hamarosan."
-        )
+    form_txt = ""
+    h2h_txt = ""
+    try:
+        form = get_match_form(match_id)
+        if isinstance(form, dict) and "error" not in form:
+            form_txt = str(form)[:800]
+    except Exception:
+        pass
+    try:
+        h2h = get_match_h2h(match_id)
+        if isinstance(h2h, dict) and "error" not in h2h:
+            h2h_txt = str(h2h)[:800]
+    except Exception:
+        pass
+
+    if not home or not away:
+        summary = "Ehhez a mérkőzéshez jelenleg nincs elég adat az AI elemzéshez."
+        payload = {
+            "match_id": mid,
+            "summary": summary,
+            "analysis": summary,
+            "text": summary,
+            "prediction": None,
+            "available": False,
+        }
+        return payload
+
+    score_txt = f"{home_score}-{away_score}" if home_score is not None and away_score is not None else "–"
+    prompt = f"""Te egy futball-elemző vagy. Írj MAGYARUL részletes, de tömör meccselemzést (max 250 szó).
+
+Meccs: {home} vs {away}
+Bajnokság: {league or "ismeretlen"}
+Állás: {score_txt}
+Státusz: {status or "ismeretlen"}{"  Perc: " + str(minute) if minute else ""}
+Események: {events_txt or "nincs adat"}
+Forma / H2H (nyers): {form_txt[:400] if form_txt else "nincs"} | {h2h_txt[:400] if h2h_txt else "nincs"}
+
+Szerkezet:
+1) Rövid összegzés (1-2 mondat)
+2) Kulcsmomentumok / mi dönthet
+3) Erősségek-gyengeségek mindkét oldalon
+4) Várható forgatókönyv / tipp (óvatosan, nem fogadási tanács)
+
+Kerüld a sablonos "hamarosan" szöveget. Legyél konkrét."""
+
+    gemini_text = _call_gemini(prompt)
+    if gemini_text:
+        summary = gemini_text
+        available = True
     else:
-        summary = "Ehhez a mérkőzéshez jelenleg nincs AI elemzés."
+        # Fallback ha nincs kulcs / API hiba – mégis hasznos, nem üres
+        summary = (
+            f"{home} vs {away}. Állás: {score_txt}. Státusz: {status or 'ismeretlen'}.\n\n"
+            f"A Gemini kulcs nincs beállítva vagy az API nem válaszolt. "
+            f"Állítsd be a Renderen a GEMINI_KEY környezeti változót a részletes elemzéshez."
+        )
+        if events_txt:
+            summary += f"\n\nIsmert események: {events_txt}"
+        available = False
 
-    return {
-        "match_id": str(match_id),
+    payload = {
+        "match_id": mid,
         "summary": summary,
         "analysis": summary,
         "text": summary,
         "prediction": None,
-        "available": False,
+        "available": available,
     }
+    _ai_analysis_cache[mid] = {"ts": now, "payload": payload}
+    return payload
 
 
 @app.get("/api/status")
