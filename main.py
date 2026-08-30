@@ -3603,8 +3603,6 @@ def _call_gemini(prompt: str) -> Optional[str]:
 
 
 
-@app.get("/api/matches/{match_id}/odds")
-
 def _normalize_all_odds_markets(odds_list) -> list:
     """
     Highlightly odds → egységes piaclista:
@@ -3675,6 +3673,7 @@ def _normalize_all_odds_markets(odds_list) -> list:
     return out
 
 
+@app.get("/api/matches/{match_id}/odds")
 def get_match_odds(match_id: str):
     """
     Teljes odds: 1X2 + az összes Highlightly piac (bookmakerenként).
