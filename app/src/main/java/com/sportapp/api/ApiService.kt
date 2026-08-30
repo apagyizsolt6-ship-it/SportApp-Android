@@ -61,6 +61,11 @@ interface ApiService {
         @Path("match_id") matchId: String
     ): StatisticsResponse
 
+    @GET("api/matches/{match_id}/odds")
+    suspend fun getMatchOdds(
+        @Path("match_id") matchId: String
+    ): Map<String, Any?>
+
     // AI elemzés – a GitHub-on lévő MatchViewModel hivatkozik rá.
     // Ha a backend még nem ad valódi AI-t, üres/placeholder válasz jön.
     @GET("api/ai-analysis/{match_id}")
