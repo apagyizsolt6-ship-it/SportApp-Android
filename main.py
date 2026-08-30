@@ -5,13 +5,14 @@ import re
 import os
 import time
 from datetime import datetime, timezone, timedelta
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 app = FastAPI()
 
 STATPAL_KEY = os.getenv("STATPAL_KEY")
 HIGHLIGHTLY_KEY = os.getenv("HIGHLIGHTLY_KEY")
 
-STATPAL_CACHE_TTL = 30
+STATPAL_CACHE_TTL = 18
 HIGHLIGHTLY_CACHE_TTL = 90
 TEAM_IMAGE_CACHE_TTL = 21600
 IMAGE_PROXY_BASE_URL = os.getenv(
@@ -190,7 +191,7 @@ _lineups_cache = {}
 _stats_cache = {}
 _hl_date_cache = {}
 _matches_list_cache = {"data": None, "ts": 0}
-MATCHES_LIST_TTL = 25
+MATCHES_LIST_TTL = 15
 _hl_h2h_cache = {}
 _hl_form_cache = {}
 DETAIL_CACHE_TTL = 20
@@ -431,7 +432,7 @@ def fetch_highlightly_matches_by_date(date_iso: str, limit: int = 100):
     all_data = []
     page_size = min(int(limit) if limit else 100, 100)
     try:
-        for page in range(0, 8):  # max 800
+        def _fetch_page(page: int):
             offset = page * page_size
             resp = requests.get(
                 "https://soccer.highlightly.net/matches",
@@ -442,10 +443,10 @@ def fetch_highlightly_matches_by_date(date_iso: str, limit: int = 100):
                     "limit": page_size,
                     "offset": offset,
                 },
-                timeout=12,
+                timeout=8,
             )
             if resp.status_code != 200:
-                break
+                return page, []
             payload = resp.json()
             if isinstance(payload, dict):
                 data = payload.get("data") or []
@@ -453,11 +454,26 @@ def fetch_highlightly_matches_by_date(date_iso: str, limit: int = 100):
                 data = payload
             else:
                 data = []
-            if not isinstance(data, list) or not data:
+            return page, data if isinstance(data, list) else []
+
+        # Párhuzamos lapozás (max 8 oldal) – ugyanaz a lefedettség, kevesebb várakozás
+        pages = {}
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            futs = [pool.submit(_fetch_page, p) for p in range(0, 8)]
+            for fut in as_completed(futs):
+                try:
+                    page, data = fut.result()
+                    pages[page] = data
+                except Exception:
+                    pass
+        for page in sorted(pages.keys()):
+            data = pages[page]
+            if not data:
                 break
             all_data.extend(data)
             if len(data) < page_size:
-                break
+                # további oldalak lehetnek üresek – továbbra is gyűjtünk, ami megjött
+                pass
         _hl_date_cache[cache_key] = {"data": all_data, "ts": now}
         return all_data
     except Exception:
@@ -1501,7 +1517,7 @@ def fetch_statpal_matches():
     for path in ("matches/today", "matches/live"):
         try:
             url = f"https://statpal.io/api/v2/soccer/{path}?access_key={STATPAL_KEY}"
-            response = requests.get(url, headers=headers, timeout=25)
+            response = requests.get(url, headers=headers, timeout=15)
             if response.status_code != 200:
                 last_err = f"HTTP {response.status_code}"
                 continue
@@ -1902,9 +1918,34 @@ def get_matches():
         return cached_list
 
     try:
-        data = fetch_statpal_matches()
-
         matches_list = []
+        today_iso = datetime.now().strftime("%Y-%m-%d")
+
+        # StatPal + Highlightly PÁRHUZAMOSAN – kevesebb várakozás, ugyanaz az adat
+        data = {}
+        highlights_data = []
+        hl_day = []
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            f_sp = pool.submit(fetch_statpal_matches)
+            f_hl_hi = pool.submit(fetch_highlightly_highlights)
+            f_hl_day = pool.submit(fetch_highlightly_matches_by_date, today_iso, 100)
+            try:
+                data = f_sp.result() or {}
+            except Exception:
+                data = _statpal_cache.get("data") or {}
+            try:
+                highlights_data = f_hl_hi.result() or []
+            except Exception:
+                highlights_data = []
+            try:
+                hl_day = f_hl_day.result() or []
+            except Exception:
+                hl_day = []
+
+        if not isinstance(data, dict):
+            data = {}
+        if not isinstance(highlights_data, list):
+            highlights_data = []
 
         live_matches_data = (
             data.get("live_matches")
@@ -1919,19 +1960,8 @@ def get_matches():
             live_matches_data.get("league")
         )
 
-        # Highlightly opcionális – timeout ne dobja el a teljes mai listát
-        try:
-            highlights_data = fetch_highlightly_highlights()
-        except Exception:
-            highlights_data = []
-        if not isinstance(highlights_data, list):
-            highlights_data = []
-
-        # Egyszer töltjük a napi HL meccseket → id lookup (gyors, nincs N×API)
         hl_id_lookup = {}
         try:
-            today_iso = datetime.now().strftime("%Y-%m-%d")
-            hl_day = fetch_highlightly_matches_by_date(today_iso, limit=100)
             hl_id_lookup = _build_hl_id_lookup(hl_day)
         except Exception:
             hl_id_lookup = {}
