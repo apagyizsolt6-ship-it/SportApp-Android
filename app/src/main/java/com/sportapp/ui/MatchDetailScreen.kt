@@ -109,6 +109,10 @@ fun MatchDetailDialog(
     var stats by remember { mutableStateOf<List<StatItem>>(emptyList()) }
     var lineups by remember { mutableStateOf<LineupsResponse?>(null) }
     var videos by remember { mutableStateOf<List<HighlightVideo>>(emptyList()) }
+    var oddsHomeUi by remember { mutableStateOf(match.oddsHome) }
+    var oddsDrawUi by remember { mutableStateOf(match.oddsDraw) }
+    var oddsAwayUi by remember { mutableStateOf(match.oddsAway) }
+    var oddsSource by remember { mutableStateOf<String?>(null) }
     var standings by remember { mutableStateOf<List<StandingTeam>>(emptyList()) }
     var loadingTab by remember { mutableStateOf(false) }
     var errorMsg by remember { mutableStateOf<String?>(null) }
@@ -167,6 +171,26 @@ fun MatchDetailDialog(
     }
 
     // Élő meccs + Statisztika tab: stats is 20 mp-enként
+    LaunchedEffect(match.id) {
+        if (oddsHomeUi != null || oddsDrawUi != null) return@LaunchedEffect
+        try {
+            val o = RetrofitInstance.api.getMatchOdds(match.id)
+            fun num(key: String): Double? {
+                val v = o[key] ?: return null
+                return when (v) {
+                    is Number -> v.toDouble()
+                    is String -> v.toDoubleOrNull()
+                    else -> null
+                }
+            }
+            oddsHomeUi = num("odds_home")
+            oddsDrawUi = num("odds_draw")
+            oddsAwayUi = num("odds_away")
+            oddsSource = o["source"]?.toString()
+        } catch (_: Exception) {
+        }
+    }
+
     LaunchedEffect(match.id, selectedTab, detail.status) {
         val live = detail.status != "FT"
                 && detail.status != "NS"
@@ -412,7 +436,7 @@ fun MatchDetailDialog(
                                 strokeWidth = 1.5.dp,
                                 color = green
                             )
-                            Spacer(Modifier.width(6.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
                             Text(
                                 text = "Frissítés…",
                                 color = sub,
@@ -425,7 +449,7 @@ fun MatchDetailDialog(
                                     .clip(CircleShape)
                                     .background(green)
                             )
-                            Spacer(Modifier.width(6.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
                             Text(
                                 text = "Élő · automatikus frissítés 20 mp-enként",
                                 color = sub,
@@ -637,7 +661,11 @@ fun MatchDetailDialog(
                         sub = sub,
                         card = card,
                         green = green,
-                        accent = accent
+                        accent = accent,
+                        oddsHome = oddsHomeUi,
+                        oddsDraw = oddsDrawUi,
+                        oddsAway = oddsAwayUi,
+                        oddsSource = oddsSource
                     )
                     1 -> EventsTab(
                         events = events,
@@ -903,7 +931,7 @@ private fun MatchDetailScoreboard(
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 DetailTeamLogo(url = match.homeLogoUrl, teamName = match.homeTeam, size = 48.dp)
-                Spacer(Modifier.height(6.dp))
+                Spacer(modifier = Modifier.height(6.dp))
                 Text(
                     text = match.homeTeam,
                     color = text,
@@ -922,7 +950,7 @@ private fun MatchDetailScoreboard(
                     fontSize = 28.sp,
                     fontWeight = FontWeight.Bold
                 )
-                Spacer(Modifier.height(4.dp))
+                Spacer(modifier = Modifier.height(4.dp))
                 if (isLive) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Box(
@@ -931,7 +959,7 @@ private fun MatchDetailScoreboard(
                                 .clip(CircleShape)
                                 .background(green)
                         )
-                        Spacer(Modifier.width(4.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
                         Text(
                             text = "${match.minute}'",
                             color = green,
@@ -947,7 +975,7 @@ private fun MatchDetailScoreboard(
                     )
                 }
                 if (match.isValueBet == true) {
-                    Spacer(Modifier.height(4.dp))
+                    Spacer(modifier = Modifier.height(4.dp))
                     Text(
                         text = "ÉRTÉKES",
                         color = Color(0xFFFFB300),
@@ -961,7 +989,7 @@ private fun MatchDetailScoreboard(
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 DetailTeamLogo(url = match.awayLogoUrl, teamName = match.awayTeam, size = 48.dp)
-                Spacer(Modifier.height(6.dp))
+                Spacer(modifier = Modifier.height(6.dp))
                 Text(
                     text = match.awayTeam,
                     color = text,
@@ -1009,7 +1037,11 @@ private fun SummaryTab(
     sub: Color,
     card: Color,
     green: Color,
-    accent: Color
+    accent: Color,
+    oddsHome: Double? = null,
+    oddsDraw: Double? = null,
+    oddsAway: Double? = null,
+    oddsSource: String? = null
 ) {
     val goals = events.filter {
         val ty = it.type?.lowercase().orEmpty()
@@ -1046,14 +1078,14 @@ private fun SummaryTab(
 
         // Odds
         item {
-            OddsRow(match, text, sub, card, green)
+            OddsRow(match, text, sub, card, green, oddsHome, oddsDraw, oddsAway, oddsSource)
         }
 
         // Forma (W-D-L)
         if (form?.available == true || !form?.home.isNullOrEmpty() || !form?.away.isNullOrEmpty()) {
             item {
                 Text("Forma (utolsó 5)", color = sub, fontSize = 12.sp, fontWeight = FontWeight.Medium)
-                Spacer(Modifier.height(6.dp))
+                Spacer(modifier = Modifier.height(6.dp))
                 FormRow(
                     homeName = match.homeTeam,
                     awayName = match.awayTeam,
@@ -1081,7 +1113,7 @@ private fun SummaryTab(
                         Text("📍 ${match.venue}", color = text, fontSize = 13.sp)
                     }
                     if (!match.referee.isNullOrBlank()) {
-                        Spacer(Modifier.height(4.dp))
+                        Spacer(modifier = Modifier.height(4.dp))
                         Text("🧑‍⚖️ ${match.referee}", color = sub, fontSize = 12.sp)
                     }
                 }
@@ -1091,7 +1123,7 @@ private fun SummaryTab(
         // Momentum
         item {
             Text("Momentum", color = sub, fontSize = 12.sp, fontWeight = FontWeight.Medium)
-            Spacer(Modifier.height(6.dp))
+            Spacer(modifier = Modifier.height(6.dp))
             MomentumChart(events = events, green = green, accent = accent, card = card)
         }
 
@@ -1115,7 +1147,7 @@ private fun SummaryTab(
 
         // H2H
         item {
-            Spacer(Modifier.height(4.dp))
+            Spacer(modifier = Modifier.height(4.dp))
             Text("Egymás ellen (H2H)", color = sub, fontSize = 12.sp, fontWeight = FontWeight.Medium)
         }
         val h2hItems = h2h?.items.orEmpty()
@@ -1173,7 +1205,7 @@ private fun FormRow(
             .padding(12.dp)
     ) {
         FormSide(homeName, homeForm, text, sub, green)
-        Spacer(Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(8.dp))
         FormSide(awayName, awayForm, text, sub, green)
     }
 }
@@ -1220,11 +1252,15 @@ private fun OddsRow(
     text: Color,
     sub: Color,
     card: Color,
-    green: Color
+    green: Color,
+    oddsHome: Double? = null,
+    oddsDraw: Double? = null,
+    oddsAway: Double? = null,
+    oddsSource: String? = null
 ) {
-    val h = match.oddsHome
-    val d = match.oddsDraw
-    val a = match.oddsAway
+    val h = oddsHome ?: match.oddsHome
+    val d = oddsDraw ?: match.oddsDraw
+    val a = oddsAway ?: match.oddsAway
     if (h == null && d == null && a == null && match.isValueBet != true) return
     Column(
         modifier = Modifier
@@ -1238,13 +1274,18 @@ private fun OddsRow(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text("Szorzók 1X2", color = sub, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+            val src = when {
+                oddsSource == "highlightly" -> " · HL"
+                oddsSource == "statpal" -> " · SP"
+                else -> ""
+            }
+            Text("Szorzók 1X2$src", color = sub, fontSize = 12.sp, fontWeight = FontWeight.Medium)
             if (match.isValueBet == true) {
                 Text("ÉRTÉKES", color = Color(0xFFFFD54F), fontSize = 11.sp, fontWeight = FontWeight.Bold)
             }
         }
         if (h != null || d != null || a != null) {
-            Spacer(Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(8.dp))
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OddsChip("1", h, text, green, Modifier.weight(1f))
                 OddsChip("X", d, text, green, Modifier.weight(1f))
@@ -1388,7 +1429,7 @@ private fun EventsTab(
                 Text(homeTeam, color = sub, fontSize = 11.sp, modifier = Modifier.weight(1f), maxLines = 1)
                 Text(awayTeam, color = sub, fontSize = 11.sp, modifier = Modifier.weight(1f), textAlign = TextAlign.End, maxLines = 1)
             }
-            Spacer(Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(8.dp))
         }
         if (events.isEmpty()) {
             item {
@@ -1452,9 +1493,9 @@ private fun EventRow(
         if (isHome) {
             Text(label, color = text, fontSize = 13.sp, modifier = Modifier.weight(1f))
             Text(minute, color = sub, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.weight(1f))
+            Spacer(modifier = Modifier.weight(1f))
         } else {
-            Spacer(Modifier.weight(1f))
+            Spacer(modifier = Modifier.weight(1f))
             Text(minute, color = sub, fontSize = 12.sp, fontWeight = FontWeight.Bold)
             Text(label, color = text, fontSize = 13.sp, modifier = Modifier.weight(1f), textAlign = TextAlign.End)
         }
@@ -1487,7 +1528,7 @@ private fun StatsTab(
                         .padding(12.dp)
                 ) {
                     Text(huStatName(s.name), color = sub, fontSize = 11.sp)
-                    Spacer(Modifier.height(4.dp))
+                    Spacer(modifier = Modifier.height(4.dp))
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween
@@ -1499,7 +1540,7 @@ private fun StatsTab(
                     val h = homeVal.replace("%", "").toFloatOrNull()
                     val a = awayVal.replace("%", "").toFloatOrNull()
                     if (h != null && a != null && h + a > 0) {
-                        Spacer(Modifier.height(6.dp))
+                        Spacer(modifier = Modifier.height(6.dp))
                         val ratio = (h / (h + a)).coerceIn(0f, 1f)
                         val animatedRatio by animateFloatAsState(
                             targetValue = ratio,
@@ -1630,7 +1671,7 @@ private fun PitchLineupCard(
                 )
             }
         }
-        Spacer(Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(8.dp))
 
         Box(
             modifier = Modifier
@@ -1774,7 +1815,7 @@ private fun PitchLineupCard(
                                 )
                             }
                         }
-                        Spacer(Modifier.height(2.dp))
+                        Spacer(modifier = Modifier.height(2.dp))
                         Text(
                             text = shortName(player.name),
                             color = Color.White,
@@ -1796,9 +1837,9 @@ private fun PitchLineupCard(
         }
 
         if (bench.isNotEmpty()) {
-            Spacer(Modifier.height(10.dp))
+            Spacer(modifier = Modifier.height(10.dp))
             Text("Pad", color = sub, fontSize = 12.sp, fontWeight = FontWeight.Medium)
-            Spacer(Modifier.height(6.dp))
+            Spacer(modifier = Modifier.height(6.dp))
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1836,7 +1877,7 @@ private fun PitchLineupCard(
                                         fontWeight = FontWeight.Bold
                                     )
                                 }
-                                Spacer(Modifier.width(6.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
                                 Text(
                                     shortName(p.name),
                                     color = text,
@@ -1846,7 +1887,7 @@ private fun PitchLineupCard(
                                 )
                             }
                         }
-                        if (row.size == 1) Spacer(Modifier.weight(1f))
+                        if (row.size == 1) Spacer(modifier = Modifier.weight(1f))
                     }
                 }
             }
@@ -1921,7 +1962,7 @@ private fun VideosTab(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text("🎥", fontSize = 18.sp)
-                    Spacer(Modifier.width(10.dp))
+                    Spacer(modifier = Modifier.width(10.dp))
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
                             text = v.title ?: "Videó",
