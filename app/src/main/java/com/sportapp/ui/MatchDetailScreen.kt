@@ -1,23 +1,15 @@
 package com.sportapp.ui
 
 import com.sportapp.models.AiAnalysisResponse
-
 import com.sportapp.models.H2hResponse
 import com.sportapp.models.FormResponse
-
 import com.sportapp.models.H2hItem
-
 import androidx.compose.ui.platform.LocalContext
-
 import androidx.compose.ui.graphics.PathEffect
-
 import androidx.compose.foundation.verticalScroll
-
 import androidx.compose.foundation.rememberScrollState
-
 import android.content.Intent
 import android.widget.Toast
-
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -1290,7 +1282,7 @@ private fun OddsRow(
             "double chance" in n -> 2 to "Kettős esély"
             "asian handicap" in n || n.startsWith("handicap") -> 3 to "Ázsiai handicap"
             "corner" in n -> 4 to "Szögletek"
-            any(x in n for x in listOf("card", "booking", "yellow", "red card", "total cards")) ->
+            listOf("card", "booking", "yellow", "red card", "total cards").any { it in n } ->
                 5 to "Lapok (sárga/piros)"
             "total goals" in n || "over/under" in n || ("total" in n && ("goal" in n || "over" in n || "under" in n) && "corner" !in n && "card" !in n) ->
                 6 to "Gólszám (Over/Under)"
@@ -2111,7 +2103,6 @@ private fun PitchLineupCard(
         }
     }
 }
-
 
 /** Játékosnév rövidítése a pályára (vezetéknév / utolsó tag). */
 private fun shortName(name: String?): String {
