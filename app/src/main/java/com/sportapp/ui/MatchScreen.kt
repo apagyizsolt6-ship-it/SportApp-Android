@@ -373,6 +373,29 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
     }
 
     val context = LocalContext.current
+    fun shareMatch(m: MatchResponse) {
+        val status = when {
+            m.status == "FT" -> "Vége"
+            m.status in listOf("1H", "2H", "HT", "LIVE") -> "Élő ${m.minute ?: ""}'"
+            else -> m.kickoffTime ?: m.status
+        }
+        val score = "${m.homeScore ?: "-"} : ${m.awayScore ?: "-"}"
+        val text = buildString {
+            append("⚽ ${m.homeTeam} $score ${m.awayTeam}\n")
+            append("🏆 ${m.league ?: ""}\n")
+            append("⏱ $status\n")
+            if (m.oddsHome != null) {
+                append("📊 1X2: ${m.oddsHome} / ${m.oddsDraw ?: "-"} / ${m.oddsAway ?: "-"}\n")
+            }
+            append("📱 SportApp")
+        }
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_TEXT, text)
+        }
+        context.startActivity(Intent.createChooser(intent, "Meccs megosztása"))
+    }
+
     val favoritePrefs = remember(context) {
         context.getSharedPreferences(
             "match_screen_preferences",
@@ -391,7 +414,16 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
         )
     }
 
-    var favoriteMatchIds by remember { mutableStateOf(setOf<String>()) }
+    var favoriteMatchIds by remember {
+        mutableStateOf(
+            favoritePrefs.getStringSet("favorite_matches", emptySet())?.toSet() ?: emptySet()
+        )
+    }
+    LaunchedEffect(favoriteMatchIds) {
+        favoritePrefs.edit()
+            .putStringSet("favorite_matches", favoriteMatchIds)
+            .apply()
+    }
 
     // Korlátlan számú kedvenc liga.
     // A kiválasztás tartósan elmentésre kerül.
@@ -455,6 +487,8 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
         }
     }
     var onlyPinnedLeagues by remember { mutableStateOf(false) }
+    var onlyFavorites by remember { mutableStateOf(false) }
+    var showNotifTypes by remember { mutableStateOf(false) }
     var compactMode by remember {
         mutableStateOf(favoritePrefs.getBoolean("compact_mode", false))
     }
@@ -618,6 +652,7 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
             val isMatchFav = favoriteMatchIds.contains(match.id)
 
             if (onlyPinnedLeagues && !isLeagueFav) return@filter false
+            if (onlyFavorites && !isMatchFav && !isLeagueFav) return@filter false
             val matchesSearch = matchesSmartSearch(match, searchQuery)
 
             val matchesTab = when (selectedTab) {
@@ -974,6 +1009,11 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                     label = { Text("★ Kiemelt", fontSize = 11.sp) }
                 )
                 FilterChip(
+                    selected = onlyFavorites,
+                    onClick = { onlyFavorites = !onlyFavorites },
+                    label = { Text("♥ Kedvencek", fontSize = 11.sp) }
+                )
+                FilterChip(
                     selected = sortMode != MatchSortMode.LEAGUE,
                     onClick = {
                         sortMode = when (sortMode) {
@@ -1006,7 +1046,12 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                 FilterChip(
                     selected = false,
                     onClick = { showQuietHours = true },
-                    label = { Text("🌙 Csend", fontSize = 11.sp) }
+                    label = { Text("Csend", fontSize = 11.sp) }
+                )
+                FilterChip(
+                    selected = false,
+                    onClick = { showNotifTypes = true },
+                    label = { Text("⚙️ Push", fontSize = 11.sp) }
                 )
             }
 
@@ -1356,7 +1401,7 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                                 },
                                 onMatchClick = { selectedMatchForDetail = it },
                                 onReminderClick = { },
-                                onShareClick = { }
+                                onShareClick = { shareMatch(m) }
                             )
                         }
                     }
@@ -2000,6 +2045,42 @@ if (spotlightMatches.isNotEmpty() && selectedTab == 0 && searchQuery.isEmpty() &
             }
         )
     }
+    if (showNotifTypes) {
+        AlertDialog(
+            onDismissRequest = { showNotifTypes = false },
+            title = { Text("Értesítés típusok") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Melyik eseményekről kérsz push-t?", fontSize = 13.sp)
+                    NotifPrefs.allTypeKeys().forEach { (key, label) ->
+                        var en by remember(key) {
+                            mutableStateOf(NotifPrefs.isTypeEnabled(context, key))
+                        }
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 2.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(label, fontSize = 14.sp)
+                            Switch(
+                                checked = en,
+                                onCheckedChange = {
+                                    en = it
+                                    NotifPrefs.setTypeEnabled(context, key, it)
+                                }
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showNotifTypes = false }) { Text("Kész") }
+            }
+        )
+    }
+
     if (showHighlightPicker) {
         HighlightVideoPickerDialog(
             match = selectedMatchForMedia,

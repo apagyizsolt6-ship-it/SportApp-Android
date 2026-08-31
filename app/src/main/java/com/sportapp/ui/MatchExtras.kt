@@ -30,6 +30,36 @@ object NotifPrefs {
     private const val HISTORY = "history_json"
     private const val QUIET_START = "quiet_start"
     private const val QUIET_END = "quiet_end"
+    private const val TYPE_PREFIX = "type_"
+
+    /** gól / sárga / piros / kezdés / félidő / vége külön ki-be */
+    fun isTypeEnabled(ctx: Context, type: String): Boolean {
+        val key = when (type.lowercase()) {
+            "goal", "gól", "gol" -> "goal"
+            "yellow", "card" -> "yellow"
+            "red" -> "red"
+            "kickoff", "start" -> "kickoff"
+            "ht", "halftime" -> "ht"
+            "ft", "fulltime", "status" -> "ft"
+            else -> type.lowercase()
+        }
+        return ctx.getSharedPreferences(P, Context.MODE_PRIVATE)
+            .getBoolean(TYPE_PREFIX + key, true)
+    }
+
+    fun setTypeEnabled(ctx: Context, key: String, enabled: Boolean) {
+        ctx.getSharedPreferences(P, Context.MODE_PRIVATE)
+            .edit().putBoolean(TYPE_PREFIX + key, enabled).apply()
+    }
+
+    fun allTypeKeys(): List<Pair<String, String>> = listOf(
+        "goal" to "Gól",
+        "yellow" to "Sárga lap",
+        "red" to "Piros lap",
+        "kickoff" to "Kezdés",
+        "ht" to "Félidő",
+        "ft" to "Vége"
+    )
 
     fun history(ctx: Context): List<NotifHistoryItem> {
         return try {

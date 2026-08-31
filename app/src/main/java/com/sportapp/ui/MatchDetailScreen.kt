@@ -1370,6 +1370,44 @@ private fun OddsRow(
                 OddsChip("X", d, text, green, Modifier.weight(1f))
                 OddsChip("2", a, text, green, Modifier.weight(1f))
             }
+            // Top 3 iroda összehasonlítás (ha a markets listában van)
+            val ftr = oddsMarkets.filter {
+                val n = it["market"]?.toString()?.lowercase().orEmpty()
+                listOf("full time", "1x2", "match winner", "match result").any { k -> k in n }
+            }.take(3)
+            if (ftr.size >= 2) {
+                Spacer(modifier = Modifier.height(6.dp))
+                Text("Top irodák", color = sub, fontSize = 11.sp)
+                ftr.forEach { mkt ->
+                    val bookie = mkt["bookmaker"]?.toString().orEmpty()
+                    val vals = (mkt["values"] as? List<*>)?.mapNotNull { v ->
+                        if (v is Map<*, *>) {
+                            val lab = v["label"]?.toString() ?: return@mapNotNull null
+                            val odd = (v["odd"] as? Number)?.toDouble() ?: return@mapNotNull null
+                            lab to odd
+                        } else null
+                    }.orEmpty()
+                    if (vals.isEmpty()) return@forEach
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 2.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(bookie.take(14), color = sub, fontSize = 10.sp, modifier = Modifier.width(72.dp))
+                        vals.take(3).forEach { (lab, odd) ->
+                            Text(
+                                "${lab.take(1)} ${String.format("%.2f", odd)}",
+                                color = text,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Medium,
+                                modifier = Modifier.padding(horizontal = 4.dp)
+                            )
+                        }
+                    }
+                }
+            }
         }
 
         val categoryOrder = listOf(
