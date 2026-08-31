@@ -670,14 +670,9 @@ fun MatchDetailDialog(
                     )
                     1 -> EventsTab(
                         events = events,
-                        homeTeam = detail.homeTeam,
-                        awayTeam = detail.awayTeam,
-                        matchStatus = detail.status,
-                        matchMinute = detail.minute,
                         text = text,
                         sub = sub,
-                        card = card,
-                        green = green
+                        card = card
                     )
                     2 -> StatsTab(stats = stats, text = text, sub = sub, card = card, accent = accent)
                     3 -> LineupsTab(
