@@ -1887,6 +1887,27 @@ private fun StatsTab(
     }
 }
 
+
+/** Mezszám: 1.0 → "1", "23" → "23" */
+private fun jerseyNumber(n: Any?): String {
+    if (n == null) return "·"
+    return when (n) {
+        is Int -> n.toString()
+        is Long -> n.toString()
+        is Double -> {
+            val i = n.toInt()
+            if (n == i.toDouble()) i.toString() else n.toInt().toString()
+        }
+        is Float -> n.toInt().toString()
+        is String -> {
+            val d = n.toDoubleOrNull()
+            if (d != null) d.toInt().toString() else n.filter { it.isDigit() }.ifBlank { "·" }
+        }
+        is Number -> n.toInt().toString()
+        else -> n.toString().substringBefore(".").ifBlank { "·" }
+    }
+}
+
 @Composable
 private fun LineupsTab(
     lineups: LineupsResponse?,
@@ -2129,7 +2150,7 @@ private fun PitchLineupCard(
                                 contentAlignment = Alignment.Center
                             ) {
                                 Text(
-                                    text = player.number?.toString() ?: "·",
+                                    text = jerseyNumber(player.number),
                                     color = Color.White,
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.ExtraBold
@@ -2192,7 +2213,7 @@ private fun PitchLineupCard(
                                     contentAlignment = Alignment.Center
                                 ) {
                                     Text(
-                                        p.number?.toString() ?: "·",
+                                        jerseyNumber(p.number),
                                         color = Color.White,
                                         fontSize = 10.sp,
                                         fontWeight = FontWeight.Bold
