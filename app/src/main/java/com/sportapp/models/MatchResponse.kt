@@ -64,7 +64,8 @@ data class LineupPlayer(
     @SerializedName("name") val name: String? = null,
     @SerializedName("number") val number: Any? = null,
     @SerializedName("position") val position: String? = null,
-    @SerializedName("is_bench") val isBench: Boolean? = false
+    @SerializedName("is_bench") val isBench: Boolean? = false,
+    @SerializedName("player_id") val playerId: String? = null
 )
 
 data class LineupSide(
