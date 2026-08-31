@@ -25,7 +25,20 @@ data class StandingTeam(
     val points: Int
 )
 
+data class PlayerSummaryResponse(
+    val available: Boolean? = false,
+    @com.google.gson.annotations.SerializedName("player_id") val playerId: String? = null,
+    val name: String? = null,
+    val photo: String? = null,
+    val team: String? = null,
+    val position: String? = null,
+    val season: String? = null,
+    val stats: Map<String, @JvmSuppressWildcards Any?>? = null,
+    val message: String? = null
+)
+
 interface ApiService {
+
     @GET("api/matches")
     suspend fun getMatches(): List<MatchResponse>
 
@@ -77,6 +90,9 @@ interface ApiService {
     suspend fun getMatchH2h(
         @Path("match_id") matchId: String
     ): H2hResponse
+
+    @GET("api/players/{player_id}/summary")
+    suspend fun getPlayerSummary(@Path("player_id") playerId: String): PlayerSummaryResponse
 
     @GET("api/matches/{match_id}/form")
     suspend fun getMatchForm(
