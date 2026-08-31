@@ -1849,7 +1849,7 @@ private fun EventsTab(
         }
     }
     val sorted = events.filter { matchesFilter(it) }.sortedBy { it.minute ?: 0 }
-    Column(Modifier = Modifier.fillMaxSize()) {
+    Column(modifier = Modifier.fillMaxSize()) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
