@@ -2060,7 +2060,17 @@ onFavoriteToggle = { toggleFavorite(match.id) },
                 }
             },
             confirmButton = {
-                TextButton(onClick = { showNotifTypes = false }) { Text("Kész") }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = {
+                        FcmRegistrar.requestTestPush(context)
+                        android.widget.Toast.makeText(
+                            context,
+                            "Teszt értesítés küldve…",
+                            android.widget.Toast.LENGTH_SHORT
+                        ).show()
+                    }) { Text("🔔 Teszt push") }
+                    TextButton(onClick = { showNotifTypes = false }) { Text("Kész") }
+                }
             }
         )
     }
@@ -2676,12 +2686,34 @@ fun PremiumMatchRow(
     val vPad = if (compact) 6.dp else 10.dp
 
     Column(modifier = Modifier.fillMaxWidth()) {
+    // GÓL badge animáció
+    if (scoreFlash) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp)
+                .clip(RoundedCornerShape(topStart = 14.dp, topEnd = 14.dp))
+                .background(Color(0xFF00C853))
+                .padding(vertical = 4.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                "⚽ GÓL!",
+                color = Color.White,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Bold
+            )
+        }
+    }
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 8.dp, vertical = if (compact) 2.dp else 3.dp)
-            .clip(RoundedCornerShape(14.dp))
-            .background(if (scoreFlash) Color(0x4400E5A8) else cardBgColor)
+            .clip(
+                if (scoreFlash) RoundedCornerShape(bottomStart = 14.dp, bottomEnd = 14.dp)
+                else RoundedCornerShape(14.dp)
+            )
+            .background(if (scoreFlash) Color(0x5500E5A8) else cardBgColor)
             .border(1.dp, if (scoreFlash) primaryGreen else Color(0x28A0C4FF), RoundedCornerShape(14.dp))
             .clickable { onMatchClick(match) }
             .padding(

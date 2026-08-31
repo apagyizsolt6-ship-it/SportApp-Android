@@ -1264,6 +1264,39 @@ private fun OddsRow(
     val h = oddsHome ?: match.oddsHome
     val d = oddsDraw ?: match.oddsDraw
     val a = oddsAway ?: match.oddsAway
+
+    // Odds változás nyíl (előző értékhez képest)
+    var prevH by remember { mutableStateOf<Double?>(null) }
+    var prevD by remember { mutableStateOf<Double?>(null) }
+    var prevA by remember { mutableStateOf<Double?>(null) }
+    LaunchedEffect(h, d, a) {
+        // első betöltéskor csak elmentjük, nem mutatunk nyilat
+        if (prevH == null && prevD == null && prevA == null) {
+            prevH = h; prevD = d; prevA = a
+        } else {
+            // frissítés után megtartjuk a régi prev-et a nyílhoz, majd delay után frissítjük
+            kotlinx.coroutines.delay(4000)
+            prevH = h; prevD = d; prevA = a
+        }
+    }
+    fun deltaArrow(cur: Double?, prev: Double?): String {
+        if (cur == null || prev == null) return ""
+        val diff = cur - prev
+        return when {
+            diff > 0.01 -> " ↑"
+            diff < -0.01 -> " ↓"
+            else -> ""
+        }
+    }
+    fun deltaColor(cur: Double?, prev: Double?): Color {
+        if (cur == null || prev == null) return green
+        val diff = cur - prev
+        return when {
+            diff > 0.01 -> Color(0xFF00E676) // magasabb odd jobb a fogadónak
+            diff < -0.01 -> Color(0xFFFF5252)
+            else -> green
+        }
+    }
     if (h == null && d == null && a == null && oddsMarkets.isEmpty()) return
 
     data class MarketLine(
@@ -1366,9 +1399,9 @@ private fun OddsRow(
         if (h != null || d != null || a != null) {
             Text("1X2 – Végeredmény", color = text, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OddsChip("1", h, text, green, Modifier.weight(1f))
-                OddsChip("X", d, text, green, Modifier.weight(1f))
-                OddsChip("2", a, text, green, Modifier.weight(1f))
+                OddsChip("1" + deltaArrow(h, prevH), h, text, deltaColor(h, prevH), Modifier.weight(1f))
+                OddsChip("X" + deltaArrow(d, prevD), d, text, deltaColor(d, prevD), Modifier.weight(1f))
+                OddsChip("2" + deltaArrow(a, prevA), a, text, deltaColor(a, prevA), Modifier.weight(1f))
             }
             // Top 3 iroda összehasonlítás (ha a markets listában van)
             val ftr = oddsMarkets.filter {
@@ -1656,42 +1689,88 @@ private fun H2hRow(item: H2hItem, text: Color, sub: Color, card: Color) {
 @Composable
 private fun EventsTab(
     events: List<MatchEvent>,
-    homeTeam: String,
-    awayTeam: String,
-    matchStatus: String,
-    matchMinute: Int?,
     text: Color,
     sub: Color,
-    card: Color,
-    green: Color
+    card: Color
 ) {
-    val scheduled = isScheduledStatus(matchStatus, matchMinute)
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(16.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp)
-    ) {
-        item {
-            Row(modifier = Modifier.fillMaxWidth()) {
-                Text(homeTeam, color = sub, fontSize = 11.sp, modifier = Modifier.weight(1f), maxLines = 1)
-                Text(awayTeam, color = sub, fontSize = 11.sp, modifier = Modifier.weight(1f), textAlign = TextAlign.End, maxLines = 1)
-            }
-            Spacer(modifier = Modifier.height(8.dp))
+    if (events.isEmpty()) {
+        Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
+            Text("Nincs esemény", color = sub, fontSize = 13.sp)
         }
-        if (events.isEmpty()) {
-            item {
-                Text(
-                    text = if (scheduled)
-                        "A meccs még nem kezdődött. Az események kezdés után jelennek meg."
-                    else
-                        "Nincs esemény adat.",
-                    color = sub,
-                    fontSize = 13.sp
-                )
+        return
+    }
+    val sorted = events.sortedBy { it.minute ?: 0 }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(0.dp)
+    ) {
+        sorted.forEachIndexed { index, ev ->
+            val typeRaw = (ev.type ?: "").lowercase()
+            val (badge, color) = when {
+                "goal" in typeRaw || "gól" in typeRaw || typeRaw == "g" -> "⚽ GÓL" to Color(0xFF00E676)
+                "red" in typeRaw -> "🟥 PIROS" to Color(0xFFE53935)
+                "yellow" in typeRaw || "card" in typeRaw -> "🟨 SÁRGA" to Color(0xFFFFB300)
+                "subst" in typeRaw || "sub" in typeRaw || "csere" in typeRaw -> "🔄 CSERE" to Color(0xFF42A5F5)
+                "var" in typeRaw -> "VAR" to Color(0xFFAB47BC)
+                "pen" in typeRaw -> "11-es" to Color(0xFFFF7043)
+                else -> (ev.type ?: "Esemény").uppercase().take(12) to sub
             }
-        } else {
-            items(events) { ev ->
-                EventRow(ev, text, sub, card, isHome = ev.team == "home")
+            val minute = ev.minuteDisplay?.takeIf { it.isNotBlank() }
+                ?: (ev.minute?.let { "$it'" } ?: "–")
+            val player = listOfNotNull(ev.player, ev.assist, ev.substituted)
+                .filter { it.isNotBlank() }
+                .joinToString(" → ")
+            val team = (ev.team ?: ev.teamName).orEmpty()
+            val isLast = index == sorted.lastIndex
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.Top
+            ) {
+                // idővonal
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.width(36.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(12.dp)
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(color)
+                    )
+                    if (!isLast) {
+                        Box(
+                            modifier = Modifier
+                                .width(2.dp)
+                                .height(48.dp)
+                                .background(Color(0x334DA3FF))
+                        )
+                    }
+                }
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(start = 8.dp, bottom = if (isLast) 0.dp else 8.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(card)
+                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(badge, color = color, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Text(minute, color = sub, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    }
+                    if (player.isNotBlank()) {
+                        Text(player, color = text, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                    }
+                    if (team.isNotBlank()) {
+                        Text(team, color = sub, fontSize = 11.sp)
+                    }
+                }
             }
         }
     }
