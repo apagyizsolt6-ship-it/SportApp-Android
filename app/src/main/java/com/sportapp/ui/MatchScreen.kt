@@ -396,21 +396,6 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
         context.startActivity(Intent.createChooser(intent, "Meccs megosztása"))
     }
 
-    fun toggleFavorite(matchId: String) {
-        val nowFav = !favoriteMatchIds.contains(matchId)
-        favoriteMatchIds = if (nowFav) favoriteMatchIds + matchId else favoriteMatchIds - matchId
-        // Kedvenc → automatikus push-követés (és fordítva)
-        FcmRegistrar.setFollowing(context, matchId, nowFav)
-        followedMatchIds = FcmRegistrar.followedMatches(context)
-        if (nowFav) {
-            android.widget.Toast.makeText(
-                context,
-                "Kedvenc + értesítések bekapcsolva",
-                android.widget.Toast.LENGTH_SHORT
-            ).show()
-        }
-    }
-
 
     val favoritePrefs = remember(context) {
         context.getSharedPreferences(
@@ -477,6 +462,22 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
     var followedMatchIds by remember {
         mutableStateOf(FcmRegistrar.followedMatches(context))
     }
+
+    fun toggleFavorite(matchId: String) {
+        val nowFav = !favoriteMatchIds.contains(matchId)
+        favoriteMatchIds = if (nowFav) favoriteMatchIds + matchId else favoriteMatchIds - matchId
+        // Kedvenc → automatikus push-követés (és fordítva)
+        FcmRegistrar.setFollowing(context, matchId, nowFav)
+        followedMatchIds = FcmRegistrar.followedMatches(context)
+        if (nowFav) {
+            android.widget.Toast.makeText(
+                context,
+                "Kedvenc + értesítések bekapcsolva",
+                android.widget.Toast.LENGTH_SHORT
+            ).show()
+        }
+    }
+
     var showNotifHistory by remember { mutableStateOf(false) }
     var showQuietHours by remember { mutableStateOf(false) }
     var prevScores by remember { mutableStateOf(mapOf<String, Pair<Int?, Int?>>()) }
