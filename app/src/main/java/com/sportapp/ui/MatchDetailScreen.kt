@@ -961,7 +961,17 @@ private fun MatchDetailScoreboard(
     sub: Color,
     green: Color
 ) {
-    val isLive = match.status != "FT" && (match.minute ?: 0) > 0
+    val statusU = match.status.trim().uppercase().replace(".", "")
+    val isLive = statusU in setOf("1H", "2H", "HT", "LIVE", "ET", "INPLAY") ||
+        ((match.minute ?: 0) > 0 && statusU !in setOf(
+            "FT", "AET", "PEN", "PENS", "NS", "TBD", "PST", "CANC", "FINISHED"
+        ) && !statusU.contains(":"))
+    val liveMinute = rememberLiveMinute(
+        matchId = match.id,
+        serverMinute = match.minute,
+        status = match.status,
+        isLive = isLive
+    )
     Column(modifier = Modifier
             .fillMaxWidth()
             .background(card)
@@ -1006,7 +1016,7 @@ private fun MatchDetailScoreboard(
                         )
                         Spacer(modifier = Modifier.width(4.dp))
                         Text(
-                            text = "${match.minute}'",
+                            text = "${liveMinute}'",
                             color = green,
                             fontSize = 13.sp,
                             fontWeight = FontWeight.Bold

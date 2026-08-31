@@ -27,6 +27,50 @@ import com.sportapp.models.StatItem
 import org.json.JSONArray
 import org.json.JSONObject
 
+
+/**
+ * Élő perc – csak helyi számolás, nincs API hívás.
+ * Szerver perc bázis + eltelt percek; HT-nél megáll.
+ */
+@Composable
+fun rememberLiveMinute(
+    matchId: String,
+    serverMinute: Int?,
+    status: String?,
+    isLive: Boolean
+): Int {
+    val statusU = (status ?: "").trim().uppercase().replace(".", "")
+    val isHt = statusU == "HT"
+    var shown by remember(matchId) { mutableIntStateOf(serverMinute ?: 0) }
+    LaunchedEffect(matchId, serverMinute, isLive, statusU) {
+        val sm = serverMinute ?: 0
+        if (!isLive) {
+            shown = sm
+            return@LaunchedEffect
+        }
+        if (isHt) {
+            if (sm > 0) shown = sm
+            return@LaunchedEffect
+        }
+        val base = when {
+            sm <= 0 -> shown
+            shown <= 0 -> sm
+            sm > shown -> sm
+            shown - sm > 3 -> sm
+            else -> shown
+        }
+        shown = base
+        val startedAt = System.currentTimeMillis()
+        while (true) {
+            kotlinx.coroutines.delay(1_000L)
+            val add = ((System.currentTimeMillis() - startedAt) / 60_000L).toInt()
+            val next = (base + add).coerceIn(0, 130)
+            if (next != shown) shown = next
+        }
+    }
+    return shown
+}
+
 object DerbyPrefs {
     /** Klasszikus rivális párok – részleges név egyezés */
     val PAIRS: List<Pair<String, String>> = listOf(

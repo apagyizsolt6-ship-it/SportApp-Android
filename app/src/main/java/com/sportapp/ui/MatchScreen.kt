@@ -1999,7 +1999,7 @@ if (derbyMatches.isNotEmpty() && selectedTab == 0 && searchQuery.isEmpty()) {
                         //
                         if (!isCollapsed) {
 
-                            items(leagueMatches) { match ->
+                            items(leagueMatches, key = { it.id }) { match ->
 
                                 val isFav =
                                     favoriteMatchIds.contains(
@@ -2962,38 +2962,12 @@ fun PremiumMatchRow(
             val isLive = isMatchLive(match.status, match.minute)
 
             // Folyamatos élő perc: szerver perc + eltelt idő (másodpercenként UI frissítés)
-            val serverMinute = match.minute ?: 0
-            var localMinute by remember(match.id) { mutableIntStateOf(serverMinute) }
-            // Szerver frissítéskor igazítjuk, de nem ugrunk vissza ha a helyi már előrébb van 1–2 perccel
-            LaunchedEffect(match.id, match.minute) {
-                val sm = match.minute ?: 0
-                if (sm > localMinute || kotlin.math.abs(sm - localMinute) > 3) {
-                    localMinute = sm
-                } else if (sm > 0 && localMinute == 0) {
-                    localMinute = sm
-                }
-            }
-            LaunchedEffect(match.id, isLive, match.status) {
-                if (!isLive) return@LaunchedEffect
-                val statusU = match.status.trim().uppercase().replace(".", "")
-                // Félidőben áll a perc
-                if (statusU == "HT") return@LaunchedEffect
-                val baseMinute = match.minute ?: localMinute
-                val baseAt = System.currentTimeMillis()
-                while (true) {
-                    delay(1_000L)
-                    val elapsedMin = ((System.currentTimeMillis() - baseAt) / 60_000L).toInt()
-                    val next = (baseMinute + elapsedMin).coerceAtMost(130)
-                    if (next != localMinute) {
-                        localMinute = next
-                    }
-                }
-            }
-            val shownMinute = when {
-                !isLive -> match.minute ?: 0
-                match.status.equals("HT", ignoreCase = true) -> match.minute ?: localMinute
-                else -> maxOf(localMinute, match.minute ?: 0)
-            }
+            val shownMinute = rememberLiveMinute(
+                matchId = match.id,
+                serverMinute = match.minute,
+                status = match.status,
+                isLive = isLive
+            )
 
             val statusText =
                 when {
@@ -4357,6 +4331,7 @@ private fun MediaMatchCard(
 ) {
     val isLive = isMatchLive(match.status, match.minute)
     val hasHighlight = !match.highlightMatchId.isNullOrBlank()
+    val liveMin = rememberLiveMinute(match.id, match.minute, match.status, isLive)
 
     Row(
         modifier = Modifier
@@ -4413,7 +4388,7 @@ private fun MediaMatchCard(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 if (isLive) {
                     Text(
-                        text = "ÉLŐ ${match.minute}'",
+                        text = "ÉLŐ ${liveMin}'",
                         color = primaryGreen,
                         fontSize = 10.sp,
                         fontWeight = FontWeight.Bold
