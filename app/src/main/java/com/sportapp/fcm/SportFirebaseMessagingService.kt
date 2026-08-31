@@ -29,6 +29,7 @@ class SportFirebaseMessagingService : FirebaseMessagingService() {
     }
 
     private fun showNotification(title: String, body: String, type: String, matchId: String?) {
+        if (!NotifPrefs.isTypeEnabled(applicationContext, type)) return
         if (type in setOf("yellow", "card") && NotifPrefs.isQuietNow(applicationContext)) return
         NotifPrefs.pushHistory(
             applicationContext,
