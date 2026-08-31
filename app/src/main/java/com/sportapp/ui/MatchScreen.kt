@@ -2961,20 +2961,39 @@ fun PremiumMatchRow(
 
             val isLive = isMatchLive(match.status, match.minute)
 
-            // Helyi perc-tik a szerver frissítések között (nem vesz el semmit)
-            var localMinute by remember(match.id, match.minute) {
-                mutableIntStateOf(match.minute ?: 0)
-            }
-            LaunchedEffect(match.id, match.minute, isLive) {
-                localMinute = match.minute ?: 0
-                if (!isLive) return@LaunchedEffect
-                while (true) {
-                    delay(20_000)
-                    if (match.status.equals("HT", ignoreCase = true)) continue
-                    localMinute = (localMinute + 1).coerceAtMost(130)
+            // Folyamatos élő perc: szerver perc + eltelt idő (másodpercenként UI frissítés)
+            val serverMinute = match.minute ?: 0
+            var localMinute by remember(match.id) { mutableIntStateOf(serverMinute) }
+            // Szerver frissítéskor igazítjuk, de nem ugrunk vissza ha a helyi már előrébb van 1–2 perccel
+            LaunchedEffect(match.id, match.minute) {
+                val sm = match.minute ?: 0
+                if (sm > localMinute || kotlin.math.abs(sm - localMinute) > 3) {
+                    localMinute = sm
+                } else if (sm > 0 && localMinute == 0) {
+                    localMinute = sm
                 }
             }
-            val shownMinute = if (isLive) localMinute else (match.minute ?: 0)
+            LaunchedEffect(match.id, isLive, match.status) {
+                if (!isLive) return@LaunchedEffect
+                val statusU = match.status.trim().uppercase().replace(".", "")
+                // Félidőben áll a perc
+                if (statusU == "HT") return@LaunchedEffect
+                val baseMinute = match.minute ?: localMinute
+                val baseAt = System.currentTimeMillis()
+                while (true) {
+                    delay(1_000L)
+                    val elapsedMin = ((System.currentTimeMillis() - baseAt) / 60_000L).toInt()
+                    val next = (baseMinute + elapsedMin).coerceAtMost(130)
+                    if (next != localMinute) {
+                        localMinute = next
+                    }
+                }
+            }
+            val shownMinute = when {
+                !isLive -> match.minute ?: 0
+                match.status.equals("HT", ignoreCase = true) -> match.minute ?: localMinute
+                else -> maxOf(localMinute, match.minute ?: 0)
+            }
 
             val statusText =
                 when {
