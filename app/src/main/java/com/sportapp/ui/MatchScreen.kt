@@ -1401,7 +1401,7 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                                 },
                                 onMatchClick = { selectedMatchForDetail = it },
                                 onReminderClick = { },
-                                onShareClick = { shareMatch(m) }
+                                onShareClick = { shareMatch(match) }
                             )
                         }
                     }
