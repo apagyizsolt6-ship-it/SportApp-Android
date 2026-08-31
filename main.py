@@ -1150,6 +1150,9 @@ def _normalize_lineups(raw):
                     "number": p.get("number") or p.get("shirtNumber") or p.get("shirt"),
                     "position": p.get("position") or p.get("pos"),
                     "is_bench": bool(p.get("is_bench") or p.get("substitute")),
+                    "player_id": str(
+                        p.get("id") or p.get("playerId") or p.get("player_id") or ""
+                    ) or None,
                 })
         for p in (substitutes or []):
             if not isinstance(p, dict):
@@ -1159,6 +1162,9 @@ def _normalize_lineups(raw):
                 "number": p.get("number") or p.get("shirtNumber") or p.get("shirt"),
                 "position": p.get("position") or p.get("pos"),
                 "is_bench": True,
+                "player_id": str(
+                    p.get("id") or p.get("playerId") or p.get("player_id") or ""
+                ) or None,
             })
         return players
 
@@ -4063,6 +4069,102 @@ def get_status():
 
 
 # =============================================================================
+
+
+@app.get("/api/players/{player_id}/summary")
+def get_player_summary(player_id: str):
+    """Highlightly játékos összefoglaló: fotó + szezonstat ha elérhető."""
+    pid = str(player_id or "").strip()
+    if not pid or not HIGHLIGHTLY_KEY:
+        return {"available": False, "error": "no_key_or_id"}
+    out = {
+        "available": False,
+        "player_id": pid,
+        "name": None,
+        "photo": None,
+        "team": None,
+        "position": None,
+        "season": None,
+        "stats": {},
+        "message": None,
+    }
+    try:
+        photo = fetch_player_photo_url(pid)
+        if photo:
+            out["photo"] = photo
+    except Exception:
+        pass
+    try:
+        url = f"https://soccer.highlightly.net/players/{pid}/statistics"
+        headers = {
+            "x-rapidapi-key": HIGHLIGHTLY_KEY,
+            "x-rapidapi-host": "football-highlights-api.p.rapidapi.com",
+        }
+        # highlightly host variants
+        for host in (
+            "soccer.highlightly.net",
+            "football-highlights-api.p.rapidapi.com",
+        ):
+            try:
+                h = dict(headers)
+                if "rapidapi" in host:
+                    h["x-rapidapi-host"] = host
+                r = requests.get(
+                    f"https://{host}/players/{pid}/statistics" if "rapidapi" in host
+                    else url,
+                    headers=h if "rapidapi" in host else {"x-rapidapi-key": HIGHLIGHTLY_KEY},
+                    timeout=12,
+                )
+                if r.status_code != 200:
+                    continue
+                data = r.json()
+                # normalize various shapes
+                block = data
+                if isinstance(data, dict):
+                    if isinstance(data.get("data"), dict):
+                        block = data["data"]
+                    elif isinstance(data.get("player"), dict):
+                        block = data["player"]
+                    elif isinstance(data.get("statistics"), list) and data["statistics"]:
+                        block = data["statistics"][0] if isinstance(data["statistics"][0], dict) else data
+                if not isinstance(block, dict):
+                    continue
+                out["name"] = block.get("name") or block.get("playerName") or out["name"]
+                out["team"] = (
+                    (block.get("team") or {}).get("name")
+                    if isinstance(block.get("team"), dict)
+                    else block.get("team") or block.get("teamName")
+                )
+                out["position"] = block.get("position") or block.get("pos")
+                out["season"] = block.get("season") or block.get("league")
+                stats = {}
+                for k in (
+                    "goals", "assists", "appearances", "minutes", "yellowCards",
+                    "redCards", "shots", "passes", "rating", "games", "yellow",
+                    "red", "goal", "assist",
+                ):
+                    if block.get(k) is not None:
+                        stats[k] = block.get(k)
+                # nested statistics
+                inner = block.get("statistics") or block.get("stats") or {}
+                if isinstance(inner, dict):
+                    for k, v in inner.items():
+                        if v is not None and k not in stats:
+                            stats[str(k)] = v
+                out["stats"] = stats
+                out["available"] = bool(out["name"] or stats or out["photo"])
+                if out["available"]:
+                    break
+            except Exception as ex:
+                out["message"] = str(ex)[:120]
+                continue
+    except Exception as ex:
+        out["message"] = str(ex)[:120]
+    if not out["available"] and not out["message"]:
+        out["message"] = "Nincs részletes játékosadat ehhez az ID-hoz."
+    return out
+
+
 # FCM – gól / lap / kezdés / félidő / vége push
 # Env: FCM_SERVER_KEY = Firebase Cloud Messaging legacy server key
 # =============================================================================
@@ -4169,6 +4271,10 @@ def _fcm_check_match(match_id: str, detail: dict):
         with _fcm_lock:
             _fcm_last_state[mid] = snap
         return
+
+    # JSON persist után a sigs lista lehet
+    if isinstance(prev.get("sigs"), list):
+        prev["sigs"] = set(prev["sigs"])
 
     # Státusz váltások
     ps = str(prev.get("status") or "")
@@ -4277,6 +4383,8 @@ def fcm_subscribe(body: dict):
     match_id = str((body or {}).get("match_id") or "").strip()
     if not token or not match_id:
         return {"ok": False, "error": "token and match_id required"}
+    if not FCM_SERVER_KEY:
+        print("[FCM] WARNING: FCM_SERVER_KEY missing – push nem megy ki")
     with _fcm_lock:
         _fcm_subs[token].add(match_id)
         _fcm_match_tokens[match_id].add(token)
