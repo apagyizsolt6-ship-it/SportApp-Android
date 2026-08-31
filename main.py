@@ -196,6 +196,8 @@ _matches_list_cache = {"data": None, "ts": 0}
 MATCHES_LIST_TTL = 15
 _hl_h2h_cache = {}
 _hl_form_cache = {}
+_odds_cache_hits = 0
+_odds_cache_misses = 0
 DETAIL_CACHE_TTL = 20
 LINEUPS_CACHE_TTL = 120
 STATS_CACHE_TTL = 30
@@ -3785,6 +3787,14 @@ def _compact_odds_markets(markets: list, max_bookmakers: int = 3) -> list:
         out = primary + secondary[: max(0, 80 - len(primary))]
     return out
 
+
+@app.get("/api/odds/cache-stats")
+def odds_cache_stats():
+    return {
+        "hits": _odds_cache_hits,
+        "misses": _odds_cache_misses,
+        "hit_rate": round(_odds_cache_hits / max(1, _odds_cache_hits + _odds_cache_misses), 3),
+    }
 
 @app.get("/api/matches/{match_id}/odds")
 def get_match_odds(match_id: str):
