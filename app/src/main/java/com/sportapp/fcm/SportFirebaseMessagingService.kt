@@ -30,7 +30,15 @@ class SportFirebaseMessagingService : FirebaseMessagingService() {
 
     private fun showNotification(title: String, body: String, type: String, matchId: String?) {
         if (!NotifPrefs.isTypeEnabled(applicationContext, type)) return
-        if (type in setOf("yellow", "card") && NotifPrefs.isQuietNow(applicationContext)) return
+        if (NotifPrefs.isQuietNow(applicationContext)) {
+            // Csendes órák: sárga mindig tiltva; gól/kickoff csak ha nincs fav-kivétel
+            val allowFav = NotifPrefs.allowFavoriteDuringQuiet(applicationContext)
+            val isImportant = type in setOf("goal", "kickoff", "red", "ft", "ht")
+            if (type in setOf("yellow", "card")) return
+            if (!isImportant) return
+            // important: only allow if fav exception ON (default)
+            if (!allowFav) return
+        }
         NotifPrefs.pushHistory(
             applicationContext,
             NotifHistoryItem(
