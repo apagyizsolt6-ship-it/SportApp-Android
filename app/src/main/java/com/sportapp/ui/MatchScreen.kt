@@ -396,6 +396,22 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
         context.startActivity(Intent.createChooser(intent, "Meccs megosztása"))
     }
 
+    fun toggleFavorite(matchId: String) {
+        val nowFav = !favoriteMatchIds.contains(matchId)
+        favoriteMatchIds = if (nowFav) favoriteMatchIds + matchId else favoriteMatchIds - matchId
+        // Kedvenc → automatikus push-követés (és fordítva)
+        FcmRegistrar.setFollowing(context, matchId, nowFav)
+        followedMatchIds = FcmRegistrar.followedMatches(context)
+        if (nowFav) {
+            android.widget.Toast.makeText(
+                context,
+                "Kedvenc + értesítések bekapcsolva",
+                android.widget.Toast.LENGTH_SHORT
+            ).show()
+        }
+    }
+
+
     val favoritePrefs = remember(context) {
         context.getSharedPreferences(
             "match_screen_preferences",
@@ -1385,12 +1401,7 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                                 primaryGreen = primaryGreen,
                                 compact = compactMode,
                                 scoreFlash = flashMatchIds.contains(match.id),
-                                onFavoriteToggle = {
-                                    favoriteMatchIds =
-                                        if (favoriteMatchIds.contains(match.id))
-                                            favoriteMatchIds - match.id
-                                        else favoriteMatchIds + match.id
-                                },
+                                onFavoriteToggle = { toggleFavorite(match.id) },
                                 onVideoClick = { m ->
                                     selectedMatchForMedia = m
                                     showHighlightPicker = true
@@ -1426,13 +1437,7 @@ if (spotlightMatches.isNotEmpty() && selectedTab == 0 && searchQuery.isEmpty() &
                                 primaryGreen = primaryGreen,
                                 compact = compactMode,
                                 scoreFlash = flashMatchIds.contains(match.id),
-                                onFavoriteToggle = {
-                                    favoriteMatchIds =
-                                        if (favoriteMatchIds.contains(match.id))
-                                            favoriteMatchIds - match.id
-                                        else
-                                            favoriteMatchIds + match.id
-                                },
+                                onFavoriteToggle = { toggleFavorite(match.id) },
                                 onVideoClick = { m ->
                                     selectedMatchForMedia = m
                                     highlightVideos = emptyList()
@@ -1515,13 +1520,7 @@ if (spotlightMatches.isNotEmpty() && selectedTab == 0 && searchQuery.isEmpty() &
                                 primaryGreen = primaryGreen,
                                 compact = compactMode,
                                 scoreFlash = flashMatchIds.contains(match.id),
-                                onFavoriteToggle = {
-                                    favoriteMatchIds =
-                                        if (favoriteMatchIds.contains(match.id))
-                                            favoriteMatchIds - match.id
-                                        else
-                                            favoriteMatchIds + match.id
-                                },
+                                onFavoriteToggle = { toggleFavorite(match.id) },
                                 onVideoClick = { m ->
                                     selectedMatchForMedia = m
                                     highlightVideos = emptyList()
@@ -1883,23 +1882,7 @@ if (spotlightMatches.isNotEmpty() && selectedTab == 0 && searchQuery.isEmpty() &
                                     primaryGreen =
                                         primaryGreen,
 
-                                    onFavoriteToggle = {
-
-                                        favoriteMatchIds =
-                                            if (isFav) {
-
-                                                favoriteMatchIds
-                                                    .filter {
-                                                        it != match.id
-                                                    }
-                                                    .toSet()
-
-                                            } else {
-
-                                                favoriteMatchIds +
-                                                        match.id
-                                            }
-                                    },
+onFavoriteToggle = { toggleFavorite(match.id) },
 
                                     onVideoClick = { match ->
                                         selectedMatchForMedia = match
@@ -2173,11 +2156,7 @@ if (spotlightMatches.isNotEmpty() && selectedTab == 0 && searchQuery.isEmpty() &
             match = m,
             isDarkMode = isDarkMode,
             isFavorite = isFav,
-            onFavoriteToggle = {
-                favoriteMatchIds =
-                    if (isFav) favoriteMatchIds - m.id
-                    else favoriteMatchIds + m.id
-            },
+            onFavoriteToggle = { toggleFavorite(m.id) },
             onDismiss = { selectedMatchForDetail = null },
             onVideoClick = { video ->
                 selectedVideo = video
