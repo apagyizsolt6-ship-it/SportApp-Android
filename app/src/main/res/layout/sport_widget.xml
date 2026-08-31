@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/widget_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="12dp"
+    android:background="#CC0B1426">
+
+    <TextView
+        android:id="@+id/widget_title"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="SportApp · Élő"
+        android:textColor="#00E5A8"
+        android:textStyle="bold"
+        android:textSize="13sp" />
+
+    <TextView
+        android:id="@+id/widget_line1"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Nyisd meg az appot a meccsekhez"
+        android:textColor="#F0F6FF"
+        android:textSize="12sp"
+        android:paddingTop="6dp" />
+
+    <TextView
+        android:id="@+id/widget_line2"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text=""
+        android:textColor="#9BB0C9"
+        android:textSize="11sp"
+        android:paddingTop="2dp" />
+</LinearLayout>
