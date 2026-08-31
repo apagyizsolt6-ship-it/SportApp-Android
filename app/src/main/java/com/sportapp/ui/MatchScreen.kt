@@ -363,6 +363,7 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
 
     val matches by viewModel.matches.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
+    val loadError by viewModel.loadError.collectAsState()
     var isDarkMode by remember { mutableStateOf(true) }
     var selectedTab by remember { mutableIntStateOf(0) }
     var searchQuery by remember { mutableStateOf("") }
@@ -780,6 +781,16 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
             .take(5)
             .map { it.first }
     }
+    val derbyMatches = remember(filteredMatches) {
+        filteredMatches.filter { DerbyPrefs.isDerby(it.homeTeam, it.awayTeam) }.take(8)
+    }
+    val tonightTips = remember(filteredMatches) {
+        filteredMatches.filter { m ->
+            val kt = m.kickoffTime ?: return@filter false
+            val hour = kt.take(2).toIntOrNull() ?: return@filter false
+            hour in 18..23 && !isMatchFinished(m.status)
+        }.sortedByDescending { worthWatchScore(it, favoriteLeagueNames) }.take(3)
+    }
     val spotlightMatches = remember(filteredMatches, favoriteLeagueNames) {
         filteredMatches
             .filter {
@@ -1126,6 +1137,17 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                 )
             }
 
+            if (loadError != null && matches.isEmpty() && !isLoading) {
+                Column(
+                    modifier = Modifier.fillMaxWidth().padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text("Nem sikerült betölteni", color = textColor, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                    Text(loadError ?: "", color = subTextColor, fontSize = 12.sp)
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Button(onClick = { viewModel.retry() }) { Text("Újra betöltés") }
+                }
+            }
             // Élő ticker
             if (liveMatches.isNotEmpty() && selectedTab != 3) {
                 LazyRow(
@@ -1471,7 +1493,71 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                             )
                         }
                     }
-if (spotlightMatches.isNotEmpty() && selectedTab == 0 && searchQuery.isEmpty() && !onlyPinnedLeagues) {
+if (derbyMatches.isNotEmpty() && selectedTab == 0 && searchQuery.isEmpty()) {
+                        item {
+                            Text(
+                                "🔥 Derby mód",
+                                color = Color(0xFFFF6D00),
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
+                            )
+                        }
+                        items(derbyMatches, key = { "derby-${it.id}" }) { match ->
+                            PremiumMatchRow(
+                                match = match,
+                                isFavorite = favoriteMatchIds.contains(match.id),
+                                cardBgColor = cardBgColor,
+                                textColor = textColor,
+                                subTextColor = subTextColor,
+                                primaryGreen = primaryGreen,
+                                compact = compactMode,
+                                scoreFlash = flashMatchIds.contains(match.id),
+                                onFavoriteToggle = { toggleFavorite(match.id) },
+                                onVideoClick = { },
+                                onAiClick = { m ->
+                                    selectedMatchForAi = m
+                                    viewModel.fetchAiAnalysis(m.id)
+                                },
+                                onMatchClick = { selectedMatchForDetail = it },
+                                onReminderClick = { },
+                                onShareClick = { shareMatch(match) }
+                            )
+                        }
+                    }
+                    if (tonightTips.isNotEmpty() && selectedTab == 0 && searchQuery.isEmpty()) {
+                        item {
+                            Text(
+                                "🌙 Ma este 3 tipp",
+                                color = primaryGreen,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
+                            )
+                        }
+                        items(tonightTips, key = { "tip-${it.id}" }) { match ->
+                            PremiumMatchRow(
+                                match = match,
+                                isFavorite = favoriteMatchIds.contains(match.id),
+                                cardBgColor = cardBgColor,
+                                textColor = textColor,
+                                subTextColor = subTextColor,
+                                primaryGreen = primaryGreen,
+                                compact = compactMode,
+                                scoreFlash = flashMatchIds.contains(match.id),
+                                onFavoriteToggle = { toggleFavorite(match.id) },
+                                onVideoClick = { },
+                                onAiClick = { m ->
+                                    selectedMatchForAi = m
+                                    viewModel.fetchAiAnalysis(m.id)
+                                },
+                                onMatchClick = { selectedMatchForDetail = it },
+                                onReminderClick = { },
+                                onShareClick = { shareMatch(match) }
+                            )
+                        }
+                    }
+                    if (spotlightMatches.isNotEmpty() && selectedTab == 0 && searchQuery.isEmpty() && !onlyPinnedLeagues) {
                         item {
                             Text(
                                 "⭐ Mai spotlight",
@@ -2107,6 +2193,33 @@ onFavoriteToggle = { toggleFavorite(match.id) },
                             }
                         )
                     }
+                    var quietFav by remember {
+                        mutableStateOf(NotifPrefs.allowFavoriteDuringQuiet(context))
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Kedvenc gól csendben is", fontSize = 14.sp)
+                        Switch(
+                            checked = quietFav,
+                            onCheckedChange = {
+                                quietFav = it
+                                NotifPrefs.setAllowFavoriteDuringQuiet(context, it)
+                            }
+                        )
+                    }
+                    var glassA by remember { mutableStateOf(GlassPrefs.alpha(context)) }
+                    Text("Üveg átlátszóság: ${(glassA * 100).toInt()}%", fontSize = 13.sp)
+                    Slider(
+                        value = glassA,
+                        onValueChange = {
+                            glassA = it
+                            GlassPrefs.setAlpha(context, it)
+                        },
+                        valueRange = 0.4f..1f
+                    )
                     NotifPrefs.allTypeKeys().forEach { (key, label) ->
                         var en by remember(key) {
                             mutableStateOf(NotifPrefs.isTypeEnabled(context, key))

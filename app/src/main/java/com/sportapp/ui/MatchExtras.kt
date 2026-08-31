@@ -27,6 +27,49 @@ import com.sportapp.models.StatItem
 import org.json.JSONArray
 import org.json.JSONObject
 
+object DerbyPrefs {
+    /** Klasszikus rivális párok – részleges név egyezés */
+    val PAIRS: List<Pair<String, String>> = listOf(
+        "Roma" to "Lazio",
+        "Inter" to "Milan",
+        "Juventus" to "Torino",
+        "Barcelona" to "Real Madrid",
+        "Atletico" to "Real Madrid",
+        "Liverpool" to "Everton",
+        "Manchester United" to "Manchester City",
+        "Arsenal" to "Tottenham",
+        "Chelsea" to "Arsenal",
+        "Bayern" to "Dortmund",
+        "PSG" to "Marseille",
+        "Benfica" to "Porto",
+        "Ajax" to "Feyenoord",
+        "Celtic" to "Rangers",
+        "Boca" to "River",
+        "Galatasaray" to "Fenerbahce",
+        "Olympiacos" to "Panathinaikos",
+        "Ferencváros" to "Újpest",
+        "Ferencvaros" to "Ujpest",
+        "Fradi" to "Újpest"
+    )
+    fun isDerby(home: String, away: String): Boolean {
+        val h = home.lowercase()
+        val a = away.lowercase()
+        return PAIRS.any { (x, y) ->
+            val xl = x.lowercase(); val yl = y.lowercase()
+            (h.contains(xl) && a.contains(yl)) || (h.contains(yl) && a.contains(xl))
+        }
+    }
+}
+
+object GlassPrefs {
+    private const val P = "glass_prefs"
+    fun alpha(ctx: Context): Float =
+        ctx.getSharedPreferences(P, Context.MODE_PRIVATE).getFloat("alpha", 0.85f)
+    fun setAlpha(ctx: Context, v: Float) {
+        ctx.getSharedPreferences(P, Context.MODE_PRIVATE).edit().putFloat("alpha", v.coerceIn(0.4f, 1f)).apply()
+    }
+}
+
 object HapticPrefs {
     private const val P = "haptic_prefs"
     fun enabled(ctx: Context): Boolean =
@@ -157,6 +200,13 @@ object NotifPrefs {
             .putInt(QUIET_START, start.coerceIn(0, 23))
             .putInt(QUIET_END, end.coerceIn(0, 23))
             .apply()
+    }
+
+    fun allowFavoriteDuringQuiet(ctx: Context): Boolean =
+        ctx.getSharedPreferences(P, Context.MODE_PRIVATE).getBoolean("quiet_allow_fav", true)
+
+    fun setAllowFavoriteDuringQuiet(ctx: Context, v: Boolean) {
+        ctx.getSharedPreferences(P, Context.MODE_PRIVATE).edit().putBoolean("quiet_allow_fav", v).apply()
     }
 
     fun isQuietNow(ctx: Context): Boolean {

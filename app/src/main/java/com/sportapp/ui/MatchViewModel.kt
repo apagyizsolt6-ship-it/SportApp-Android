@@ -22,6 +22,9 @@ class MatchViewModel : ViewModel() {
     private val _isLoading = MutableStateFlow(true)
     val isLoading: StateFlow<Boolean> = _isLoading
 
+    private val _loadError = MutableStateFlow<String?>(null)
+    val loadError: StateFlow<String?> = _loadError
+
     private val _aiAnalysis = MutableStateFlow<String?>(null)
     val aiAnalysis: StateFlow<String?> = _aiAnalysis
 
@@ -103,9 +106,12 @@ class MatchViewModel : ViewModel() {
                     RetrofitInstance.api.getMatchesByDate(dateForOffset(offset))
                 }
                 _matches.value = list
+                _loadError.value = null
             } catch (e: Exception) {
                 e.printStackTrace()
-                // Ne töröljük a régi listát hálózati hiba esetén
+                if (_matches.value.isEmpty()) {
+                    _loadError.value = e.message ?: "Hálózati hiba"
+                }
             } finally {
                 if (showLoading) _isLoading.value = false
             }
@@ -149,6 +155,10 @@ class MatchViewModel : ViewModel() {
                 _isLoadingAi.value = false
             }
         }
+    }
+
+    fun retry() {
+        fetchMatches(showLoading = true)
     }
 
     fun clearAiAnalysis() {

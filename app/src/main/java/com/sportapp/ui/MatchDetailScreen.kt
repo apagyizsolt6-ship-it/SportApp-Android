@@ -1499,6 +1499,44 @@ private fun OddsRow(
                 OddsChip("X" + deltaArrow(d, prevD), d, text, deltaColor(d, prevD), Modifier.weight(1f))
                 OddsChip("2" + deltaArrow(a, prevA), a, text, deltaColor(a, prevA), Modifier.weight(1f))
             }
+
+            // Best-of 1X2 a markets-ból
+            run {
+                fun bestOdd(labels: List<String>): Pair<Double?, String?> {
+                    var best: Double? = null
+                    var book: String? = null
+                    oddsMarkets.forEach { mkt ->
+                        val vals = (mkt["values"] as? List<*>) ?: return@forEach
+                        vals.forEach { v ->
+                            if (v !is Map<*, *>) return@forEach
+                            val lab = v["label"]?.toString()?.lowercase().orEmpty()
+                            if (labels.none { lab.contains(it) || lab == it }) return@forEach
+                            val odd = (v["odd"] as? Number)?.toDouble() ?: return@forEach
+                            if (best == null || odd > best!!) {
+                                best = odd
+                                book = mkt["bookmaker"]?.toString()
+                            }
+                        }
+                    }
+                    return best to book
+                }
+                val (bh, hb) = bestOdd(listOf("home", "1", "hazai"))
+                val (bd, db) = bestOdd(listOf("draw", "x", "döntetlen"))
+                val (ba, ab) = bestOdd(listOf("away", "2", "vendég"))
+                if (bh != null || bd != null || ba != null) {
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text("Legjobb 1/X/2", color = sub, fontSize = 11.sp)
+                    Text(
+                        buildString {
+                            if (bh != null) append("1 ${"%.2f".format(bh)}${hb?.let { " ($it)" } ?: ""}  ")
+                            if (bd != null) append("X ${"%.2f".format(bd)}${db?.let { " ($it)" } ?: ""}  ")
+                            if (ba != null) append("2 ${"%.2f".format(ba)}${ab?.let { " ($it)" } ?: ""}")
+                        },
+                        color = text,
+                        fontSize = 11.sp
+                    )
+                }
+            }
             // Top 3 iroda összehasonlítás (ha a markets listában van)
             val ftr = oddsMarkets.filter {
                 val n = it["market"]?.toString()?.lowercase().orEmpty()
@@ -1789,6 +1827,7 @@ private fun EventsTab(
     sub: Color,
     card: Color
 ) {
+    var filter by remember { mutableStateOf("ALL") } // ALL, GOAL, CARD, SUB
     if (events.isEmpty()) {
         Box(
             Modifier
@@ -1800,10 +1839,50 @@ private fun EventsTab(
         }
         return
     }
-    val sorted = events.sortedBy { it.minute ?: 0 }
+    fun matchesFilter(ev: MatchEvent): Boolean {
+        val typeRaw = (ev.type ?: "").lowercase()
+        return when (filter) {
+            "GOAL" -> "goal" in typeRaw || "gól" in typeRaw || typeRaw == "g" || "pen" in typeRaw
+            "CARD" -> "yellow" in typeRaw || "red" in typeRaw || "card" in typeRaw
+            "SUB" -> "subst" in typeRaw || "sub" in typeRaw || "csere" in typeRaw
+            else -> true
+        }
+    }
+    val sorted = events.filter { matchesFilter(it) }.sortedBy { it.minute ?: 0 }
+    Column(Modifier = Modifier.fillMaxSize()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            listOf("ALL" to "Mind", "GOAL" to "Gól", "CARD" to "Lap", "SUB" to "Csere").forEach { (key, label) ->
+                val sel = filter == key
+                Text(
+                    text = label,
+                    color = if (sel) Color.White else text,
+                    fontSize = 11.sp,
+                    fontWeight = if (sel) FontWeight.Bold else FontWeight.Medium,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(if (sel) Color(0xFF00C853) else card)
+                        .clickable { filter = key }
+                        .padding(horizontal = 12.dp, vertical = 6.dp)
+                )
+            }
+        }
+        if (sorted.isEmpty()) {
+            Text(
+                "Nincs ilyen típusú esemény",
+                color = sub,
+                fontSize = 12.sp,
+                modifier = Modifier.padding(16.dp)
+            )
+        }
     LazyColumn(
         modifier = Modifier
-            .fillMaxSize()
+            .weight(1f)
+            .fillMaxWidth()
             .padding(horizontal = 12.dp),
         contentPadding = PaddingValues(vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(0.dp)
@@ -1881,6 +1960,8 @@ private fun EventsTab(
             }
         }
     }
+}
+
 }
 
 @Composable
