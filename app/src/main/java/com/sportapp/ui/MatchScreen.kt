@@ -519,6 +519,34 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
         if (nextFlash.isNotEmpty()) {
             flashMatchIds = flashMatchIds + nextFlash
             HapticPrefs.goalVibrate(context)
+            // Helyi értesítés, ha a meccs követett (FCM backup, app előtérben)
+            nextFlash.forEach { id ->
+                if (followedMatchIds.contains(id)) {
+                    val m = matches.find { it.id == id } ?: return@forEach
+                    try {
+                        val nm = context.getSystemService(android.content.Context.NOTIFICATION_SERVICE)
+                            as android.app.NotificationManager
+                        if (android.os.Build.VERSION.SDK_INT >= 26) {
+                            nm.createNotificationChannel(
+                                android.app.NotificationChannel(
+                                    "sportapp_goals",
+                                    "Gólok",
+                                    android.app.NotificationManager.IMPORTANCE_HIGH
+                                )
+                            )
+                        }
+                        val n = androidx.core.app.NotificationCompat.Builder(context, "sportapp_goals")
+                            .setSmallIcon(android.R.drawable.ic_menu_compass)
+                            .setContentTitle("⚽ GÓL")
+                            .setContentText("${m.homeTeam} ${m.homeScore ?: 0}–${m.awayScore ?: 0} ${m.awayTeam}")
+                            .setPriority(androidx.core.app.NotificationCompat.PRIORITY_HIGH)
+                            .setAutoCancel(true)
+                            .build()
+                        nm.notify(id.hashCode(), n)
+                    } catch (_: Exception) {
+                    }
+                }
+            }
             kotlinx.coroutines.delay(2500)
             flashMatchIds = flashMatchIds - nextFlash
         }

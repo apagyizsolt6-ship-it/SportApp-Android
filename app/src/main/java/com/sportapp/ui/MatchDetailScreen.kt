@@ -655,6 +655,9 @@ fun MatchDetailDialog(
                 }
 
                 AnimatedContent(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
                     targetState = selectedTab,
                     transitionSpec = {
                         val forward = targetState >= initialState
@@ -1787,19 +1790,26 @@ private fun EventsTab(
     card: Color
 ) {
     if (events.isEmpty()) {
-        Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                .padding(24.dp),
+            contentAlignment = Alignment.Center
+        ) {
             Text("Nincs esemény", color = sub, fontSize = 13.sp)
         }
         return
     }
     val sorted = events.sortedBy { it.minute ?: 0 }
-    Column(
+    LazyColumn(
         modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 8.dp),
+            .fillMaxSize()
+            .padding(horizontal = 12.dp),
+        contentPadding = PaddingValues(vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(0.dp)
     ) {
-        sorted.forEachIndexed { index, ev ->
+        items(sorted.size) { index ->
+            val ev = sorted[index]
             val typeRaw = (ev.type ?: "").lowercase()
             val (badge, color) = when {
                 "goal" in typeRaw || "gól" in typeRaw || typeRaw == "g" -> "⚽ GÓL" to Color(0xFF00E676)
@@ -1815,14 +1825,18 @@ private fun EventsTab(
             val player = listOfNotNull(ev.player, ev.assist, ev.substituted)
                 .filter { it.isNotBlank() }
                 .joinToString(" → ")
-            val team = (ev.team ?: ev.teamName).orEmpty()
+            val teamRaw = (ev.team ?: ev.teamName).orEmpty()
+            val team = when (teamRaw.lowercase()) {
+                "home", "hazai" -> "Hazai"
+                "away", "vendég" -> "Vendég"
+                else -> teamRaw
+            }
             val isLast = index == sorted.lastIndex
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.Top
             ) {
-                // idővonal
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     modifier = Modifier.width(36.dp)
@@ -1837,7 +1851,7 @@ private fun EventsTab(
                         Box(
                             modifier = Modifier
                                 .width(2.dp)
-                                .height(48.dp)
+                                .height(52.dp)
                                 .background(Color(0x334DA3FF))
                         )
                     }
@@ -1845,7 +1859,7 @@ private fun EventsTab(
                 Column(
                     modifier = Modifier
                         .weight(1f)
-                        .padding(start = 8.dp, bottom = if (isLast) 0.dp else 8.dp)
+                        .padding(start = 8.dp, bottom = if (isLast) 8.dp else 8.dp)
                         .clip(RoundedCornerShape(10.dp))
                         .background(card)
                         .padding(horizontal = 12.dp, vertical = 8.dp)

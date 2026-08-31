@@ -18,7 +18,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import com.sportapp.api.RetrofitInstance
 import com.sportapp.models.LineupPlayer
+import kotlinx.coroutines.launch
 import com.sportapp.models.MatchEvent
 import com.sportapp.models.MatchResponse
 import com.sportapp.models.StatItem
@@ -335,6 +337,7 @@ fun PlayerCardDialogWithOpen(
     onDismiss: () -> Unit,
     onYoutube: (String) -> Unit = {}
 ) {
+    val scope = rememberCoroutineScope()
     val pos = (player.position ?: "").uppercase().ifBlank { "–" }
     val num = when (val n = player.number) {
         is Number -> n.toInt().toString()
@@ -343,6 +346,38 @@ fun PlayerCardDialogWithOpen(
     }
     val name = player.name ?: "Játékos"
     val bench = player.isBench == true
+    val pid = player.playerId?.trim().orEmpty()
+    var summaryText by remember { mutableStateOf<String?>(null) }
+    var loading by remember { mutableStateOf(false) }
+
+    LaunchedEffect(pid) {
+        if (pid.isBlank()) return@LaunchedEffect
+        loading = true
+        try {
+            val s = RetrofitInstance.api.getPlayerSummary(pid)
+            if (s.available == true) {
+                val sb = StringBuilder()
+                s.season?.let { sb.appendLine("Szezon/liga: $it") }
+                s.team?.let { sb.appendLine("Csapat: $it") }
+                s.position?.let { sb.appendLine("Poszt: $it") }
+                val st = s.stats.orEmpty()
+                if (st.isNotEmpty()) {
+                    sb.appendLine("Statisztika:")
+                    st.entries.take(12).forEach { (k, v) ->
+                        sb.appendLine("  • $k: $v")
+                    }
+                }
+                summaryText = sb.toString().ifBlank { s.message }
+            } else {
+                summaryText = s.message ?: "Nincs szezonadat."
+            }
+        } catch (e: Exception) {
+            summaryText = "Stat betöltés sikertelen: ${e.message}"
+        } finally {
+            loading = false
+        }
+    }
+
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(name, fontWeight = FontWeight.Bold) },
@@ -350,11 +385,18 @@ fun PlayerCardDialogWithOpen(
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Csapat: ${teamHint.ifBlank { "–" }}", fontSize = 13.sp)
                 Text("Mez: $num  ·  Poszt: $pos  ·  ${if (bench) "Cserepad" else "Kezdő"}", fontSize = 13.sp)
-                Text(
-                    "Részletes szezonstatisztika hamarosan. Addig YouTube keresés a játékosról.",
-                    fontSize = 12.sp,
-                    color = Color(0xFF9BB0C9)
-                )
+                if (pid.isNotBlank()) {
+                    Text("ID: $pid", fontSize = 10.sp, color = Color(0xFF9BB0C9))
+                }
+                when {
+                    loading -> Text("Szezonstat betöltése…", fontSize = 12.sp, color = Color(0xFF9BB0C9))
+                    !summaryText.isNullOrBlank() -> Text(summaryText!!, fontSize = 12.sp)
+                    else -> Text(
+                        "Nincs player_id – a Highlightly nem adta át a játékos azonosítót.",
+                        fontSize = 12.sp,
+                        color = Color(0xFF9BB0C9)
+                    )
+                }
             }
         },
         confirmButton = {
