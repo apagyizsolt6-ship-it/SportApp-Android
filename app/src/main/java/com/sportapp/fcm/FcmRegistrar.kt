@@ -112,6 +112,10 @@ object FcmRegistrar {
                         mapOf("token" to token, "match_id" to matchId)
                     )
                     Log.i(TAG, "subscribe $matchId -> $res")
+                    val configured = res["fcm_configured"]
+                    if (configured == false || configured == "false") {
+                        Log.e(TAG, "Backend FCM_SERVER_KEY hiányzik – push nem fog menni")
+                    }
                 } else {
                     RetrofitInstance.api.fcmUnsubscribe(
                         mapOf("token" to token, "match_id" to matchId)
