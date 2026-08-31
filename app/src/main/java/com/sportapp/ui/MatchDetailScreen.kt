@@ -537,6 +537,52 @@ fun MatchDetailDialog(
                     )
                 }
 
+                // Csapat követés (összes meccs + push)
+                val ctxTeams = LocalContext.current
+                var followedTeams by remember {
+                    mutableStateOf(TeamFollowPrefs.teams(ctxTeams))
+                }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(card)
+                        .padding(10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    listOf(detail.homeTeam, detail.awayTeam).forEach { teamName ->
+                        val on = followedTeams.any { it.equals(teamName, true) }
+                        Text(
+                            text = if (on) "★ $teamName" else "☆ $teamName",
+                            color = if (on) green else text,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Medium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(Color(0x221A2D4D))
+                                .clickable {
+                                    followedTeams = TeamFollowPrefs.toggle(ctxTeams, teamName)
+                                    // ha bekapcsolva, kövesd ezt a meccset is
+                                    if (followedTeams.any { it.equals(teamName, true) }) {
+                                        FcmRegistrar.setFollowing(ctxTeams, detail.id, true)
+                                    }
+                                    Toast.makeText(
+                                        ctxTeams,
+                                        if (followedTeams.any { it.equals(teamName, true) })
+                                            "$teamName követve – jövőbeli meccsek + push"
+                                        else
+                                            "$teamName követés kikapcsolva",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                }
+                                .padding(8.dp)
+                        )
+                    }
+                }
+
                 if (selectedPlayer != null) {
                     PlayerCardDialogWithOpen(
                         player = selectedPlayer!!,
@@ -1076,6 +1122,8 @@ private fun SummaryTab(
         // Odds
         item {
             OddsRow(match, text, sub, card, green, oddsHome, oddsDraw, oddsAway, oddsSource, oddsMarkets)
+            Spacer(modifier = Modifier.height(10.dp))
+            AiPrematchTipCard(match, text, sub, card, green)
         }
 
         // Forma (W-D-L)
@@ -1239,6 +1287,56 @@ private fun FormSide(name: String, form: List<String>, text: Color, sub: Color, 
                     }
                 }
             }
+        }
+    }
+}
+
+
+@Composable
+private fun AiPrematchTipCard(
+    match: MatchResponse,
+    text: Color,
+    sub: Color,
+    card: Color,
+    green: Color
+) {
+    var tip by remember(match.id) { mutableStateOf<String?>(null) }
+    var loading by remember(match.id) { mutableStateOf(false) }
+    var requested by remember(match.id) { mutableStateOf(false) }
+
+    LaunchedEffect(requested) {
+        if (!requested || tip != null) return@LaunchedEffect
+        loading = true
+        try {
+            val r = RetrofitInstance.api.getAiAnalysis(match.id)
+            val raw = try { r.analysis } catch (_: Exception) { null }
+            val textFull = raw?.takeIf { !it.isNullOrBlank() }
+                ?: "A ${match.homeTeam} – ${match.awayTeam} meccsen a forma és a hazai pálya lehet döntő. Érdemes figyelni a gólokat mindkét oldalon. A végeredmény nyitott."
+            val parts = textFull.split(Regex("(?<=[.!?])\\s+")).filter { it.isNotBlank() }.take(3)
+            tip = parts.joinToString(" ")
+        } catch (_: Exception) {
+            tip = "${match.homeTeam} hazai előnye és a legutóbbi forma számít. A ${match.awayTeam} kontrákkal veszélyes lehet. Ez tájékoztató, nem fogadási javaslat."
+        } finally {
+            loading = false
+        }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .background(card)
+            .border(1.dp, Color(0x334DA3FF), RoundedCornerShape(10.dp))
+            .padding(12.dp)
+    ) {
+        Text("AI előzetes (3 mondat)", color = text, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+        Spacer(modifier = Modifier.height(4.dp))
+        Text("Nem fogadási tanács – csak tájékoztató elemzés.", color = sub, fontSize = 10.sp)
+        Spacer(modifier = Modifier.height(8.dp))
+        when {
+            loading -> Text("Elemzés…", color = sub, fontSize = 12.sp)
+            tip != null -> Text(tip!!, color = text, fontSize = 12.sp, lineHeight = 16.sp)
+            else -> TextButton(onClick = { requested = true }) { Text("Előzetes kérése", color = green) }
         }
     }
 }
@@ -2221,7 +2319,13 @@ private fun PitchLineupCard(
                                 }
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Text(
-                                    shortName(p.name),
+                                    buildString {
+                                        append(jerseyNumber(p.number))
+                                        val pos = (p.position ?: "").uppercase().trim()
+                                        if (pos.isNotEmpty()) append(" · $pos")
+                                        append(" · ")
+                                        append(shortName(p.name))
+                                    },
                                     color = text,
                                     fontSize = 11.sp,
                                     maxLines = 1,
@@ -2339,6 +2443,14 @@ private fun StandingsTab(
             item { Text("Nincs tabella.", color = sub, fontSize = 13.sp) }
         } else {
             item {
+                Text(
+                    "Zöld sáv: top 4  ·  Piros sáv: kieső zóna (utolsó 3)  ·  W-D-L szezonforma",
+                    color = sub,
+                    fontSize = 10.sp,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                )
+            }
+            item {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -2350,21 +2462,40 @@ private fun StandingsTab(
                     Text("P", color = sub, fontSize = 11.sp, modifier = Modifier.width(32.dp), textAlign = TextAlign.End)
                 }
             }
-            items(standings) { t ->
-                val highlight = t.team.contains(homeTeam, true) || t.team.contains(awayTeam, true)
-                    || homeTeam.contains(t.team, true) || awayTeam.contains(t.team, true)
+            items(standings) { row ->
+                val highlight = row.team.contains(homeTeam, true) || row.team.contains(awayTeam, true)
+                    || homeTeam.contains(row.team, true) || awayTeam.contains(row.team, true)
+                val n = standings.size
+                val zoneColor = when {
+                    row.position in 1..4 -> Color(0xFF00C853).copy(alpha = 0.18f) // top / EL
+                    n >= 18 && row.position > n - 3 -> Color(0xFFE53935).copy(alpha = 0.18f) // kieső
+                    else -> if (highlight) accent.copy(alpha = 0.15f) else card
+                }
+                val posColor = when {
+                    row.position in 1..4 -> Color(0xFF00E676)
+                    n >= 18 && row.position > n - 3 -> Color(0xFFFF5252)
+                    else -> text
+                }
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(6.dp))
-                        .background(if (highlight) accent.copy(alpha = 0.15f) else card)
+                        .background(zoneColor)
                         .padding(horizontal = 8.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("${t.position}", color = text, fontSize = 13.sp, modifier = Modifier.width(28.dp))
-                    Text(t.team, color = text, fontSize = 13.sp, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text("${t.played}", color = sub, fontSize = 12.sp, modifier = Modifier.width(28.dp), textAlign = TextAlign.End)
-                    Text("${t.points}", color = text, fontWeight = FontWeight.Bold, fontSize = 13.sp, modifier = Modifier.width(32.dp), textAlign = TextAlign.End)
+                    Text("${row.position}", color = posColor, fontSize = 13.sp, fontWeight = FontWeight.Bold, modifier = Modifier.width(28.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(row.team, color = text, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(
+                            "Forma: ${row.wins}W-${row.draws}D-${row.losses}L · GK: ${row.goalDifference}",
+                            color = sub,
+                            fontSize = 10.sp,
+                            maxLines = 1
+                        )
+                    }
+                    Text("${row.played}", color = sub, fontSize = 12.sp, modifier = Modifier.width(28.dp), textAlign = TextAlign.End)
+                    Text("${row.points}", color = text, fontWeight = FontWeight.Bold, fontSize = 13.sp, modifier = Modifier.width(32.dp), textAlign = TextAlign.End)
                 }
             }
         }

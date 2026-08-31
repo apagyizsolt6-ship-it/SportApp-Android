@@ -25,6 +25,47 @@ import com.sportapp.models.StatItem
 import org.json.JSONArray
 import org.json.JSONObject
 
+object HapticPrefs {
+    private const val P = "haptic_prefs"
+    fun enabled(ctx: Context): Boolean =
+        ctx.getSharedPreferences(P, Context.MODE_PRIVATE).getBoolean("goal_haptic", true)
+    fun setEnabled(ctx: Context, v: Boolean) {
+        ctx.getSharedPreferences(P, Context.MODE_PRIVATE).edit().putBoolean("goal_haptic", v).apply()
+    }
+    fun goalVibrate(ctx: Context) {
+        if (!enabled(ctx)) return
+        try {
+            val v = ctx.getSystemService(Context.VIBRATOR_SERVICE) as? android.os.Vibrator ?: return
+            if (android.os.Build.VERSION.SDK_INT >= 26) {
+                v.vibrate(android.os.VibrationEffect.createOneShot(120, android.os.VibrationEffect.DEFAULT_AMPLITUDE))
+            } else {
+                @Suppress("DEPRECATION")
+                v.vibrate(120)
+            }
+        } catch (_: Exception) {}
+    }
+}
+
+object TeamFollowPrefs {
+    private const val P = "team_follow_prefs"
+    private const val KEY = "teams"
+    fun teams(ctx: Context): Set<String> =
+        ctx.getSharedPreferences(P, Context.MODE_PRIVATE).getStringSet(KEY, emptySet())?.toSet() ?: emptySet()
+    fun toggle(ctx: Context, team: String): Set<String> {
+        val name = team.trim()
+        if (name.isEmpty()) return teams(ctx)
+        val cur = teams(ctx).toMutableSet()
+        val key = cur.find { it.equals(name, true) }
+        if (key != null) cur.remove(key) else cur.add(name)
+        ctx.getSharedPreferences(P, Context.MODE_PRIVATE).edit().putStringSet(KEY, cur).apply()
+        return cur
+    }
+    fun isFollowed(ctx: Context, team: String): Boolean {
+        val n = team.trim()
+        return teams(ctx).any { it.equals(n, true) || n.contains(it, true) || it.contains(n, true) }
+    }
+}
+
 object NotifPrefs {
     private const val P = "notif_ux_prefs"
     private const val HISTORY = "history_json"
@@ -290,37 +331,41 @@ fun WhoWinsVote(
 @Composable
 fun PlayerCardDialogWithOpen(
     player: LineupPlayer,
-    teamHint: String,
+    teamHint: String = "",
     onDismiss: () -> Unit,
-    onYoutube: (String) -> Unit
+    onYoutube: (String) -> Unit = {}
 ) {
-    val name = player.name ?: "Játékos"
-    Dialog(onDismissRequest = onDismiss) {
-        Card(
-            shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(containerColor = Color(0xFF152238))
-        ) {
-            Column(modifier = Modifier.padding(16.dp)) {
-                Text(name, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                player.number?.let {
-                    Text("#$it", color = Color(0xFF9BB0C9), fontSize = 13.sp)
-                }
-                player.position?.let {
-                    Text(it, color = Color(0xFF9BB0C9), fontSize = 12.sp)
-                }
-                Spacer(modifier = Modifier.height(12.dp))
-                Button(
-                    onClick = { onYoutube("$name $teamHint") },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00E5A8))
-                ) {
-                    Text("YouTube keresés", color = Color.Black)
-                }
-                TextButton(onClick = onDismiss) {
-                    Text("Bezárás", color = Color(0xFF9BB0C9))
-                }
-            }
-        }
+    val pos = (player.position ?: "").uppercase().ifBlank { "–" }
+    val num = when (val n = player.number) {
+        is Number -> n.toInt().toString()
+        is String -> n.toDoubleOrNull()?.toInt()?.toString() ?: n
+        else -> "–"
     }
+    val name = player.name ?: "Játékos"
+    val bench = player.isBench == true
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(name, fontWeight = FontWeight.Bold) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Csapat: ${teamHint.ifBlank { "–" }}", fontSize = 13.sp)
+                Text("Mez: $num  ·  Poszt: $pos  ·  ${if (bench) "Cserepad" else "Kezdő"}", fontSize = 13.sp)
+                Text(
+                    "Részletes szezonstatisztika hamarosan. Addig YouTube keresés a játékosról.",
+                    fontSize = 12.sp,
+                    color = Color(0xFF9BB0C9)
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                onYoutube("$name $teamHint football")
+            }) { Text("YouTube") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Bezár") }
+        }
+    )
 }
 
 /** Egyszerű csapat infó dialógus */

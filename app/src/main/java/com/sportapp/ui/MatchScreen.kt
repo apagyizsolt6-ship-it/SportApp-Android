@@ -462,6 +462,25 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
     var followedMatchIds by remember {
         mutableStateOf(FcmRegistrar.followedMatches(context))
     }
+    var followedTeamNames by remember {
+        mutableStateOf(TeamFollowPrefs.teams(context))
+    }
+    // Követett csapatok meccseire auto FCM
+    LaunchedEffect(matches, followedTeamNames) {
+        if (followedTeamNames.isEmpty() || matches.isEmpty()) return@LaunchedEffect
+        matches.forEach { m ->
+            val hit = followedTeamNames.any { team ->
+                m.homeTeam.equals(team, true) || m.awayTeam.equals(team, true) ||
+                    m.homeTeam.contains(team, true) || m.awayTeam.contains(team, true) ||
+                    team.contains(m.homeTeam, true) || team.contains(m.awayTeam, true)
+            }
+            if (hit && !FcmRegistrar.followedMatches(context).contains(m.id)) {
+                FcmRegistrar.setFollowing(context, m.id, true)
+            }
+        }
+        followedMatchIds = FcmRegistrar.followedMatches(context)
+    }
+
 
     fun toggleFavorite(matchId: String) {
         val nowFav = !favoriteMatchIds.contains(matchId)
@@ -499,6 +518,7 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
         prevScores = nextPrev
         if (nextFlash.isNotEmpty()) {
             flashMatchIds = flashMatchIds + nextFlash
+            HapticPrefs.goalVibrate(context)
             kotlinx.coroutines.delay(2500)
             flashMatchIds = flashMatchIds - nextFlash
         }
@@ -669,7 +689,13 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
             val isMatchFav = favoriteMatchIds.contains(match.id)
 
             if (onlyPinnedLeagues && !isLeagueFav) return@filter false
-            if (onlyFavorites && !isMatchFav && !isLeagueFav) return@filter false
+            if (onlyFavorites) {
+                val teamHit = followedTeamNames.any { team ->
+                    match.homeTeam.equals(team, true) || match.awayTeam.equals(team, true)
+                }
+                if (!isMatchFav && !isLeagueFav && !teamHit && !followedMatchIds.contains(match.id))
+                    return@filter false
+            }
             val matchesSearch = matchesSmartSearch(match, searchQuery)
 
             val matchesTab = when (selectedTab) {
@@ -2036,6 +2062,23 @@ onFavoriteToggle = { toggleFavorite(match.id) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Melyik eseményekről kérsz push-t?", fontSize = 13.sp)
+                    var hapticOn by remember {
+                        mutableStateOf(HapticPrefs.enabled(context))
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Gól vibráció", fontSize = 14.sp)
+                        Switch(
+                            checked = hapticOn,
+                            onCheckedChange = {
+                                hapticOn = it
+                                HapticPrefs.setEnabled(context, it)
+                            }
+                        )
+                    }
                     NotifPrefs.allTypeKeys().forEach { (key, label) ->
                         var en by remember(key) {
                             mutableStateOf(NotifPrefs.isTypeEnabled(context, key))
