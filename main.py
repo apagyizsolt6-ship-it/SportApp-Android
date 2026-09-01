@@ -1534,6 +1534,65 @@ def format_league_title(raw_country, raw_league):
     return league_clean
 
 
+
+def _extract_match_minute(m: dict, events=None) -> int:
+    """Pontos meccsperc StatPal / Highlightly mezőkből."""
+    import re
+    candidates = []
+
+    def push(v):
+        if v is None:
+            return
+        try:
+            if isinstance(v, bool):
+                return
+            if isinstance(v, (int, float)):
+                n = int(v)
+                if 0 < n <= 130:
+                    candidates.append(n)
+                return
+            s = str(v).strip().replace("'", "").replace("’", "")
+            if not s or ":" in s:  # 20:45 kickoff – nem perc
+                return
+            if re.fullmatch(r"\d{1,3}", s):
+                n = int(s)
+                if 0 < n <= 130:
+                    candidates.append(n)
+                return
+            # 45+2 / 90+3
+            mplus = re.fullmatch(r"(\d{1,3})\s*\+\s*(\d{1,2})", s)
+            if mplus:
+                n = int(mplus.group(1)) + int(mplus.group(2))
+                if 0 < n <= 130:
+                    candidates.append(n)
+        except Exception:
+            return
+
+    if not isinstance(m, dict):
+        return 0
+    for key in (
+        "minute", "timer", "clock", "elapsed", "match_minute", "time_min",
+        "tm", "min", "game_minute", "current_minute",
+    ):
+        push(m.get(key))
+    # nested
+    for nest in ("timer", "status_object", "meta", "info"):
+        obj = m.get(nest)
+        if isinstance(obj, dict):
+            for key in ("minute", "clock", "elapsed", "tm"):
+                push(obj.get(key))
+    push(m.get("status"))
+    if events:
+        try:
+            last = events[-1] if events else None
+            if isinstance(last, dict):
+                push(last.get("minute"))
+                push(last.get("time"))
+        except Exception:
+            pass
+    return max(candidates) if candidates else 0
+
+
 def adjust_time(time_str):
     if not time_str or ":" not in str(time_str):
         return time_str
@@ -2630,8 +2689,6 @@ def get_matches():
                 # PERC
                 # ========================================================
 
-                minute_val = 0
-
                 events_container = (
                     m.get("events")
                     or {}
@@ -2649,23 +2706,7 @@ def get_matches():
                     )
                 )
 
-                if events:
-
-                    try:
-                        last_event = events[-1]
-
-                        minute_val = int(
-                            last_event.get(
-                                "minute",
-                                0
-                            )
-                        ) if isinstance(
-                            last_event,
-                            dict
-                        ) else 0
-
-                    except:
-                        minute_val = 0
+                minute_val = _extract_match_minute(m, events)
 
                 # ========================================================
                 # STÁTUSZ
@@ -2679,6 +2720,18 @@ def get_matches():
                 adjusted_status = adjust_time(
                     raw_status
                 )
+                # Ha a státusz maga a perc (pl. "67"), az a legpontosabb
+                status_as_min = _extract_match_minute({"status": adjusted_status, "minute": None})
+                if status_as_min > minute_val:
+                    minute_val = status_as_min
+                # Élő státusz normalizálás: ne legyen a status mező "67" ha van jobb label
+                if str(adjusted_status).isdigit() and minute_val > 0:
+                    if minute_val <= 45:
+                        adjusted_status = "1H"
+                    elif minute_val <= 90:
+                        adjusted_status = "2H"
+                    else:
+                        adjusted_status = "ET"
 
                 # Kickoff dátum/idő (naptárhoz)
                 # StatPal live/today → általában ma; ha van date mező, azt használjuk.
