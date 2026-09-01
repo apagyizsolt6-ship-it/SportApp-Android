@@ -358,6 +358,12 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
     val aiAnalysis by viewModel.aiAnalysis.collectAsState()
     val isLoadingAi by viewModel.isLoadingAi.collectAsState()
     var selectedMatchForAi by remember { mutableStateOf<MatchResponse?>(null) }
+    var showDailyTips by remember { mutableStateOf(false) }
+    var dailyTipsLoading by remember { mutableStateOf(false) }
+    var dailyTipsError by remember { mutableStateOf<String?>(null) }
+    var dailyTipsList by remember { mutableStateOf<List<Map<String, Any?>>>(emptyList()) }
+    var dailyTipsDisclaimer by remember { mutableStateOf("") }
+
     // Meccs részlet (events/stats/lineups) – NEM cseréli az AI / videó / média funkciókat
     var selectedMatchForDetail by remember { mutableStateOf<MatchResponse?>(null) }
 
@@ -976,6 +982,49 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                             text = if (isDarkMode) "☀️" else "🌙",
                             fontSize = 16.sp
                         )
+                    }
+
+                    Spacer(modifier = Modifier.width(8.dp))
+                    IconButton(
+                        onClick = {
+                            showDailyTips = true
+                            dailyTipsLoading = true
+                            dailyTipsError = null
+                            coroutineScope.launch {
+                                try {
+                                    val r = RetrofitInstance.api.getDailyTips(
+                                        date = selectedDateIso,
+                                        offset = selectedDayOffset
+                                    )
+                                    dailyTipsDisclaimer = r["disclaimer"]?.toString().orEmpty()
+                                    val raw = r["tips"]
+                                    val list = mutableListOf<Map<String, Any?>>()
+                                    if (raw is List<*>) {
+                                        raw.forEach { item ->
+                                            if (item is Map<*, *>) {
+                                                list.add(item.entries.associate { (k, v) -> k.toString() to v })
+                                            }
+                                        }
+                                    }
+                                    dailyTipsList = list
+                                    if (list.isEmpty()) {
+                                        dailyTipsError = r["message"]?.toString()
+                                            ?: "Ma nincs elég adat a 3 tipphez."
+                                    }
+                                } catch (e: Exception) {
+                                    dailyTipsError = e.message ?: "Hiba a tippek betöltésekor"
+                                    dailyTipsList = emptyList()
+                                } finally {
+                                    dailyTipsLoading = false
+                                }
+                            }
+                        },
+                        modifier = Modifier
+                            .clip(CircleShape)
+                            .background(leagueBgColor)
+                            .size(36.dp)
+                    ) {
+                        Text(text = "💡", fontSize = 16.sp)
                     }
                 }
             }
@@ -2362,6 +2411,90 @@ onFavoriteToggle = { toggleFavorite(match.id) },
     // ============================================================
     // AI ELEMZÉS DIALOG
     // ============================================================
+
+
+    if (showDailyTips) {
+        AlertDialog(
+            onDismissRequest = { showDailyTips = false },
+            title = {
+                Text("💡 Napi 3 AI tipp", fontWeight = FontWeight.Bold)
+            },
+            text = {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 420.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(
+                        dailyTipsDisclaimer.ifBlank {
+                            "Tájékoztató jellegű – nem fogadási tanács."
+                        },
+                        fontSize = 11.sp,
+                        color = subTextColor
+                    )
+                    when {
+                        dailyTipsLoading -> {
+                            CircularProgressIndicator(
+                                modifier = Modifier
+                                    .size(28.dp)
+                                    .align(Alignment.CenterHorizontally),
+                                strokeWidth = 2.dp,
+                                color = primaryGreen
+                            )
+                            Text("AI elemzi a nap meccseit…", fontSize = 12.sp, color = subTextColor)
+                        }
+                        dailyTipsError != null && dailyTipsList.isEmpty() -> {
+                            Text(dailyTipsError ?: "", fontSize = 13.sp, color = textColor)
+                        }
+                        else -> {
+                            dailyTipsList.forEachIndexed { idx, tip ->
+                                val match = tip["match"]?.toString().orEmpty()
+                                val market = tip["market"]?.toString().orEmpty()
+                                val pick = tip["pick"]?.toString().orEmpty()
+                                val reason = tip["reason"]?.toString().orEmpty()
+                                val strength = tip["strength"]?.toString().orEmpty()
+                                val raw = tip["raw"]?.toString().orEmpty()
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(cardBgColor)
+                                        .padding(10.dp)
+                                ) {
+                                    Text(
+                                        "${idx + 1}. ${market.ifBlank { "Tipp" }}",
+                                        color = primaryGreen,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    if (match.isNotBlank()) {
+                                        Text(match, color = textColor, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                                    }
+                                    if (pick.isNotBlank()) {
+                                        Text("→ $pick", color = textColor, fontSize = 13.sp)
+                                    }
+                                    if (reason.isNotBlank()) {
+                                        Text(reason, color = subTextColor, fontSize = 11.sp)
+                                    }
+                                    if (strength.isNotBlank()) {
+                                        Text("Erő: $strength", color = subTextColor, fontSize = 11.sp)
+                                    }
+                                    if (match.isBlank() && pick.isBlank() && raw.isNotBlank()) {
+                                        Text(raw, color = textColor, fontSize = 12.sp)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showDailyTips = false }) { Text("Bezár") }
+            }
+        )
+    }
 
     selectedMatchForAi?.let { match ->
         val aiScroll = rememberScrollState()
