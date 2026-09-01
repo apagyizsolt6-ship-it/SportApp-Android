@@ -37,38 +37,26 @@ fun rememberLiveMinute(
     matchId: String,
     serverMinute: Int?,
     status: String?,
-    isLive: Boolean
+    isLive: Boolean,
+    pulseMs: Long = 0L
 ): Int {
     val statusU = (status ?: "").trim().uppercase().replace(".", "")
     val isHt = statusU == "HT"
-    var shown by remember(matchId) { mutableIntStateOf(serverMinute ?: 0) }
-    LaunchedEffect(matchId, serverMinute, isLive, statusU) {
-        val sm = serverMinute ?: 0
-        if (!isLive) {
-            shown = sm
-            return@LaunchedEffect
-        }
-        if (isHt) {
-            if (sm > 0) shown = sm
-            return@LaunchedEffect
-        }
-        val base = when {
-            sm <= 0 -> shown
-            shown <= 0 -> sm
-            sm > shown -> sm
-            shown - sm > 3 -> sm
-            else -> shown
-        }
-        shown = base
-        val startedAt = System.currentTimeMillis()
-        while (true) {
-            kotlinx.coroutines.delay(1_000L)
-            val add = ((System.currentTimeMillis() - startedAt) / 60_000L).toInt()
-            val next = (base + add).coerceIn(0, 130)
-            if (next != shown) shown = next
+    val sm = serverMinute ?: 0
+    var anchorMin by remember(matchId) { mutableIntStateOf(sm) }
+    var anchorAt by remember(matchId) { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(matchId, sm) {
+        if (sm <= 0) return@LaunchedEffect
+        if (sm > anchorMin || kotlin.math.abs(sm - anchorMin) > 3 || anchorMin == 0) {
+            anchorMin = sm
+            anchorAt = System.currentTimeMillis()
         }
     }
-    return shown
+    if (!isLive) return sm
+    if (isHt) return if (sm > 0) sm else anchorMin
+    val now = if (pulseMs > 0L) pulseMs else System.currentTimeMillis()
+    val add = ((now - anchorAt).coerceAtLeast(0L) / 60_000L).toInt()
+    return (anchorMin + add).coerceIn(0, 130)
 }
 
 object DerbyPrefs {

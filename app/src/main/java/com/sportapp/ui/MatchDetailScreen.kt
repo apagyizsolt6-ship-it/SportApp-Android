@@ -159,7 +159,7 @@ fun MatchDetailDialog(
             val finished = detail.status == "FT" || detail.status == "info" || detail.status == "error"
             if (finished) break
 
-            delay(20_000L)
+            delay(30_000L)
         }
     }
 
@@ -206,7 +206,7 @@ fun MatchDetailDialog(
                 }
             } catch (_: Exception) {
             }
-            delay(20_000L)
+            delay(30_000L)
             if (detail.status == "FT") break
         }
     }
@@ -966,11 +966,20 @@ private fun MatchDetailScoreboard(
         ((match.minute ?: 0) > 0 && statusU !in setOf(
             "FT", "AET", "PEN", "PENS", "NS", "TBD", "PST", "CANC", "FINISHED"
         ) && !statusU.contains(":"))
+    var detailPulse by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(isLive) {
+        if (!isLive) return@LaunchedEffect
+        while (true) {
+            kotlinx.coroutines.delay(30_000L)
+            detailPulse = System.currentTimeMillis()
+        }
+    }
     val liveMinute = rememberLiveMinute(
         matchId = match.id,
         serverMinute = match.minute,
         status = match.status,
-        isLive = isLive
+        isLive = isLive,
+        pulseMs = detailPulse
     )
     Column(modifier = Modifier
             .fillMaxWidth()
@@ -2302,7 +2311,7 @@ private fun PitchLineupCard(
                     LaunchedEffect(animKey, index) {
                         appear.snapTo(0f)
                         // Kapus → csatár hullám; enyhe késleltetés
-                        kotlinx.coroutines.delay(index * 48L + 60L)
+                        kotlinx.coroutines.delay(index * 16L)
                         appear.animateTo(
                             1f,
                             animationSpec = spring(

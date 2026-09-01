@@ -374,6 +374,14 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
 
     val matches by viewModel.matches.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
+    var minutePulseMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            kotlinx.coroutines.delay(30_000L)
+            minutePulseMs = System.currentTimeMillis()
+        }
+    }
+
     val loadError by viewModel.loadError.collectAsState()
     var isDarkMode by remember { mutableStateOf(true) }
     var selectedTab by remember { mutableIntStateOf(0) }
@@ -1582,6 +1590,7 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                                 primaryGreen = primaryGreen,
                                 compact = compactMode,
                                 scoreFlash = flashMatchIds.contains(match.id),
+                                minutePulseMs = minutePulseMs,
                                 onFavoriteToggle = { toggleFavorite(match.id) },
                                 onVideoClick = { m ->
                                     selectedMatchForMedia = m
@@ -1617,6 +1626,7 @@ if (derbyMatches.isNotEmpty() && selectedTab == 0 && searchQuery.isEmpty()) {
                                 primaryGreen = primaryGreen,
                                 compact = compactMode,
                                 scoreFlash = flashMatchIds.contains(match.id),
+                                minutePulseMs = minutePulseMs,
                                 onFavoriteToggle = { toggleFavorite(match.id) },
                                 onVideoClick = { },
                                 onAiClick = { m ->
@@ -1649,6 +1659,7 @@ if (derbyMatches.isNotEmpty() && selectedTab == 0 && searchQuery.isEmpty()) {
                                 primaryGreen = primaryGreen,
                                 compact = compactMode,
                                 scoreFlash = flashMatchIds.contains(match.id),
+                                minutePulseMs = minutePulseMs,
                                 onFavoriteToggle = { toggleFavorite(match.id) },
                                 onVideoClick = { },
                                 onAiClick = { m ->
@@ -1682,6 +1693,7 @@ if (derbyMatches.isNotEmpty() && selectedTab == 0 && searchQuery.isEmpty()) {
                                 primaryGreen = primaryGreen,
                                 compact = compactMode,
                                 scoreFlash = flashMatchIds.contains(match.id),
+                                minutePulseMs = minutePulseMs,
                                 onFavoriteToggle = { toggleFavorite(match.id) },
                                 onVideoClick = { m ->
                                     selectedMatchForMedia = m
@@ -1765,6 +1777,7 @@ if (derbyMatches.isNotEmpty() && selectedTab == 0 && searchQuery.isEmpty()) {
                                 primaryGreen = primaryGreen,
                                 compact = compactMode,
                                 scoreFlash = flashMatchIds.contains(match.id),
+                                minutePulseMs = minutePulseMs,
                                 onFavoriteToggle = { toggleFavorite(match.id) },
                                 onVideoClick = { m ->
                                     selectedMatchForMedia = m
@@ -2126,6 +2139,9 @@ if (derbyMatches.isNotEmpty() && selectedTab == 0 && searchQuery.isEmpty()) {
 
                                     primaryGreen =
                                         primaryGreen,
+                                    compact = compactMode,
+                                    scoreFlash = flashMatchIds.contains(match.id),
+                                    minutePulseMs = minutePulseMs,
 
 onFavoriteToggle = { toggleFavorite(match.id) },
 
@@ -3281,6 +3297,7 @@ fun PremiumMatchRow(
     primaryGreen: Color,
     compact: Boolean = false,
     scoreFlash: Boolean = false,
+    minutePulseMs: Long = 0L,
     onFavoriteToggle: () -> Unit,
     onVideoClick: (MatchResponse) -> Unit,
     onAiClick: (MatchResponse) -> Unit,
@@ -3395,7 +3412,8 @@ fun PremiumMatchRow(
                 matchId = match.id,
                 serverMinute = match.minute,
                 status = match.status,
-                isLive = isLive
+                isLive = isLive,
+                pulseMs = minutePulseMs
             )
 
             val statusText =
@@ -4760,7 +4778,7 @@ private fun MediaMatchCard(
 ) {
     val isLive = isMatchLive(match.status, match.minute)
     val hasHighlight = !match.highlightMatchId.isNullOrBlank()
-    val liveMin = rememberLiveMinute(match.id, match.minute, match.status, isLive)
+    val liveMin = rememberLiveMinute(match.id, match.minute, match.status, isLive, pulseMs = 0L)
 
     Row(
         modifier = Modifier
