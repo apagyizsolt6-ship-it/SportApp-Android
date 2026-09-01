@@ -11,6 +11,7 @@ import retrofit2.http.Body
 import retrofit2.http.GET
 import retrofit2.http.POST
 import retrofit2.http.Path
+import retrofit2.http.Query
 
 data class StandingTeam(
     val position: Int,
@@ -81,6 +82,12 @@ interface ApiService {
 
     // AI elemzés – a GitHub-on lévő MatchViewModel hivatkozik rá.
     // Ha a backend még nem ad valódi AI-t, üres/placeholder válasz jön.
+    @GET("api/tips/daily")
+    suspend fun getDailyTips(
+        @Query("date") date: String? = null,
+        @Query("offset") offset: Int = 0
+    ): Map<String, @JvmSuppressWildcards Any?>
+
     @GET("api/ai-analysis/{match_id}")
     suspend fun getAiAnalysis(
         @Path("match_id") matchId: String
