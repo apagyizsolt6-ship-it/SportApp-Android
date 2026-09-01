@@ -571,7 +571,7 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                     }
                 }
             }
-            kotlinx.coroutines.delay(2500)
+            kotlinx.coroutines.delay(25_000L) // GÓL badge + zöld kártya ~25 mp
             flashMatchIds = flashMatchIds - nextFlash
         }
     }
