@@ -4017,6 +4017,175 @@ Formátum (mind a 4 pont kötelező, teljes mondatokkal):
     return payload
 
 
+
+_daily_tips_cache = {}
+_DAILY_TIPS_TTL = 6 * 3600  # 6 óra
+
+
+@app.get("/api/tips/daily")
+def get_daily_tips(date: str = None, offset: int = 0):
+    """
+    Az adott nap 3 legerősebb, különböző kimenetelű tippje.
+    date: YYYY-MM-DD (opcionális); offset: 0=ma, 1=holnap...
+    Nem fogadási tanács – tájékoztató jellegű.
+    """
+    from datetime import datetime, timedelta, timezone
+    now = time.time()
+    try:
+        if date and len(date) >= 10:
+            day = date[:10]
+        else:
+            base = datetime.now(timezone.utc) + timedelta(days=int(offset or 0))
+            day = base.strftime("%Y-%m-%d")
+    except Exception:
+        day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    cached = _daily_tips_cache.get(day)
+    if cached and (now - cached.get("ts", 0)) < _DAILY_TIPS_TTL:
+        return cached["payload"]
+
+    # Meccsek betöltése
+    matches = []
+    try:
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        if day == today:
+            matches = get_matches()
+        else:
+            matches = get_matches_by_date(day)
+    except Exception as ex:
+        print("[tips/daily] matches load:", ex)
+        matches = []
+
+    if not isinstance(matches, list):
+        matches = []
+
+    # Jelöltek: még nem vége, top ligák / value / odds
+    def score_m(m):
+        if not isinstance(m, dict):
+            return -1
+        st = str(m.get("status") or "").upper()
+        if st in ("FT", "AET", "PEN", "PENS", "CANC", "PST"):
+            return -1
+        s = 0
+        league = str(m.get("league") or "").lower()
+        for k, w in (
+            ("premier", 40), ("la liga", 38), ("serie a", 36), ("bundesliga", 35),
+            ("ligue 1", 34), ("champions", 45), ("europa", 30), ("nb i", 25),
+        ):
+            if k in league:
+                s += w
+                break
+        if m.get("is_value_bet") or m.get("isValueBet"):
+            s += 25
+        if m.get("odds_home") or m.get("oddsHome"):
+            s += 10
+        if m.get("predictions") or m.get("forecast"):
+            s += 15
+        return s
+
+    ranked = sorted([m for m in matches if isinstance(m, dict)], key=score_m, reverse=True)
+    ranked = [m for m in ranked if score_m(m) >= 0][:12]
+
+    # Gemini prompt – 3 különböző piac
+    lines = []
+    for m in ranked[:8]:
+        lines.append(
+            f"- id={m.get('id') or m.get('match_id')} | {m.get('home_team')} vs {m.get('away_team')} | "
+            f"{m.get('league')} | status={m.get('status')} | "
+            f"odds 1X2={m.get('odds_home')}/{m.get('odds_draw')}/{m.get('odds_away')} | "
+            f"value={m.get('is_value_bet')}"
+        )
+    catalog = "\n".join(lines) if lines else "(nincs meccs adat)"
+
+    prompt = f"""Te magyar sportippesz-elemző vagy. A mai/nap ({day}) meccseiből válassz PONTOSAN 3 tippet.
+Szabályok:
+- 3 KÜLÖNBÖZŐ kimenetel / piac (pl. 1X2 hazai győzelem, Over/Under 2.5, BTTS igen, Ázsiai handicap, Kettős esély)
+- A legmeggyőzőbb, legerősebb tippek a napra
+- Magyarul, tömören
+- Minden tipp: meccs, piac, konkrét tipp, rövid indoklás (1-2 mondat), erősség 1-5
+- Ez NEM fogadási tanács, csak tájékoztató elemzés
+- CSAK a 3 tippet írd, semmi angol meta szöveg
+
+Meccsek:
+{catalog}
+
+Válasz formátum (pontosan 3 blokk):
+1) MECCS: ...
+   PIAC: ...
+   TIPP: ...
+   INDOK: ...
+   ERŐ: n/5
+2) ...
+3) ...
+"""
+
+    tips = []
+    ai_text = None
+    try:
+        ai_text = _call_gemini(prompt)
+    except Exception:
+        ai_text = None
+
+    if ai_text:
+        # Parse simple blocks
+        import re
+        blocks = re.split(r"\n\s*(?=\d+\))", ai_text.strip())
+        if len(blocks) < 2:
+            blocks = re.split(r"\n(?=MECCS:)", ai_text, flags=re.I)
+        for i, b in enumerate(blocks[:5]):
+            if not b.strip():
+                continue
+            def grab(label, text):
+                m = re.search(rf"{label}\s*:\s*(.+)", text, re.I)
+                return m.group(1).strip() if m else ""
+            tip = {
+                "rank": len(tips) + 1,
+                "match": grab("MECCS", b) or grab("Meccs", b),
+                "market": grab("PIAC", b) or grab("Piac", b),
+                "pick": grab("TIPP", b) or grab("Tipp", b),
+                "reason": grab("INDOK", b) or grab("Indok", b),
+                "strength": grab("ERŐ", b) or grab("Ero", b) or "",
+                "raw": b.strip()[:500],
+            }
+            if tip["match"] or tip["pick"] or tip["raw"]:
+                tips.append(tip)
+            if len(tips) >= 3:
+                break
+
+    # Fallback ha AI üres: heurisztika 3 különböző piac
+    if len(tips) < 3 and ranked:
+        markets = [
+            ("1X2", lambda m: f"Hazai győzelem ({m.get('home_team')})" if (m.get('odds_home') or 2) <= (m.get('odds_away') or 3) else f"Vendég győzelem ({m.get('away_team')})"),
+            ("Over/Under 2.5", lambda m: "Over 2.5 gól"),
+            ("BTTS", lambda m: "Mindkét csapat szerez gólt (BTTS Igen)"),
+        ]
+        for i, (market, fn) in enumerate(markets):
+            if len(tips) >= 3:
+                break
+            m = ranked[i % len(ranked)]
+            tips.append({
+                "rank": len(tips) + 1,
+                "match": f"{m.get('home_team')} – {m.get('away_team')}",
+                "market": market,
+                "pick": fn(m),
+                "reason": f"{m.get('league') or 'Liga'} · forma és szorzók alapján kiemelt.",
+                "strength": f"{5 - i}/5",
+                "match_id": str(m.get("id") or m.get("match_id") or ""),
+                "raw": "",
+            })
+
+    payload = {
+        "date": day,
+        "available": len(tips) > 0,
+        "tips": tips[:3],
+        "disclaimer": "Tájékoztató jellegű AI tippek – nem fogadási tanács.",
+        "source": "gemini" if ai_text else "heuristic",
+    }
+    _daily_tips_cache[day] = {"ts": now, "payload": payload}
+    return payload
+
+
+
 @app.get("/api/status")
 def get_status():
 
