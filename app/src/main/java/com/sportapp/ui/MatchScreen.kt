@@ -49,6 +49,7 @@ import coil.compose.SubcomposeAsyncImage
 import com.sportapp.models.MatchResponse
 import com.sportapp.models.HighlightVideo
 import com.sportapp.api.RetrofitInstance
+import com.sportapp.VideoPipActivity
 import com.sportapp.fcm.FcmRegistrar
 import com.sportapp.api.StandingTeam
 import kotlinx.coroutines.launch
@@ -363,6 +364,10 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
     var dailyTipsError by remember { mutableStateOf<String?>(null) }
     var dailyTipsList by remember { mutableStateOf<List<Map<String, Any?>>>(emptyList()) }
     var dailyTipsDisclaimer by remember { mutableStateOf("") }
+    var dailyTipsTab by remember { mutableIntStateOf(0) } // 0=ma, 1=tegnap
+    var yesterdayTipsList by remember { mutableStateOf<List<Map<String, Any?>>>(emptyList()) }
+    var yesterdaySummary by remember { mutableStateOf("") }
+
 
     // Meccs részlet (events/stats/lineups) – NEM cseréli az AI / videó / média funkciókat
     var selectedMatchForDetail by remember { mutableStateOf<MatchResponse?>(null) }
@@ -526,6 +531,7 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
         if (nextFlash.isNotEmpty()) {
             flashMatchIds = flashMatchIds + nextFlash
             HapticPrefs.goalVibrate(context)
+            SoundPrefs.playGoalBeep(context)
             // Helyi értesítés, ha a meccs követett (FCM backup, app előtérben)
             nextFlash.forEach { id ->
                 if (followedMatchIds.contains(id)) {
@@ -560,6 +566,7 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
     }
     var onlyPinnedLeagues by remember { mutableStateOf(false) }
     var onlyFavorites by remember { mutableStateOf(false) }
+    var onlyTopLeagues by remember { mutableStateOf(false) }
     var showNotifTypes by remember { mutableStateOf(false) }
     var compactMode by remember {
         mutableStateOf(favoritePrefs.getBoolean("compact_mode", false))
@@ -733,6 +740,9 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
             }
             val matchesSearch = matchesSmartSearch(match, searchQuery)
 
+            if (onlyTopLeagues) {
+                if (!isTopFiveLeague(leagueName, match.countryCode ?: match.country)) return@filter false
+            }
             val matchesTab = when (selectedTab) {
                 1 -> isMatchLive(match.status, match.minute)
                 2 -> isMatchFav || isLeagueFav
@@ -1156,6 +1166,11 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                     selected = onlyFavorites,
                     onClick = { onlyFavorites = !onlyFavorites },
                     label = { Text("♥ Kedvencek", fontSize = 11.sp) }
+                )
+                FilterChip(
+                    selected = onlyTopLeagues,
+                    onClick = { onlyTopLeagues = !onlyTopLeagues },
+                    label = { Text("TOP ligák", fontSize = 11.sp) }
                 )
                 FilterChip(
                     selected = sortMode != MatchSortMode.LEAGUE,
@@ -2255,6 +2270,21 @@ onFavoriteToggle = { toggleFavorite(match.id) },
                             }
                         )
                     }
+                    var soundOn by remember { mutableStateOf(SoundPrefs.goalSoundEnabled(context)) }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Gól hang", fontSize = 14.sp)
+                        Switch(
+                            checked = soundOn,
+                            onCheckedChange = {
+                                soundOn = it
+                                SoundPrefs.setGoalSoundEnabled(context, it)
+                            }
+                        )
+                    }
                     var quietFav by remember {
                         mutableStateOf(NotifPrefs.allowFavoriteDuringQuiet(context))
                     }
@@ -2362,7 +2392,15 @@ onFavoriteToggle = { toggleFavorite(match.id) },
                             )
                         )
                     }
-                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                    // PiP-képes lejátszó, ha van URL
+                    try {
+                        val pip = Intent(context, VideoPipActivity::class.java).apply {
+                            putExtra(VideoPipActivity.EXTRA_URL, url)
+                        }
+                        context.startActivity(pip)
+                    } catch (_: Exception) {
+                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                    }
                     context.startActivity(intent)
                 } catch (e: Exception) {
                     // ignore
@@ -2436,7 +2474,7 @@ onFavoriteToggle = { toggleFavorite(match.id) },
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(max = 420.dp)
+                        .heightIn(max = 460.dp)
                         .verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
@@ -2447,6 +2485,47 @@ onFavoriteToggle = { toggleFavorite(match.id) },
                         fontSize = 11.sp,
                         color = subTextColor
                     )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(
+                            selected = dailyTipsTab == 0,
+                            onClick = { dailyTipsTab = 0 },
+                            label = { Text("Ma", fontSize = 12.sp) }
+                        )
+                        FilterChip(
+                            selected = dailyTipsTab == 1,
+                            onClick = {
+                                dailyTipsTab = 1
+                                if (yesterdayTipsList.isEmpty()) {
+                                    dailyTipsLoading = true
+                                    coroutineScope.launch {
+                                        try {
+                                            val r = RetrofitInstance.api.getTipsResults(date = null)
+                                            yesterdaySummary = buildString {
+                                                val h = (r["hits"] as? Number)?.toInt() ?: 0
+                                                val m = (r["misses"] as? Number)?.toInt() ?: 0
+                                                append("Bejött: $h · Nem: $m")
+                                            }
+                                            val raw = r["tips"]
+                                            val list = mutableListOf<Map<String, Any?>>()
+                                            if (raw is List<*>) {
+                                                raw.forEach { item ->
+                                                    if (item is Map<*, *>) {
+                                                        list.add(item.entries.associate { (k, v) -> k.toString() to v })
+                                                    }
+                                                }
+                                            }
+                                            yesterdayTipsList = list
+                                        } catch (e: Exception) {
+                                            dailyTipsError = e.message
+                                        } finally {
+                                            dailyTipsLoading = false
+                                        }
+                                    }
+                                }
+                            },
+                            label = { Text("Tegnap", fontSize = 12.sp) }
+                        )
+                    }
                     when {
                         dailyTipsLoading -> {
                             CircularProgressIndicator(
@@ -2456,19 +2535,18 @@ onFavoriteToggle = { toggleFavorite(match.id) },
                                 strokeWidth = 2.dp,
                                 color = primaryGreen
                             )
-                            Text("AI elemzi a nap meccseit…", fontSize = 12.sp, color = subTextColor)
+                            Text("Betöltés…", fontSize = 12.sp, color = subTextColor)
                         }
-                        dailyTipsError != null && dailyTipsList.isEmpty() -> {
+                        dailyTipsTab == 0 && dailyTipsError != null && dailyTipsList.isEmpty() -> {
                             Text(dailyTipsError ?: "", fontSize = 13.sp, color = textColor)
                         }
-                        else -> {
+                        dailyTipsTab == 0 -> {
                             dailyTipsList.forEachIndexed { idx, tip ->
                                 val match = tip["match"]?.toString().orEmpty()
                                 val market = tip["market"]?.toString().orEmpty()
                                 val pick = tip["pick"]?.toString().orEmpty()
                                 val reason = tip["reason"]?.toString().orEmpty()
                                 val strength = tip["strength"]?.toString().orEmpty()
-                                val raw = tip["raw"]?.toString().orEmpty()
                                 Column(
                                     modifier = Modifier
                                         .fillMaxWidth()
@@ -2494,9 +2572,47 @@ onFavoriteToggle = { toggleFavorite(match.id) },
                                     if (strength.isNotBlank()) {
                                         Text("Erő: $strength", color = subTextColor, fontSize = 11.sp)
                                     }
-                                    if (match.isBlank() && pick.isBlank() && raw.isNotBlank()) {
-                                        Text(raw, color = textColor, fontSize = 12.sp)
-                                    }
+                                }
+                            }
+                        }
+                        else -> {
+                            if (yesterdaySummary.isNotBlank()) {
+                                Text(yesterdaySummary, color = textColor, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                            }
+                            if (yesterdayTipsList.isEmpty()) {
+                                Text("Nincs tegnapi tipp / eredmény.", color = subTextColor, fontSize = 12.sp)
+                            }
+                            yesterdayTipsList.forEachIndexed { idx, tip ->
+                                val result = tip["result"]?.toString().orEmpty()
+                                val badgeColor = when (result) {
+                                    "hit" -> Color(0xFF00C853)
+                                    "miss" -> Color(0xFFE53935)
+                                    "pending" -> Color(0xFFFFB300)
+                                    else -> subTextColor
+                                }
+                                val badge = when (result) {
+                                    "hit" -> "BEJÖTT"
+                                    "miss" -> "NEM JÖTT"
+                                    "pending" -> "VÁR"
+                                    else -> "?"
+                                }
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(cardBgColor)
+                                        .border(1.dp, badgeColor.copy(alpha = 0.5f), RoundedCornerShape(10.dp))
+                                        .padding(10.dp)
+                                ) {
+                                    Text(
+                                        "${idx + 1}. ${tip["market"] ?: "Tipp"} · $badge",
+                                        color = badgeColor,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Text(tip["match"]?.toString().orEmpty(), color = textColor, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                                    Text("→ ${tip["pick"] ?: ""}", color = textColor, fontSize = 13.sp)
+                                    Text(tip["result_detail"]?.toString().orEmpty(), color = subTextColor, fontSize = 11.sp)
                                 }
                             }
                         }
@@ -2504,7 +2620,28 @@ onFavoriteToggle = { toggleFavorite(match.id) },
                 }
             },
             confirmButton = {
-                TextButton(onClick = { showDailyTips = false }) { Text("Bezár") }
+                Row {
+                    TextButton(onClick = {
+                        val lines = if (dailyTipsTab == 0) dailyTipsList else yesterdayTipsList
+                        val body = buildString {
+                            append("⚽ SportApp – Napi 3 tipp\n")
+                            lines.forEachIndexed { i, tip ->
+                                append("${i + 1}. ${tip["match"] ?: ""}\n")
+                                append("   ${tip["market"] ?: ""}: ${tip["pick"] ?: ""}\n")
+                                tip["result"]?.let {
+                                    append("   Eredmény: $it ${tip["result_detail"] ?: ""}\n")
+                                }
+                            }
+                            append("\nTájékoztató jellegű – nem fogadási tanács.")
+                        }
+                        val intent = Intent(Intent.ACTION_SEND).apply {
+                            type = "text/plain"
+                            putExtra(Intent.EXTRA_TEXT, body)
+                        }
+                        context.startActivity(Intent.createChooser(intent, "Tippek megosztása"))
+                    }) { Text("Megosztás") }
+                    TextButton(onClick = { showDailyTips = false }) { Text("Bezár") }
+                }
             }
         )
     }

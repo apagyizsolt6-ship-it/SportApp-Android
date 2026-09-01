@@ -114,6 +114,38 @@ object GlassPrefs {
     }
 }
 
+object SoundPrefs {
+    private const val P = "sound_prefs"
+    fun goalSoundEnabled(ctx: Context): Boolean =
+        ctx.getSharedPreferences(P, Context.MODE_PRIVATE).getBoolean("goal_sound", false)
+    fun setGoalSoundEnabled(ctx: Context, v: Boolean) {
+        ctx.getSharedPreferences(P, Context.MODE_PRIVATE).edit().putBoolean("goal_sound", v).apply()
+    }
+    fun playGoalBeep(ctx: Context) {
+        if (!goalSoundEnabled(ctx)) return
+        try {
+            val tg = android.media.ToneGenerator(
+                android.media.AudioManager.STREAM_NOTIFICATION,
+                80
+            )
+            tg.startTone(android.media.ToneGenerator.TONE_PROP_BEEP, 180)
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                try { tg.release() } catch (_: Exception) {}
+            }, 300)
+        } catch (_: Exception) { }
+    }
+}
+
+object TipHistoryPrefs {
+    private const val P = "tip_history"
+    fun saveTips(ctx: Context, date: String, tipsJson: String) {
+        ctx.getSharedPreferences(P, Context.MODE_PRIVATE)
+            .edit().putString("tips_$date", tipsJson).apply()
+    }
+    fun loadTips(ctx: Context, date: String): String? =
+        ctx.getSharedPreferences(P, Context.MODE_PRIVATE).getString("tips_$date", null)
+}
+
 object HapticPrefs {
     private const val P = "haptic_prefs"
     fun enabled(ctx: Context): Boolean =
