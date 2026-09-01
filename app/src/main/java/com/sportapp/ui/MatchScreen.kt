@@ -21,6 +21,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -524,54 +525,70 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
     var showQuietHours by remember { mutableStateOf(false) }
     var prevScores by remember { mutableStateOf(mapOf<String, Pair<Int?, Int?>>()) }
     var flashMatchIds by remember { mutableStateOf(setOf<String>()) }
+    // Ugyanarra a gólra (ugyanaz az állás) ne flash/push újra
+    var lastGoalSig by remember { mutableStateOf(mapOf<String, String>()) }
     LaunchedEffect(matches) {
         val nextFlash = mutableSetOf<String>()
         val nextPrev = prevScores.toMutableMap()
+        val goalEvents = mutableListOf<MatchResponse>()
         matches.forEach { m ->
             val old = prevScores[m.id]
             if (old != null) {
                 val nh = m.homeScore
                 val na = m.awayScore
-                if ((nh != null && old.first != null && nh > old.first!!) ||
+                val goalUp = (nh != null && old.first != null && nh > old.first!!) ||
                     (na != null && old.second != null && na > old.second!!)
-                ) nextFlash.add(m.id)
+                if (goalUp) {
+                    val sig = "${nh ?: 0}-${na ?: 0}"
+                    // Ha már kezelve volt ez az állás, kihagyjuk (dupla poll / FCM echo)
+                    if (lastGoalSig[m.id] != sig) {
+                        nextFlash.add(m.id)
+                        goalEvents.add(m)
+                    }
+                }
             }
             nextPrev[m.id] = m.homeScore to m.awayScore
         }
         prevScores = nextPrev
         if (nextFlash.isNotEmpty()) {
+            val sigMap = lastGoalSig.toMutableMap()
+            goalEvents.forEach { m ->
+                sigMap[m.id] = "${m.homeScore ?: 0}-${m.awayScore ?: 0}"
+            }
+            lastGoalSig = sigMap
             flashMatchIds = flashMatchIds + nextFlash
             HapticPrefs.goalVibrate(context)
             SoundPrefs.playGoalBeep(context)
-            // Helyi értesítés, ha a meccs követett (FCM backup, app előtérben)
-            nextFlash.forEach { id ->
-                if (followedMatchIds.contains(id)) {
-                    val m = matches.find { it.id == id } ?: return@forEach
-                    try {
-                        val nm = context.getSystemService(android.content.Context.NOTIFICATION_SERVICE)
-                            as android.app.NotificationManager
-                        if (android.os.Build.VERSION.SDK_INT >= 26) {
-                            nm.createNotificationChannel(
-                                android.app.NotificationChannel(
-                                    "sportapp_goals",
-                                    "Gólok",
-                                    android.app.NotificationManager.IMPORTANCE_HIGH
-                                )
+            goalEvents.forEach { m ->
+                if (!followedMatchIds.contains(m.id) && !favoriteMatchIds.contains(m.id)) return@forEach
+                try {
+                    val nm = context.getSystemService(android.content.Context.NOTIFICATION_SERVICE)
+                        as android.app.NotificationManager
+                    if (android.os.Build.VERSION.SDK_INT >= 26) {
+                        nm.createNotificationChannel(
+                            android.app.NotificationChannel(
+                                "sportapp_goals",
+                                "Gólok",
+                                android.app.NotificationManager.IMPORTANCE_HIGH
                             )
-                        }
-                        val n = androidx.core.app.NotificationCompat.Builder(context, "sportapp_goals")
-                            .setSmallIcon(android.R.drawable.ic_menu_compass)
-                            .setContentTitle("⚽ GÓL")
-                            .setContentText("${m.homeTeam} ${m.homeScore ?: 0}–${m.awayScore ?: 0} ${m.awayTeam}")
-                            .setPriority(androidx.core.app.NotificationCompat.PRIORITY_HIGH)
-                            .setAutoCancel(true)
-                            .build()
-                        nm.notify(id.hashCode(), n)
-                    } catch (_: Exception) {
+                        )
                     }
+                    val score = "${m.homeScore ?: 0}–${m.awayScore ?: 0}"
+                    val n = androidx.core.app.NotificationCompat.Builder(context, "sportapp_goals")
+                        .setSmallIcon(android.R.drawable.ic_menu_compass)
+                        .setContentTitle("⚽ GÓL")
+                        .setContentText("${m.homeTeam} $score ${m.awayTeam}")
+                        .setPriority(androidx.core.app.NotificationCompat.PRIORITY_HIGH)
+                        .setAutoCancel(true)
+                        .setOnlyAlertOnce(true)
+                        .build()
+                    // Ugyanaz a meccs+állás → ugyanaz az ID (nem új push)
+                    val nid = ("goal-${m.id}-$score").hashCode()
+                    nm.notify(nid, n)
+                } catch (_: Exception) {
                 }
             }
-            kotlinx.coroutines.delay(25_000L) // GÓL badge + zöld kártya ~25 mp
+            kotlinx.coroutines.delay(25_000L)
             flashMatchIds = flashMatchIds - nextFlash
         }
     }
@@ -1184,10 +1201,12 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                 }
             }
 
-            // Eszközsáv
+            // Eszközsáv – görgethető, kevesebb zaj
+            var showMoreTools by remember { mutableStateOf(false) }
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
                     .padding(horizontal = 8.dp, vertical = 4.dp),
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalAlignment = Alignment.CenterVertically
@@ -1195,17 +1214,17 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                 FilterChip(
                     selected = onlyPinnedLeagues,
                     onClick = { onlyPinnedLeagues = !onlyPinnedLeagues },
-                    label = { Text("★ Kiemelt", fontSize = 11.sp) }
+                    label = { Text("Kiemelt", fontSize = 11.sp) }
                 )
                 FilterChip(
                     selected = onlyFavorites,
                     onClick = { onlyFavorites = !onlyFavorites },
-                    label = { Text("♥ Kedvencek", fontSize = 11.sp) }
+                    label = { Text("Kedvencek", fontSize = 11.sp) }
                 )
                 FilterChip(
                     selected = onlyTopLeagues,
                     onClick = { onlyTopLeagues = !onlyTopLeagues },
-                    label = { Text("TOP ligák", fontSize = 11.sp) }
+                    label = { Text("TOP", fontSize = 11.sp) }
                 )
                 FilterChip(
                     selected = sortMode != MatchSortMode.LEAGUE,
@@ -1219,9 +1238,9 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                     label = {
                         Text(
                             when (sortMode) {
-                                MatchSortMode.LEAGUE -> "Sorrend: liga"
-                                MatchSortMode.LIVE_FIRST -> "Sorrend: élő"
-                                MatchSortMode.TIME -> "Sorrend: idő"
+                                MatchSortMode.LEAGUE -> "Liga"
+                                MatchSortMode.LIVE_FIRST -> "Élő"
+                                MatchSortMode.TIME -> "Idő"
                             },
                             fontSize = 11.sp
                         )
@@ -1232,21 +1251,39 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                     onClick = { compactMode = !compactMode },
                     label = { Text(if (compactMode) "Kompakt" else "Normál", fontSize = 11.sp) }
                 )
-                FilterChip(
-                    selected = false,
-                    onClick = { showNotifHistory = true },
-                    label = { Text("🔔 Előzmény", fontSize = 11.sp) }
-                )
-                FilterChip(
-                    selected = false,
-                    onClick = { showQuietHours = true },
-                    label = { Text("Csend", fontSize = 11.sp) }
-                )
-                FilterChip(
-                    selected = false,
-                    onClick = { showNotifTypes = true },
-                    label = { Text("⚙️ Push", fontSize = 11.sp) }
-                )
+                Box {
+                    FilterChip(
+                        selected = false,
+                        onClick = { showMoreTools = true },
+                        label = { Text("⋯", fontSize = 14.sp) }
+                    )
+                    DropdownMenu(
+                        expanded = showMoreTools,
+                        onDismissRequest = { showMoreTools = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("🔔 Értesítés előzmény") },
+                            onClick = {
+                                showMoreTools = false
+                                showNotifHistory = true
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("🌙 Csendes órák") },
+                            onClick = {
+                                showMoreTools = false
+                                showQuietHours = true
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("⚙️ Push beállítások") },
+                            onClick = {
+                                showMoreTools = false
+                                showNotifTypes = true
+                            }
+                        )
+                    }
+                }
             }
 
             if (loadError != null && matches.isEmpty() && !isLoading) {
