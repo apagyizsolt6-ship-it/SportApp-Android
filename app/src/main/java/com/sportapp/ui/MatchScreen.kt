@@ -2520,7 +2520,7 @@ onFavoriteToggle = { toggleFavorite(match.id) },
                             }) { Text("▶") }
                         }
                         // Hét napjai
-                        Row(Modifier = Modifier.fillMaxWidth()) {
+                        Row(modifier = Modifier.fillMaxWidth()) {
                             listOf("H", "K", "Sz", "Cs", "P", "Szo", "V").forEach { d ->
                                 Text(
                                     d,
