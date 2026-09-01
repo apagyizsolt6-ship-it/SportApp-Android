@@ -789,11 +789,13 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
     }
     val soonMatches = remember(filteredMatches) {
         filteredMatches.filter { isStartingSoon(it, 90) }
+            .distinctBy { it.id }
             .sortedBy { matchKickoffMillis(it) ?: Long.MAX_VALUE }
             .take(12)
     }
     val worthWatchMatches = remember(matches, favoriteLeagueNames) {
         matches.filter { !isMatchFinished(it.status) }
+            .distinctBy { it.id }
             .map { it to worthWatchScore(it, favoriteLeagueNames) }
             .filter { it.second >= 30 }
             .sortedByDescending { it.second }
@@ -801,14 +803,17 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
             .map { it.first }
     }
     val derbyMatches = remember(filteredMatches) {
-        filteredMatches.filter { DerbyPrefs.isDerby(it.homeTeam, it.awayTeam) }.take(8)
+        filteredMatches.filter { DerbyPrefs.isDerby(it.homeTeam, it.awayTeam) }
+            .distinctBy { it.id }
+            .take(8)
     }
     val tonightTips = remember(filteredMatches) {
         filteredMatches.filter { m ->
             val kt = m.kickoffTime ?: return@filter false
             val hour = kt.take(2).toIntOrNull() ?: return@filter false
             hour in 18..23 && !isMatchFinished(m.status)
-        }.sortedByDescending { worthWatchScore(it, favoriteLeagueNames) }.take(3)
+        }.distinctBy { it.id }
+            .sortedByDescending { worthWatchScore(it, favoriteLeagueNames) }.take(3)
     }
     val spotlightMatches = remember(filteredMatches, favoriteLeagueNames) {
         filteredMatches
@@ -816,6 +821,7 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                 favoriteLeagueNames.contains(it.league ?: "") ||
                     topFiveRank(it.league, it.countryCode) != null
             }
+            .distinctBy { it.id }
             .sortedWith(
                 compareByDescending<MatchResponse> { isMatchLive(it.status, it.minute) }
                     .thenBy { matchKickoffMillis(it) ?: Long.MAX_VALUE }
@@ -1565,7 +1571,7 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                                 modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
                             )
                         }
-                        items(worthWatchMatches, key = { "ww-${it.id}" }) { match ->
+                        items(worthWatchMatches, key = { "ww-${it.id}-${it.homeTeam}-${it.awayTeam}" }) { match ->
                             PremiumMatchRow(
                                 match = match,
                                 isFavorite = favoriteMatchIds.contains(match.id),
@@ -1601,7 +1607,7 @@ if (derbyMatches.isNotEmpty() && selectedTab == 0 && searchQuery.isEmpty()) {
                                 modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
                             )
                         }
-                        items(derbyMatches, key = { "derby-${it.id}" }) { match ->
+                        items(derbyMatches, key = { "derby-${it.id}-${it.homeTeam}" }) { match ->
                             PremiumMatchRow(
                                 match = match,
                                 isFavorite = favoriteMatchIds.contains(match.id),
@@ -1633,7 +1639,7 @@ if (derbyMatches.isNotEmpty() && selectedTab == 0 && searchQuery.isEmpty()) {
                                 modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
                             )
                         }
-                        items(tonightTips, key = { "tip-${it.id}" }) { match ->
+                        items(tonightTips, key = { "tip-${it.id}-${it.kickoffTime}" }) { match ->
                             PremiumMatchRow(
                                 match = match,
                                 isFavorite = favoriteMatchIds.contains(match.id),
@@ -1665,7 +1671,7 @@ if (derbyMatches.isNotEmpty() && selectedTab == 0 && searchQuery.isEmpty()) {
                                 modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
                             )
                         }
-                        items(spotlightMatches, key = { "sp-${it.id}" }) { match ->
+                        items(spotlightMatches, key = { "sp-${it.id}-${it.status}" }) { match ->
                             PremiumMatchRow(
                                 match = match,
                                 isFavorite = favoriteMatchIds.contains(match.id),
@@ -1748,7 +1754,7 @@ if (derbyMatches.isNotEmpty() && selectedTab == 0 && searchQuery.isEmpty()) {
                                 modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
                             )
                         }
-                        items(soonMatches.take(6), key = { "soon-${it.id}" }) { match ->
+                        items(soonMatches.take(6), key = { "soon-${it.id}-${it.kickoffTime}" }) { match ->
                             PremiumMatchRow(
                                 match = match,
                                 isFavorite = favoriteMatchIds.contains(match.id),
@@ -2097,7 +2103,7 @@ if (derbyMatches.isNotEmpty() && selectedTab == 0 && searchQuery.isEmpty()) {
                         //
                         if (!isCollapsed) {
 
-                            items(leagueMatches, key = { it.id }) { match ->
+                            items(leagueMatches.distinctBy { it.id }, key = { "lg-${leagueName}-${it.id}" }) { match ->
 
                                 val isFav =
                                     favoriteMatchIds.contains(
