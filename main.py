@@ -4267,6 +4267,174 @@ ERŐ: 3/5
     return payload
 
 
+
+@app.get("/api/tips/results")
+def get_tips_results(date: str = None):
+    """
+    Adott nap tippjeinek kiértékelése a FT meccsek alapján.
+    date: YYYY-MM-DD (alapértelmezés: tegnap)
+    """
+    from datetime import datetime, timedelta, timezone
+    import re
+    try:
+        if date and len(date) >= 10:
+            day = date[:10]
+        else:
+            day = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
+    except Exception:
+        day = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
+
+    # Tippek: cache-ből, vagy generálás (ha van)
+    tips_payload = None
+    cached = _daily_tips_cache.get(day)
+    if cached:
+        tips_payload = cached.get("payload")
+    if not tips_payload or not tips_payload.get("tips"):
+        # próbáljuk legenerálni (cache-be is kerül)
+        try:
+            tips_payload = get_daily_tips(date=day, offset=0, refresh=0)
+        except Exception:
+            tips_payload = {"tips": [], "date": day}
+
+    tips = list(tips_payload.get("tips") or [])
+
+    # FT meccsek a napra
+    matches = []
+    try:
+        matches = get_matches_by_date(day)
+    except Exception:
+        try:
+            matches = get_matches()
+        except Exception:
+            matches = []
+    if not isinstance(matches, list):
+        matches = []
+
+    ft = []
+    for m in matches:
+        if not isinstance(m, dict):
+            continue
+        st = str(m.get("status") or "").upper()
+        if st in ("FT", "AET", "PEN", "PENS", "FINISHED") or (
+            m.get("home_score") is not None and m.get("away_score") is not None and st not in ("1H", "2H", "HT", "LIVE")
+        ):
+            ft.append(m)
+
+    def norm(s):
+        return re.sub(r"[^a-z0-9]", "", str(s or "").lower())
+
+    def find_match(tip_match: str):
+        t = norm(tip_match)
+        if not t:
+            return None
+        best = None
+        best_score = 0
+        for m in ft:
+            h = norm(m.get("home_team"))
+            a = norm(m.get("away_team"))
+            sc = 0
+            if h and h in t:
+                sc += 2
+            if a and a in t:
+                sc += 2
+            # részleges
+            for part in re.findall(r"[a-z]{4,}", t):
+                if part in h or part in a:
+                    sc += 1
+            if sc > best_score:
+                best_score = sc
+                best = m
+        return best if best_score >= 2 else None
+
+    def eval_tip(tip, m):
+        if not m:
+            return "unknown", "Nincs FT eredmény ehhez a meccshez"
+        try:
+            hs = int(m.get("home_score") if m.get("home_score") is not None else -1)
+            as_ = int(m.get("away_score") if m.get("away_score") is not None else -1)
+        except Exception:
+            return "unknown", "Eredmény nem olvasható"
+        if hs < 0 or as_ < 0:
+            return "pending", "Még nincs végeredmény"
+        market = str(tip.get("market") or "").lower()
+        pick = str(tip.get("pick") or "").lower()
+        total = hs + as_
+        home = str(m.get("home_team") or "")
+        away = str(m.get("away_team") or "")
+        score_txt = f"{home} {hs}:{as_} {away}"
+
+        # BTTS
+        if "btts" in market or "mindkét" in market or "mindket" in market:
+            both = hs > 0 and as_ > 0
+            want_yes = "igen" in pick or "yes" in pick or "btts" in pick
+            want_no = "nem" in pick or "no" in pick
+            if want_no:
+                ok = not both
+            else:
+                ok = both  # default igen
+            return ("hit" if ok else "miss"), score_txt
+
+        # Over/Under
+        if "over" in market or "under" in market or "2.5" in market or "over" in pick or "under" in pick:
+            line = 2.5
+            if "over" in pick or "over" in market:
+                ok = total > line
+            elif "under" in pick or "under" in market:
+                ok = total < line
+            else:
+                ok = total > line
+            return ("hit" if ok else "miss"), score_txt
+
+        # 1X2 / kettős
+        if hs > as_:
+            res = "1"
+        elif hs < as_:
+            res = "2"
+        else:
+            res = "x"
+
+        if "kettős" in market or "1x" in pick.replace(" ", "") or "x2" in pick.replace(" ", ""):
+            if "1x" in pick.replace(" ", "") or "nem kap ki" in pick:
+                ok = res in ("1", "x")
+            elif "x2" in pick.replace(" ", ""):
+                ok = res in ("x", "2")
+            else:
+                ok = True
+            return ("hit" if ok else "miss"), score_txt
+
+        # plain 1X2
+        if "hazai" in pick or "home" in pick or (home.lower()[:5] and home.lower()[:5] in pick):
+            ok = res == "1"
+        elif "vendég" in pick or "away" in pick or (away.lower()[:5] and away.lower()[:5] in pick):
+            ok = res == "2"
+        elif "döntetlen" in pick or "draw" in pick or pick.strip() in ("x", "x"):
+            ok = res == "x"
+        else:
+            # handicap etc – unknown
+            return "unknown", score_txt
+        return ("hit" if ok else "miss"), score_txt
+
+    evaluated = []
+    for tip in tips:
+        m = find_match(str(tip.get("match") or ""))
+        result, detail = eval_tip(tip, m)
+        evaluated.append({
+            **{k: tip.get(k) for k in ("rank", "match", "market", "pick", "reason", "strength")},
+            "result": result,  # hit | miss | pending | unknown
+            "result_detail": detail,
+            "home_score": (m or {}).get("home_score"),
+            "away_score": (m or {}).get("away_score"),
+        })
+
+    return {
+        "date": day,
+        "tips": evaluated,
+        "hits": sum(1 for t in evaluated if t.get("result") == "hit"),
+        "misses": sum(1 for t in evaluated if t.get("result") == "miss"),
+        "disclaimer": "Tájékoztató jellegű – nem fogadási tanács.",
+    }
+
+
 @app.get("/api/status")
 def get_status():
 
