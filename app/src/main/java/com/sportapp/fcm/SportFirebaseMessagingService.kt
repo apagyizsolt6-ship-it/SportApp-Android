@@ -31,23 +31,29 @@ class SportFirebaseMessagingService : FirebaseMessagingService() {
     private fun showNotification(title: String, body: String, type: String, matchId: String?) {
         if (!NotifPrefs.isTypeEnabled(applicationContext, type)) return
         if (NotifPrefs.isQuietNow(applicationContext)) {
-            // Csendes órák: sárga mindig tiltva; gól/kickoff csak ha nincs fav-kivétel
             val allowFav = NotifPrefs.allowFavoriteDuringQuiet(applicationContext)
             val isImportant = type in setOf("goal", "kickoff", "red", "ft", "ht")
             if (type in setOf("yellow", "card")) return
             if (!isImportant) return
-            // important: only allow if fav exception ON (default)
             if (!allowFav) return
         }
+        // Dupla push szűrés: ugyanaz a meccs+típus+szöveg 90 mp-en belül
+        val dedupeKey = "fcm|$type|${matchId.orEmpty()}|$title|$body"
+        val prefs = getSharedPreferences("fcm_dedupe", MODE_PRIVATE)
+        val now = System.currentTimeMillis()
+        val last = prefs.getLong(dedupeKey, 0L)
+        if (last > 0L && now - last < 90_000L) return
+        prefs.edit().putLong(dedupeKey, now).apply()
+
         NotifPrefs.pushHistory(
             applicationContext,
             NotifHistoryItem(
-                id = "${System.currentTimeMillis()}-$type",
+                id = "${now}-$type",
                 title = title,
                 body = body,
                 type = type,
                 matchId = matchId.orEmpty(),
-                ts = System.currentTimeMillis()
+                ts = now
             )
         )
         val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
@@ -74,10 +80,13 @@ class SportFirebaseMessagingService : FirebaseMessagingService() {
             .setContentText(body)
             .setStyle(NotificationCompat.BigTextStyle().bigText(body))
             .setAutoCancel(true)
+            .setOnlyAlertOnce(true)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setContentIntent(pi)
             .build()
-        nm.notify((System.currentTimeMillis() % Int.MAX_VALUE).toInt(), notif)
+        // Stabil ID: ugyanaz a gól felülírja, nem újabb push
+        val nid = dedupeKey.hashCode()
+        nm.notify(nid, notif)
     }
 
     companion object {
