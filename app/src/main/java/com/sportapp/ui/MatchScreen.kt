@@ -994,7 +994,8 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                                 try {
                                     val r = RetrofitInstance.api.getDailyTips(
                                         date = selectedDateIso,
-                                        offset = selectedDayOffset
+                                        offset = selectedDayOffset,
+                                        refresh = 1
                                     )
                                     dailyTipsDisclaimer = r["disclaimer"]?.toString().orEmpty()
                                     val raw = r["tips"]
@@ -1002,11 +1003,23 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                                     if (raw is List<*>) {
                                         raw.forEach { item ->
                                             if (item is Map<*, *>) {
-                                                list.add(item.entries.associate { (k, v) -> k.toString() to v })
+                                                val map = item.entries.associate { (k, v) -> k.toString() to v }
+                                                val blob = listOf(
+                                                    map["match"], map["market"], map["pick"], map["reason"], map["raw"]
+                                                ).joinToString(" ").lowercase()
+                                                val junk = listOf(
+                                                    "nem minősül fogadási",
+                                                    "nem fogadási tanács",
+                                                    "kizárólag tájékoztató",
+                                                    "ez az elemzés nem"
+                                                ).any { it in blob }
+                                                val hasContent = !map["match"]?.toString().isNullOrBlank() ||
+                                                    !map["pick"]?.toString().isNullOrBlank()
+                                                if (!junk && hasContent) list.add(map)
                                             }
                                         }
                                     }
-                                    dailyTipsList = list
+                                    dailyTipsList = list.take(3)
                                     if (list.isEmpty()) {
                                         dailyTipsError = r["message"]?.toString()
                                             ?: "Ma nincs elég adat a 3 tipphez."
