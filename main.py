@@ -4435,6 +4435,63 @@ def get_tips_results(date: str = None):
     }
 
 
+
+@app.get("/api/tips/streak")
+def get_tips_streak(days: int = 7):
+    """
+    Utolsó N nap tipp találati aránya (cache + FT kiértékelés).
+    """
+    from datetime import datetime, timedelta, timezone
+    n = max(1, min(int(days or 7), 14))
+    today = datetime.now(timezone.utc).date()
+    total_hits = 0
+    total_misses = 0
+    total_tips = 0
+    per_day = []
+    for i in range(1, n + 1):  # tegnap → vissza
+        day = (today - timedelta(days=i)).strftime("%Y-%m-%d")
+        try:
+            res = get_tips_results(date=day)
+        except Exception as ex:
+            per_day.append({"date": day, "hits": 0, "misses": 0, "error": str(ex)[:80]})
+            continue
+        hits = int(res.get("hits") or 0)
+        misses = int(res.get("misses") or 0)
+        tips = res.get("tips") or []
+        total_hits += hits
+        total_misses += misses
+        total_tips += len(tips)
+        per_day.append({
+            "date": day,
+            "hits": hits,
+            "misses": misses,
+            "tips": len(tips),
+            "results": [
+                {
+                    "match": t.get("match"),
+                    "result": t.get("result"),
+                    "pick": t.get("pick"),
+                    "market": t.get("market"),
+                }
+                for t in tips
+            ],
+        })
+    decided = total_hits + total_misses
+    rate = round(100.0 * total_hits / decided, 1) if decided else None
+    return {
+        "days": n,
+        "hits": total_hits,
+        "misses": total_misses,
+        "tips": total_tips,
+        "hit_rate_pct": rate,
+        "summary": (
+            f"{total_hits}/{decided} bejött ({rate}%)" if decided
+            else "Még nincs kiértékelhető tipp az elmúlt napokban."
+        ),
+        "per_day": per_day,
+    }
+
+
 @app.get("/api/status")
 def get_status():
 
