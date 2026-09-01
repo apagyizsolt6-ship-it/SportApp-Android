@@ -380,6 +380,9 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
     var searchQuery by remember { mutableStateOf("") }
     // Naptár: 0 = ma, -1 = tegnap, +1 = holnap...
     var selectedDayOffset by remember { mutableIntStateOf(0) }
+    var showSeasonCalendar by remember { mutableStateOf(false) }
+    var tipStreakText by remember { mutableStateOf<String?>(null) }
+
     LaunchedEffect(selectedDayOffset) {
         viewModel.setDayOffset(selectedDayOffset)
     }
@@ -1000,7 +1003,15 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                             showDailyTips = true
                             dailyTipsLoading = true
                             dailyTipsError = null
+                            tipStreakText = null
                             coroutineScope.launch {
+                                try {
+                                    val streak = RetrofitInstance.api.getTipsStreak(days = 7)
+                                    tipStreakText = streak["summary"]?.toString()
+                                        ?: streak["hit_rate_pct"]?.let { "Heti találat: $it%" }
+                                } catch (_: Exception) {
+                                    tipStreakText = null
+                                }
                                 try {
                                     val r = RetrofitInstance.api.getDailyTips(
                                         date = selectedDateIso,
@@ -1115,13 +1126,23 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                 )
             }
 
-            // Napválasztó sáv
+            // Napválasztó sáv + naptár
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 8.dp, vertical = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
+                Text(
+                    text = "📅",
+                    fontSize = 16.sp,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(cardBgColor)
+                        .clickable { showSeasonCalendar = true }
+                        .padding(horizontal = 10.dp, vertical = 8.dp)
+                )
                 for (off in -1..3) {
                     val selected = selectedDayOffset == off
                     Surface(
@@ -2463,6 +2484,118 @@ onFavoriteToggle = { toggleFavorite(match.id) },
     // ============================================================
 
 
+
+    if (showSeasonCalendar) {
+        val today = remember { try { LocalDate.now() } catch (_: Exception) { null } }
+        var monthCursor by remember {
+            mutableStateOf(today ?: try { LocalDate.of(2026, 9, 1) } catch (_: Exception) { null })
+        }
+        AlertDialog(
+            onDismissRequest = { showSeasonCalendar = false },
+            title = { Text("📅 Szezon naptár", fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    val mc = monthCursor
+                    if (mc != null) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            TextButton(onClick = {
+                                monthCursor = mc.minusMonths(1)
+                            }) { Text("◀") }
+                            Text(
+                                try {
+                                    mc.format(DateTimeFormatter.ofPattern("yyyy. MMMM", java.util.Locale("hu"))
+                                    )
+                                } catch (_: Exception) {
+                                    "${mc.year}-${mc.monthValue}"
+                                },
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 14.sp
+                            )
+                            TextButton(onClick = {
+                                monthCursor = mc.plusMonths(1)
+                            }) { Text("▶") }
+                        }
+                        // Hét napjai
+                        Row(Modifier = Modifier.fillMaxWidth()) {
+                            listOf("H", "K", "Sz", "Cs", "P", "Szo", "V").forEach { d ->
+                                Text(
+                                    d,
+                                    modifier = Modifier.weight(1f),
+                                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                                    fontSize = 11.sp,
+                                    color = subTextColor
+                                )
+                            }
+                        }
+                        val first = mc.withDayOfMonth(1)
+                        val startOffset = (first.dayOfWeek.value - 1) // Monday=0
+                        val daysInMonth = mc.lengthOfMonth()
+                        val cells = startOffset + daysInMonth
+                        val rows = (cells + 6) / 7
+                        var dayNum = 1
+                        repeat(rows) { row ->
+                            Row(modifier = Modifier.fillMaxWidth()) {
+                                repeat(7) { col ->
+                                    val cellIndex = row * 7 + col
+                                    if (cellIndex < startOffset || dayNum > daysInMonth) {
+                                        Spacer(modifier = Modifier.weight(1f))
+                                    } else {
+                                        val d = dayNum
+                                        dayNum++
+                                        val date = mc.withDayOfMonth(d)
+                                        val offset = try {
+                                            java.time.temporal.ChronoUnit.DAYS.between(LocalDate.now(), date).toInt()
+                                        } catch (_: Exception) {
+                                            0
+                                        }
+                                        val selected = offset == selectedDayOffset
+                                        val isToday = offset == 0
+                                        Text(
+                                            text = d.toString(),
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .background(
+                                                    when {
+                                                        selected -> primaryGreen.copy(alpha = 0.35f)
+                                                        isToday -> cardBgColor
+                                                        else -> Color.Transparent
+                                                    }
+                                                )
+                                                .clickable {
+                                                    selectedDayOffset = offset.coerceIn(-30, 60)
+                                                    showSeasonCalendar = false
+                                                }
+                                                .padding(vertical = 8.dp),
+                                            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                                            color = if (selected) primaryGreen else textColor,
+                                            fontWeight = if (isToday || selected) FontWeight.Bold else FontWeight.Normal,
+                                            fontSize = 13.sp
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                        Text(
+                            "Koppints egy napra a meccsek betöltéséhez (−30…+60 nap).",
+                            fontSize = 11.sp,
+                            color = subTextColor
+                        )
+                    } else {
+                        Text("Naptár nem elérhető ezen a készüléken.", color = subTextColor)
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showSeasonCalendar = false }) { Text("Bezár") }
+            }
+        )
+    }
+
     if (showDailyTips) {
         AlertDialog(
             onDismissRequest = { showDailyTips = false },
@@ -2484,6 +2617,14 @@ onFavoriteToggle = { toggleFavorite(match.id) },
                         fontSize = 11.sp,
                         color = subTextColor
                     )
+                    tipStreakText?.let { streak ->
+                        Text(
+                            "📊 $streak",
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = primaryGreen
+                        )
+                    }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         FilterChip(
                             selected = dailyTipsTab == 0,

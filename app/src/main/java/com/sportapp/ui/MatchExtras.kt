@@ -474,6 +474,8 @@ fun PlayerCardDialogWithOpen(
     val bench = player.isBench == true
     val pid = player.playerId?.trim().orEmpty()
     var summaryText by remember { mutableStateOf<String?>(null) }
+    var statMap by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+    var photoUrl by remember { mutableStateOf<String?>(null) }
     var loading by remember { mutableStateOf(false) }
 
     LaunchedEffect(pid) {
@@ -481,17 +483,38 @@ fun PlayerCardDialogWithOpen(
         loading = true
         try {
             val s = RetrofitInstance.api.getPlayerSummary(pid)
+            photoUrl = s.photo
             if (s.available == true) {
                 val sb = StringBuilder()
-                s.season?.let { sb.appendLine("Szezon/liga: $it") }
+                s.season?.let { sb.appendLine("Szezon: $it") }
                 s.team?.let { sb.appendLine("Csapat: $it") }
                 s.position?.let { sb.appendLine("Poszt: $it") }
                 val st = s.stats.orEmpty()
-                if (st.isNotEmpty()) {
-                    sb.appendLine("Statisztika:")
-                    st.entries.take(12).forEach { (k, v) ->
-                        sb.appendLine("  • $k: $v")
+                val mapped = linkedMapOf<String, String>()
+                fun pick(vararg keys: String, label: String) {
+                    for (k in keys) {
+                        val v = st[k] ?: st.entries.find { it.key.equals(k, true) }?.value
+                        if (v != null) {
+                            mapped[label] = v.toString()
+                            return
+                        }
                     }
+                }
+                pick("goals", "goal", "Goals", label = "Gól")
+                pick("assists", "assist", "Assists", label = "Gólpassz")
+                pick("appearances", "games", "apps", label = "Meccs")
+                pick("minutes", "Minutes", label = "Perc")
+                pick("yellowCards", "yellow", "Yellow", label = "Sárga")
+                pick("redCards", "red", "Red", label = "Piros")
+                pick("rating", "Rating", label = "Rating")
+                st.entries.forEach { (k, v) ->
+                    if (mapped.size < 10 && mapped.values.none { it == v.toString() }) {
+                        if (k !in mapped) mapped[k] = v.toString()
+                    }
+                }
+                statMap = mapped
+                if (mapped.isEmpty()) {
+                    st.entries.take(12).forEach { (k, v) -> sb.appendLine("• $k: $v") }
                 }
                 summaryText = sb.toString().ifBlank { s.message }
             } else {
@@ -516,6 +539,37 @@ fun PlayerCardDialogWithOpen(
                 }
                 when {
                     loading -> Text("Szezonstat betöltése…", fontSize = 12.sp, color = Color(0xFF9BB0C9))
+                    statMap.isNotEmpty() -> {
+                        // Stat kártyák
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            statMap.entries.take(4).forEach { (label, value) ->
+                                Column(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(Color(0xFF1A2D4D))
+                                        .padding(8.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    Text(value, color = Color(0xFF00E5A8), fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                                    Text(label, color = Color(0xFF9BB0C9), fontSize = 10.sp, maxLines = 1)
+                                }
+                            }
+                        }
+                        if (statMap.size > 4) {
+                            Text(
+                                statMap.entries.drop(4).joinToString(" · ") { "${it.key}: ${it.value}" },
+                                fontSize = 11.sp,
+                                color = Color(0xFF9BB0C9)
+                            )
+                        }
+                        if (!summaryText.isNullOrBlank()) {
+                            Text(summaryText!!, fontSize = 11.sp, color = Color(0xFF9BB0C9))
+                        }
+                    }
                     !summaryText.isNullOrBlank() -> Text(summaryText!!, fontSize = 12.sp)
                     else -> Text(
                         "Nincs player_id – a Highlightly nem adta át a játékos azonosítót.",
