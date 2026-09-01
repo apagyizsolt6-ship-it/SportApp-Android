@@ -32,6 +32,24 @@ import org.json.JSONObject
  * Élő perc – csak helyi számolás, nincs API hívás.
  * Szerver perc bázis + eltelt percek; HT-nél megáll.
  */
+/**
+ * Élő perc: szerver az igazság; helyi +1 csak ha van érvényes bázis.
+ * Nem talál ki percet 0-ról.
+ */
+fun parseMinuteFromStatus(status: String?): Int {
+    val s = (status ?: "").trim().replace("'", "").replace("’", "")
+    if (s.isEmpty() || ":" in s) return 0
+    s.toIntOrNull()?.let { if (it in 1..130) return it }
+    val plus = Regex("""^(\d{1,3})\s*\+\s*(\d{1,2})$""").matchEntire(s)
+    if (plus != null) {
+        val a = plus.groupValues[1].toIntOrNull() ?: return 0
+        val b = plus.groupValues[2].toIntOrNull() ?: return 0
+        val n = a + b
+        if (n in 1..130) return n
+    }
+    return 0
+}
+
 @Composable
 fun rememberLiveMinute(
     matchId: String,
@@ -42,21 +60,34 @@ fun rememberLiveMinute(
 ): Int {
     val statusU = (status ?: "").trim().uppercase().replace(".", "")
     val isHt = statusU == "HT"
-    val sm = serverMinute ?: 0
-    var anchorMin by remember(matchId) { mutableIntStateOf(sm) }
-    var anchorAt by remember(matchId) { mutableLongStateOf(System.currentTimeMillis()) }
+    val fromStatus = parseMinuteFromStatus(status)
+    val sm = maxOf(serverMinute ?: 0, fromStatus).coerceIn(0, 130)
+
+    if (!isLive) return sm
+    if (isHt) return when {
+        sm > 0 -> sm
+        else -> 45
+    }
+
+    // Nincs érvényes szerver perc → ne inventáljunk (marad 0, a UI "ÉLŐ"-t mutat)
+    if (sm <= 0) return 0
+
+    var base by remember(matchId) { mutableIntStateOf(sm) }
+    var baseAt by remember(matchId) { mutableLongStateOf(System.currentTimeMillis()) }
+
     LaunchedEffect(matchId, sm) {
         if (sm <= 0) return@LaunchedEffect
-        if (sm > anchorMin || kotlin.math.abs(sm - anchorMin) > 3 || anchorMin == 0) {
-            anchorMin = sm
-            anchorAt = System.currentTimeMillis()
+        // Szerver előrébb vagy nagy ugrás (félidő után) → igazítás
+        if (sm >= base || base - sm >= 2) {
+            base = sm
+            baseAt = System.currentTimeMillis()
         }
     }
-    if (!isLive) return sm
-    if (isHt) return if (sm > 0) sm else anchorMin
+
+    // pulseMs: szülő frissíti (pl. 15–30 mp) – újraszámol elapsed
     val now = if (pulseMs > 0L) pulseMs else System.currentTimeMillis()
-    val add = ((now - anchorAt).coerceAtLeast(0L) / 60_000L).toInt()
-    return (anchorMin + add).coerceIn(0, 130)
+    val add = ((now - baseAt).coerceAtLeast(0L) / 60_000L).toInt()
+    return (base + add).coerceIn(1, 130)
 }
 
 object DerbyPrefs {

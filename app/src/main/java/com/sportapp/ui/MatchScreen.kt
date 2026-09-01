@@ -378,7 +378,7 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
     var minutePulseMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(Unit) {
         while (true) {
-            kotlinx.coroutines.delay(30_000L)
+            kotlinx.coroutines.delay(15_000L)
             minutePulseMs = System.currentTimeMillis()
         }
     }
@@ -3488,16 +3488,10 @@ fun PremiumMatchRow(
                     )
 
                     Text(
-                        text =
-                            "${shownMinute}'",
-
-                        color =
-                            primaryGreen,
-
+                        text = if (shownMinute > 0) "${shownMinute}'" else "ÉLŐ",
+                        color = primaryGreen,
                         fontSize = 11.sp,
-
-                        fontWeight =
-                            FontWeight.Bold
+                        fontWeight = FontWeight.Bold
                     )
                 }
 

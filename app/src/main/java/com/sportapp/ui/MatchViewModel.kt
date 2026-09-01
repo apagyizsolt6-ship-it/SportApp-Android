@@ -32,8 +32,8 @@ class MatchViewModel : ViewModel() {
     val isLoadingAi: StateFlow<Boolean> = _isLoadingAi
 
     /** Élő meccsnél sűrűbb poll, egyébként kímélőbb. */
-    private val REFRESH_INTERVAL_MS = 20_000L
-    private val REFRESH_IDLE_MS = 40_000L
+    private val REFRESH_INTERVAL_MS = 15_000L
+    private val REFRESH_IDLE_MS = 35_000L
 
     /** 0 = ma; -1 tegnap; +1 holnap … */
     private var dayOffset: Int = 0

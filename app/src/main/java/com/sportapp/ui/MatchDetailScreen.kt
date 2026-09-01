@@ -970,7 +970,7 @@ private fun MatchDetailScoreboard(
     LaunchedEffect(isLive) {
         if (!isLive) return@LaunchedEffect
         while (true) {
-            kotlinx.coroutines.delay(30_000L)
+            kotlinx.coroutines.delay(15_000L)
             detailPulse = System.currentTimeMillis()
         }
     }
@@ -1025,7 +1025,7 @@ private fun MatchDetailScoreboard(
                         )
                         Spacer(modifier = Modifier.width(4.dp))
                         Text(
-                            text = "${liveMinute}'",
+                            text = if (liveMinute > 0) "${liveMinute}'" else "ÉLŐ",
                             color = green,
                             fontSize = 13.sp,
                             fontWeight = FontWeight.Bold
