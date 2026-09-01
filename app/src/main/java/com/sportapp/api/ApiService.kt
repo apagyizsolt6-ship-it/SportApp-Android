@@ -89,6 +89,11 @@ interface ApiService {
         @Query("refresh") refresh: Int = 0
     ): Map<String, @JvmSuppressWildcards Any?>
 
+    @GET("api/tips/results")
+    suspend fun getTipsResults(
+        @Query("date") date: String? = null
+    ): Map<String, @JvmSuppressWildcards Any?>
+
     @GET("api/ai-analysis/{match_id}")
     suspend fun getAiAnalysis(
         @Path("match_id") matchId: String
