@@ -85,7 +85,8 @@ interface ApiService {
     @GET("api/tips/daily")
     suspend fun getDailyTips(
         @Query("date") date: String? = null,
-        @Query("offset") offset: Int = 0
+        @Query("offset") offset: Int = 0,
+        @Query("refresh") refresh: Int = 0
     ): Map<String, @JvmSuppressWildcards Any?>
 
     @GET("api/ai-analysis/{match_id}")
