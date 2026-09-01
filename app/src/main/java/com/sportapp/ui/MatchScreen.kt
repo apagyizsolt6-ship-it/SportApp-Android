@@ -2401,7 +2401,6 @@ onFavoriteToggle = { toggleFavorite(match.id) },
                     } catch (_: Exception) {
                         context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
                     }
-                    context.startActivity(intent)
                 } catch (e: Exception) {
                     // ignore
                 }
