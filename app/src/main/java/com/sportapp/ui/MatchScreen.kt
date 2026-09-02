@@ -387,6 +387,10 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
     var isDarkMode by remember { mutableStateOf(true) }
     var selectedTab by remember { mutableIntStateOf(0) }
     var matchForTicket by remember { mutableStateOf<MatchResponse?>(null) }
+    var ticketPrefillMarket by remember { mutableStateOf<String?>(null) }
+    var ticketPrefillPick by remember { mutableStateOf<String?>(null) }
+    var ticketPrefillOdds by remember { mutableStateOf<Double?>(null) }
+
 
     var searchQuery by remember { mutableStateOf("") }
     // Naptár: 0 = ma, -1 = tegnap, +1 = holnap...
@@ -529,6 +533,8 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
     var flashMatchIds by remember { mutableStateOf(setOf<String>()) }
     // Ugyanarra a gólra (ugyanaz az állás) ne flash/push újra
     var lastGoalSig by remember { mutableStateOf(mapOf<String, String>()) }
+    var ticketLegPrevStatus by remember { mutableStateOf(mapOf<String, String>()) }
+
     LaunchedEffect(matches) {
         val nextFlash = mutableSetOf<String>()
         val nextPrev = prevScores.toMutableMap()
@@ -593,6 +599,47 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
             kotlinx.coroutines.delay(25_000L)
             flashMatchIds = flashMatchIds - nextFlash
         }
+    }
+    // Szelvény sor státusz változás → helyi push
+    LaunchedEffect(matches) {
+        val active = TicketPrefs.getActive(context) ?: return@LaunchedEffect
+        val map = matches.associateBy { it.id }
+        val nextPrev = ticketLegPrevStatus.toMutableMap()
+        active.legs.forEach { leg ->
+            val stt = evaluateTicketLeg(leg, map[leg.matchId])
+            val key = leg.id
+            val prev = ticketLegPrevStatus[key]
+            val now = stt.name
+            if (prev != null && prev != now) {
+                if (stt == LegStatus.LOST || stt == LegStatus.WON) {
+                    try {
+                        val nm = context.getSystemService(android.content.Context.NOTIFICATION_SERVICE)
+                            as android.app.NotificationManager
+                        if (android.os.Build.VERSION.SDK_INT >= 26) {
+                            nm.createNotificationChannel(
+                                android.app.NotificationChannel(
+                                    "sportapp_ticket",
+                                    "Szelvény",
+                                    android.app.NotificationManager.IMPORTANCE_DEFAULT
+                                )
+                            )
+                        }
+                        val title = if (stt == LegStatus.WON) "✅ Szelvény: BEJÖTT" else "❌ Szelvény: ELBUKOTT"
+                        val body = "${leg.homeTeam} – ${leg.awayTeam}: ${leg.market} ${leg.pick}"
+                        val n = androidx.core.app.NotificationCompat.Builder(context, "sportapp_ticket")
+                            .setSmallIcon(android.R.drawable.ic_menu_compass)
+                            .setContentTitle(title)
+                            .setContentText(body)
+                            .setAutoCancel(true)
+                            .build()
+                        nm.notify(("ticket-$key-$now").hashCode(), n)
+                    } catch (_: Exception) {
+                    }
+                }
+            }
+            nextPrev[key] = now
+        }
+        ticketLegPrevStatus = nextPrev
     }
     var onlyPinnedLeagues by remember { mutableStateOf(false) }
     var onlyFavorites by remember { mutableStateOf(false) }
@@ -2563,6 +2610,25 @@ onFavoriteToggle = { toggleFavorite(match.id) },
             onDismiss = { selectedMatchForDetail = null },
             onVideoClick = { video ->
                 selectedVideo = video
+            },
+            onAddOddsToTicket = { market, pick, odds ->
+                selectedMatchForDetail?.let { m ->
+                    // Map market title -> internal key
+                    val mk = when {
+                        "1x2" in market.lowercase() || "végeredmény" in market.lowercase() || "vereger" in market.lowercase() -> "1X2"
+                        "btts" in market.lowercase() || "mindkét" in market.lowercase() || "both" in market.lowercase() -> "BTTS"
+                        "double" in market.lowercase() || "kettős" in market.lowercase() -> {
+                            if ("1x" in pick.lowercase() || "1x" in market.lowercase()) "DC_1X" else "DC_X2"
+                        }
+                        "over" in market.lowercase() || "under" in market.lowercase() || "gól" in market.lowercase() -> "OU25"
+                        "handicap" in market.lowercase() || "hendik" in market.lowercase() -> "AH"
+                        else -> "1X2"
+                    }
+                    ticketPrefillMarket = mk
+                    ticketPrefillPick = pick
+                    ticketPrefillOdds = odds
+                    matchForTicket = m
+                }
             }
         )
     }
@@ -2687,10 +2753,18 @@ onFavoriteToggle = { toggleFavorite(match.id) },
     matchForTicket?.let { m ->
         AddToTicketDialog(
             match = m,
-            onDismiss = { matchForTicket = null },
+            onDismiss = {
+                matchForTicket = null
+                ticketPrefillMarket = null
+                ticketPrefillPick = null
+                ticketPrefillOdds = null
+            },
             onAdded = {
-                android.widget.Toast.makeText(context, "Hozzáadva a szelvényhez", android.widget.Toast.LENGTH_SHORT).show()
-            }
+                android.widget.Toast.makeText(context, "Mentve az aktív szelvényre", android.widget.Toast.LENGTH_SHORT).show()
+            },
+            prefillMarket = ticketPrefillMarket,
+            prefillPick = ticketPrefillPick,
+            prefillOdds = ticketPrefillOdds
         )
     }
 

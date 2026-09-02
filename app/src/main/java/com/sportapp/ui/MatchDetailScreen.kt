@@ -74,7 +74,8 @@ fun MatchDetailDialog(
     isFavorite: Boolean,
     onFavoriteToggle: () -> Unit,
     onDismiss: () -> Unit,
-    onVideoClick: (HighlightVideo) -> Unit
+    onVideoClick: (HighlightVideo) -> Unit,
+    onAddOddsToTicket: (market: String, pick: String, odds: Double?) -> Unit = { _, _, _ -> }
 ) {
     // Kék üveg paletta – egyezik a MatchScreen-nel
     val bg = if (isDarkMode) Color(0xFF0B1426) else Color(0xFFE8F1FF)
@@ -715,7 +716,8 @@ fun MatchDetailDialog(
                         oddsDraw = oddsDrawUi,
                         oddsAway = oddsAwayUi,
                         oddsSource = oddsSource,
-                        oddsMarkets = oddsMarkets
+                        oddsMarkets = oddsMarkets,
+                        onAddOddsToTicket = onAddOddsToTicket
                     )
                     1 -> EventsTab(
                         events = events,
@@ -1106,7 +1108,8 @@ private fun SummaryTab(
     oddsDraw: Double? = null,
     oddsAway: Double? = null,
     oddsSource: String? = null,
-    oddsMarkets: List<Map<String, Any?>> = emptyList()
+    oddsMarkets: List<Map<String, Any?>> = emptyList(),
+    onAddOddsToTicket: (String, String, Double?) -> Unit = { _, _, _ -> }
 ) {
     val goals = events.filter {
         val ty = it.type?.lowercase().orEmpty()
@@ -1143,7 +1146,10 @@ private fun SummaryTab(
 
         // Odds
         item {
-            OddsRow(match, text, sub, card, green, oddsHome, oddsDraw, oddsAway, oddsSource, oddsMarkets)
+            OddsRow(
+                match, text, sub, card, green, oddsHome, oddsDraw, oddsAway, oddsSource, oddsMarkets,
+                onPick = onAddOddsToTicket
+            )
             Spacer(modifier = Modifier.height(10.dp))
             AiPrematchTipCard(match, text, sub, card, green)
         }
@@ -1374,7 +1380,8 @@ private fun OddsRow(
     oddsDraw: Double? = null,
     oddsAway: Double? = null,
     oddsSource: String? = null,
-    oddsMarkets: List<Map<String, Any?>> = emptyList()
+    oddsMarkets: List<Map<String, Any?>> = emptyList(),
+    onPick: (market: String, pick: String, odds: Double?) -> Unit = { _, _, _ -> }
 ) {
     val h = oddsHome ?: match.oddsHome
     val d = oddsDraw ?: match.oddsDraw
@@ -1696,6 +1703,9 @@ private fun OddsRow(
                                                 .weight(1f)
                                                 .clip(RoundedCornerShape(8.dp))
                                                 .background(Color(0xFF1A2D4D))
+                                                .clickable {
+                                                    onPick(marketTitle, lab, odd)
+                                                }
                                                 .padding(vertical = 6.dp, horizontal = 4.dp),
                                             horizontalAlignment = Alignment.CenterHorizontally
                                         ) {
