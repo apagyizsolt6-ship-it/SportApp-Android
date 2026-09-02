@@ -387,6 +387,8 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
     var isDarkMode by remember { mutableStateOf(true) }
     var selectedTab by remember { mutableIntStateOf(0) }
     var matchForTicket by remember { mutableStateOf<MatchResponse?>(null) }
+    var ticketMatchIds by remember { mutableStateOf(TicketPrefs.activeMatchIds(context)) }
+
     var ticketPrefillMarket by remember { mutableStateOf<String?>(null) }
     var ticketPrefillPick by remember { mutableStateOf<String?>(null) }
     var ticketPrefillOdds by remember { mutableStateOf<Double?>(null) }
@@ -644,6 +646,8 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
     var onlyPinnedLeagues by remember { mutableStateOf(false) }
     var onlyFavorites by remember { mutableStateOf(false) }
     var onlyTopLeagues by remember { mutableStateOf(false) }
+    var onlyNext60 by remember { mutableStateOf(false) }
+
     var showNotifTypes by remember { mutableStateOf(false) }
     var compactMode by remember {
         mutableStateOf(favoritePrefs.getBoolean("compact_mode", false))
@@ -819,6 +823,14 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
 
             if (onlyTopLeagues) {
                 if (!isTopFiveLeague(leagueName, match.countryCode ?: match.country)) return@filter false
+            }
+            if (onlyNext60) {
+                val live = isMatchLive(match.status, match.minute)
+                if (!live) {
+                    val ko = matchKickoffMillis(match)
+                    val nowMs = System.currentTimeMillis()
+                    if (ko == null || ko < nowMs || ko > nowMs + 60L * 60_000L) return@filter false
+                }
             }
             val matchesTab = when (selectedTab) {
                 1 -> isMatchLive(match.status, match.minute)
@@ -1276,6 +1288,11 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                     label = { Text("TOP", fontSize = 11.sp) }
                 )
                 FilterChip(
+                    selected = onlyNext60,
+                    onClick = { onlyNext60 = !onlyNext60 },
+                    label = { Text("60 perc", fontSize = 11.sp) }
+                )
+                FilterChip(
                     selected = sortMode != MatchSortMode.LEAGUE,
                     onClick = {
                         sortMode = when (sortMode) {
@@ -1499,7 +1516,8 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                 }
                 Tab(
                     selected = selectedTab == 5,
-                    onClick = { selectedTab = 5 }
+                    onClick = { selectedTab = 5
+                        ticketMatchIds = TicketPrefs.activeMatchIds(context) }
                 ) {
                     Text(
                         "🎫 SZELVÉNY",
@@ -1710,7 +1728,8 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                                     viewModel.fetchAiAnalysis(m.id)
                                 },
                                 onMatchClick = { selectedMatchForDetail = it },
-                                onTicketClick = { matchForTicket = match },
+                                isOnTicket = ticketMatchIds.contains(match.id),
+                                    onTicketClick = { matchForTicket = match },
                                 onReminderClick = { },
                                 onShareClick = { shareMatch(match) }
                             )
@@ -1744,7 +1763,8 @@ if (derbyMatches.isNotEmpty() && selectedTab == 0 && searchQuery.isEmpty()) {
                                     viewModel.fetchAiAnalysis(m.id)
                                 },
                                 onMatchClick = { selectedMatchForDetail = it },
-                                onTicketClick = { matchForTicket = match },
+                                isOnTicket = ticketMatchIds.contains(match.id),
+                                    onTicketClick = { matchForTicket = match },
                                 onReminderClick = { },
                                 onShareClick = { shareMatch(match) }
                             )
@@ -1778,7 +1798,8 @@ if (derbyMatches.isNotEmpty() && selectedTab == 0 && searchQuery.isEmpty()) {
                                     viewModel.fetchAiAnalysis(m.id)
                                 },
                                 onMatchClick = { selectedMatchForDetail = it },
-                                onTicketClick = { matchForTicket = match },
+                                isOnTicket = ticketMatchIds.contains(match.id),
+                                    onTicketClick = { matchForTicket = match },
                                 onReminderClick = { },
                                 onShareClick = { shareMatch(match) }
                             )
@@ -2305,6 +2326,7 @@ onFavoriteToggle = { toggleFavorite(match.id) },
                                     onMatchClick = { match ->
                                         selectedMatchForDetail = match
                                     },
+                                    isOnTicket = ticketMatchIds.contains(match.id),
                                     onTicketClick = { matchForTicket = match },
                                     isReminderSet = reminderMatchIds.contains(match.id),
                                     onReminderClick = { m ->
@@ -2761,6 +2783,7 @@ onFavoriteToggle = { toggleFavorite(match.id) },
             },
             onAdded = {
                 android.widget.Toast.makeText(context, "Mentve az aktív szelvényre", android.widget.Toast.LENGTH_SHORT).show()
+                ticketMatchIds = TicketPrefs.activeMatchIds(context)
             },
             prefillMarket = ticketPrefillMarket,
             prefillPick = ticketPrefillPick,
@@ -3448,6 +3471,7 @@ fun PremiumMatchRow(
     compact: Boolean = false,
     scoreFlash: Boolean = false,
     minutePulseMs: Long = 0L,
+    isOnTicket: Boolean = false,
     onTicketClick: (() -> Unit)? = null,
     onFavoriteToggle: () -> Unit,
     onVideoClick: (MatchResponse) -> Unit,
@@ -3545,8 +3569,9 @@ fun PremiumMatchRow(
         )
         if (onTicketClick != null) {
             Text(
-                text = "🎫",
+                text = if (isOnTicket) "🎫✓" else "🎫",
                 fontSize = 14.sp,
+                color = if (isOnTicket) primaryGreen else textColor,
                 modifier = Modifier
                     .clickable { onTicketClick.invoke() }
                     .padding(end = 6.dp)

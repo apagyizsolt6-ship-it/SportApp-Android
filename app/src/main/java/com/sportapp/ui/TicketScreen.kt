@@ -259,9 +259,103 @@ object TicketPrefs {
         val t = createTicket(ctx, templateName) ?: return null
         return t
     }
+
+    /** Aktív szelvény meccs-ID-k – lista badge-hez */
+    fun activeMatchIds(ctx: Context): Set<String> {
+        return getActive(ctx)?.legs?.map { it.matchId }?.toSet() ?: emptySet()
+    }
+
+    fun minOdds(ctx: Context): Double =
+        prefs(ctx).getFloat("min_odds", 0f).toDouble()
+
+    fun setMinOdds(ctx: Context, v: Double) {
+        prefs(ctx).edit().putFloat("min_odds", v.toFloat()).apply()
+    }
+
+    /** Archív: lezárt szelvények statja */
+    private const val KEY_ARCHIVE = "archive_json"
+
+    data class ArchiveEntry(
+        val ticketName: String,
+        val ts: Long,
+        val won: Int,
+        val lost: Int,
+        val total: Int
+    )
+
+    fun loadArchive(ctx: Context): List<ArchiveEntry> {
+        val raw = prefs(ctx).getString(KEY_ARCHIVE, "[]") ?: "[]"
+        return try {
+            val arr = JSONArray(raw)
+            buildList {
+                for (i in 0 until arr.length()) {
+                    val o = arr.getJSONObject(i)
+                    add(
+                        ArchiveEntry(
+                            ticketName = o.optString("name"),
+                            ts = o.optLong("ts"),
+                            won = o.optInt("won"),
+                            lost = o.optInt("lost"),
+                            total = o.optInt("total")
+                        )
+                    )
+                }
+            }
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    fun pushArchive(ctx: Context, name: String, won: Int, lost: Int, total: Int) {
+        val cur = loadArchive(ctx).toMutableList()
+        cur.add(0, ArchiveEntry(name, System.currentTimeMillis(), won, lost, total))
+        val arr = JSONArray()
+        cur.take(30).forEach { e ->
+            arr.put(
+                JSONObject()
+                    .put("name", e.ticketName)
+                    .put("ts", e.ts)
+                    .put("won", e.won)
+                    .put("lost", e.lost)
+                    .put("total", e.total)
+            )
+        }
+        prefs(ctx).edit().putString(KEY_ARCHIVE, arr.toString()).apply()
+    }
+
+    fun hitRatePercent(ctx: Context): Int {
+        val arch = loadArchive(ctx)
+        val w = arch.sumOf { it.won }
+        val tot = arch.sumOf { it.total }.coerceAtLeast(1)
+        return ((w * 100) / tot)
+    }
+
+    /** Widget + cache */
+    fun writeWidgetSnapshot(ctx: Context, live: Int, won: Int, lost: Int, total: Int, name: String) {
+        ctx.getSharedPreferences("sport_widget", Context.MODE_PRIVATE).edit()
+            .putString("ticket_name", name)
+            .putInt("live", live)
+            .putInt("won", won)
+            .putInt("lost", lost)
+            .putInt("total", total)
+            .putLong("ts", System.currentTimeMillis())
+            .apply()
+    }
 }
 
 /** Kombinációk száma bankárokkal (egyszerűsített) */
+/** Egyszerű korreláció: túl sok ugyanabból a meccs-napból / ugyanaz a pick irány */
+fun ticketCorrelationWarning(legs: List<TicketLeg>): String? {
+    if (legs.size < 3) return null
+    val homes = legs.count { it.pick.trim().uppercase().let { p -> p == "1" || p.startsWith("1") || "HAZAI" in p } }
+    if (homes >= legs.size - 1 && legs.size >= 4) {
+        return "Figyelem: majdnem minden láb hazai – erős korreláció."
+    }
+    val sameMatch = legs.groupBy { it.matchId }.any { it.value.size > 1 }
+    if (sameMatch) return "Ugyanarra a meccsre több piac is van a szelvényen."
+    return null
+}
+
 fun systemComboCount(legs: List<TicketLeg>, mode: String): Int {
     val bankers = legs.count { it.isBanker }
     val rest = legs.size - bankers
@@ -430,7 +524,11 @@ fun TicketAssistantPanel(
     val legs = active?.legs.orEmpty()
     val matchMap = remember(matches) { matches.associateBy { it.id } }
 
-    val evaluated = legs.map { leg -> leg to evaluateTicketLeg(leg, matchMap[leg.matchId]) }
+    val minOddsFilter = TicketPrefs.minOdds(context)
+    val legsFiltered = if (minOddsFilter > 0.01) {
+        legs.filter { leg -> leg.odds == null || (leg.odds ?: 0.0) >= minOddsFilter }
+    } else legs
+    val evaluated = legsFiltered.map { leg -> leg to evaluateTicketLeg(leg, matchMap[leg.matchId]) }
     val liveCount = evaluated.count { it.second == LegStatus.LIVE }
     val wonCount = evaluated.count { it.second == LegStatus.WON }
     val lostCount = evaluated.count { it.second == LegStatus.LOST }
@@ -549,6 +647,27 @@ fun TicketAssistantPanel(
                 Text("$liveCount él", color = primaryGreen, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                 Text("$wonCount bejött", color = Color(0xFF00C853), fontSize = 12.sp)
                 Text("$lostCount elbukott", color = Color(0xFFE53935), fontSize = 12.sp)
+            }
+            val settled = wonCount + lostCount
+            if (legs.isNotEmpty()) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "Szelvény állás: $wonCount/$settled lezárt · ${legs.size - lostCount}/${legs.size} még élhet",
+                    color = subTextColor,
+                    fontSize = 11.sp
+                )
+            }
+            ticketCorrelationWarning(legs)?.let { warn ->
+                Spacer(Modifier.height(4.dp))
+                Text(warn, color = Color(0xFFFFB74D), fontSize = 11.sp)
+            }
+            // Widget snapshot
+            LaunchedEffect(wonCount, lostCount, liveCount, legs.size, active?.name) {
+                TicketPrefs.writeWidgetSnapshot(
+                    context,
+                    liveCount, wonCount, lostCount, legs.size,
+                    active?.name ?: "Szelvény"
+                )
             }
         }
 
@@ -708,6 +827,21 @@ fun TicketAssistantPanel(
             }
             TextButton(
                 onClick = {
+                    if (legs.isNotEmpty() && lostCount + wonCount > 0) {
+                        TicketPrefs.pushArchive(
+                            context,
+                            active?.name ?: "Szelvény",
+                            wonCount,
+                            lostCount,
+                            legs.size
+                        )
+                        reload()
+                    }
+                },
+                enabled = legs.isNotEmpty() && (wonCount + lostCount) > 0
+            ) { Text("Archívál", fontSize = 11.sp) }
+            TextButton(
+                onClick = {
                     active?.let {
                         TicketPrefs.deleteTicket(context, it.id)
                         reload()
@@ -744,6 +878,47 @@ fun TicketAssistantPanel(
         }
 
         Spacer(Modifier.height(8.dp))
+
+
+        // Min. szorzó + archív
+        var minOdds by remember { mutableStateOf(TicketPrefs.minOdds(context)) }
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("Min. odd:", color = subTextColor, fontSize = 11.sp)
+            listOf(0.0 to "Mind", 1.5 to "1.5+", 1.8 to "1.8+", 2.0 to "2.0+").forEach { (v, lab) ->
+                val sel = kotlin.math.abs(minOdds - v) < 0.01
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = if (sel) primaryGreen.copy(alpha = 0.25f) else cardBg,
+                    modifier = Modifier.clickable {
+                        minOdds = v
+                        TicketPrefs.setMinOdds(context, v)
+                    }
+                ) {
+                    Text(lab, modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp), fontSize = 10.sp, color = if (sel) primaryGreen else textColor)
+                }
+            }
+            val hr = TicketPrefs.hitRatePercent(context)
+            if (hr > 0 || TicketPrefs.loadArchive(context).isNotEmpty()) {
+                Text("Archív $hr%", color = primaryGreen, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+        val archive = remember { TicketPrefs.loadArchive(context) }
+        if (archive.isNotEmpty()) {
+            Text("Legutóbbi szelvények", color = subTextColor, fontSize = 11.sp)
+            archive.take(3).forEach { e ->
+                Text(
+                    "• ${e.ticketName}: ${e.won}/${e.total} (${if (e.total > 0) e.won * 100 / e.total else 0}%)",
+                    color = textColor,
+                    fontSize = 11.sp
+                )
+            }
+            Spacer(Modifier.height(6.dp))
+        }
 
         if (tickets.isEmpty()) {
             Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
