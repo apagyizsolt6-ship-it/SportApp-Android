@@ -387,7 +387,6 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
     var isDarkMode by remember { mutableStateOf(true) }
     var selectedTab by remember { mutableIntStateOf(0) }
     var matchForTicket by remember { mutableStateOf<MatchResponse?>(null) }
-    var ticketMatchIds by remember { mutableStateOf(TicketPrefs.activeMatchIds(context)) }
 
     var ticketPrefillMarket by remember { mutableStateOf<String?>(null) }
     var ticketPrefillPick by remember { mutableStateOf<String?>(null) }
@@ -405,6 +404,7 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
     }
 
     val context = LocalContext.current
+    var ticketMatchIds by remember { mutableStateOf(TicketPrefs.activeMatchIds(context)) }
     fun shareMatch(m: MatchResponse) {
         val status = when {
             m.status == "FT" -> "Vége"
