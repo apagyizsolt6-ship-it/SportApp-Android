@@ -386,6 +386,8 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
     val loadError by viewModel.loadError.collectAsState()
     var isDarkMode by remember { mutableStateOf(true) }
     var selectedTab by remember { mutableIntStateOf(0) }
+    var matchForTicket by remember { mutableStateOf<MatchResponse?>(null) }
+
     var searchQuery by remember { mutableStateOf("") }
     // Naptár: 0 = ma, -1 = tegnap, +1 = holnap...
     var selectedDayOffset by remember { mutableIntStateOf(0) }
@@ -1448,6 +1450,18 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                         fontWeight = FontWeight.Bold
                     )
                 }
+                Tab(
+                    selected = selectedTab == 5,
+                    onClick = { selectedTab = 5 }
+                ) {
+                    Text(
+                        "🎫 SZELVÉNY",
+                        modifier = Modifier.padding(vertical = 10.dp),
+                        color = if (selectedTab == 5) primaryGreen else subTextColor,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
             }
 
             // ====================================================
@@ -1524,6 +1538,17 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                     )
                 }
 
+            } else if (selectedTab == 5) {
+                TicketAssistantPanel(
+                    matches = matches,
+                    isDarkMode = isDarkMode,
+                    primaryGreen = primaryGreen,
+                    cardBg = cardBgColor,
+                    textColor = textColor,
+                    subTextColor = subTextColor,
+                    onOpenMatch = { selectedMatchForDetail = it },
+                    onRequestAddFromList = { selectedTab = 0 }
+                )
             } else if (selectedTab == 3) {
 
                 // ====================================================
@@ -1638,6 +1663,7 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                                     viewModel.fetchAiAnalysis(m.id)
                                 },
                                 onMatchClick = { selectedMatchForDetail = it },
+                                onTicketClick = { matchForTicket = match },
                                 onReminderClick = { },
                                 onShareClick = { shareMatch(match) }
                             )
@@ -1671,6 +1697,7 @@ if (derbyMatches.isNotEmpty() && selectedTab == 0 && searchQuery.isEmpty()) {
                                     viewModel.fetchAiAnalysis(m.id)
                                 },
                                 onMatchClick = { selectedMatchForDetail = it },
+                                onTicketClick = { matchForTicket = match },
                                 onReminderClick = { },
                                 onShareClick = { shareMatch(match) }
                             )
@@ -1704,6 +1731,7 @@ if (derbyMatches.isNotEmpty() && selectedTab == 0 && searchQuery.isEmpty()) {
                                     viewModel.fetchAiAnalysis(m.id)
                                 },
                                 onMatchClick = { selectedMatchForDetail = it },
+                                onTicketClick = { matchForTicket = match },
                                 onReminderClick = { },
                                 onShareClick = { shareMatch(match) }
                             )
@@ -2230,6 +2258,7 @@ onFavoriteToggle = { toggleFavorite(match.id) },
                                     onMatchClick = { match ->
                                         selectedMatchForDetail = match
                                     },
+                                    onTicketClick = { matchForTicket = match },
                                     isReminderSet = reminderMatchIds.contains(match.id),
                                     onReminderClick = { m ->
                                         val ok = scheduleMatchReminder(context, m)
@@ -2651,6 +2680,16 @@ onFavoriteToggle = { toggleFavorite(match.id) },
             },
             confirmButton = {
                 TextButton(onClick = { showSeasonCalendar = false }) { Text("Bezár") }
+            }
+        )
+    }
+
+    matchForTicket?.let { m ->
+        AddToTicketDialog(
+            match = m,
+            onDismiss = { matchForTicket = null },
+            onAdded = {
+                android.widget.Toast.makeText(context, "Hozzáadva a szelvényhez", android.widget.Toast.LENGTH_SHORT).show()
             }
         )
     }
@@ -3335,6 +3374,7 @@ fun PremiumMatchRow(
     compact: Boolean = false,
     scoreFlash: Boolean = false,
     minutePulseMs: Long = 0L,
+    onTicketClick: (() -> Unit)? = null,
     onFavoriteToggle: () -> Unit,
     onVideoClick: (MatchResponse) -> Unit,
     onAiClick: (MatchResponse) -> Unit,
@@ -3427,8 +3467,17 @@ fun PremiumMatchRow(
                 .clickable {
                     onFavoriteToggle()
                 }
-                .padding(end = 8.dp)
+                .padding(end = 4.dp)
         )
+        if (onTicketClick != null) {
+            Text(
+                text = "🎫",
+                fontSize = 14.sp,
+                modifier = Modifier
+                    .clickable { onTicketClick.invoke() }
+                    .padding(end = 6.dp)
+            )
+        }
 
         // ============================================================
         // STÁTUSZ / IDŐ
