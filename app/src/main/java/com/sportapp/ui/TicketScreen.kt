@@ -1,5 +1,7 @@
 package com.sportapp.ui
 
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+
 import android.content.Context
 import android.content.Intent
 import androidx.compose.foundation.background
