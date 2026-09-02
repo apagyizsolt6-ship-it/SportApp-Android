@@ -250,7 +250,7 @@ fun evaluateTicketLeg(leg: TicketLeg, match: MatchResponse?): LegStatus {
     val market = leg.market.uppercase()
     val pick = leg.pick.trim().uppercase()
 
-    when {
+    return when {
         market == "1X2" || market == "MATCH" -> {
             val r = result1x2()
             if (r == null) return if (live) LegStatus.LIVE else LegStatus.PENDING
