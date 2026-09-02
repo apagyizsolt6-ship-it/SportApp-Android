@@ -14,7 +14,7 @@ STATPAL_KEY = os.getenv("STATPAL_KEY")
 HIGHLIGHTLY_KEY = os.getenv("HIGHLIGHTLY_KEY")
 GEMINI_KEY = os.getenv("GEMINI_KEY") or os.getenv("GOOGLE_API_KEY")
 
-STATPAL_CACHE_TTL = 18
+STATPAL_CACHE_TTL = 25
 HIGHLIGHTLY_CACHE_TTL = 90
 TEAM_IMAGE_CACHE_TTL = 21600
 IMAGE_PROXY_BASE_URL = os.getenv(
@@ -193,7 +193,7 @@ _lineups_cache = {}
 _stats_cache = {}
 _hl_date_cache = {}
 _matches_list_cache = {"data": None, "ts": 0}
-MATCHES_LIST_TTL = 15
+MATCHES_LIST_TTL = 25
 _hl_h2h_cache = {}
 _hl_form_cache = {}
 _odds_cache_hits = 0
@@ -1944,7 +1944,7 @@ def fetch_statpal_matches():
     for path in ("matches/today", "matches/live"):
         try:
             url = f"https://statpal.io/api/v2/soccer/{path}?access_key={STATPAL_KEY}"
-            response = requests.get(url, headers=headers, timeout=15)
+            response = requests.get(url, headers=headers, timeout=8)
             if response.status_code != 200:
                 last_err = f"HTTP {response.status_code}"
                 continue
@@ -2317,8 +2317,12 @@ def get_player_image(player_id: str):
     )
 
 
+def get_matches_force_refresh():
+    return get_matches(force=1)
+
+
 @app.get("/api/matches")
-def get_matches():
+def get_matches(force: int = 0):
 
     if not STATPAL_KEY:
         return [{
@@ -2333,15 +2337,28 @@ def get_matches():
             "minute": 0
         }]
 
-    # Gyors válasz: legutóbbi sikeres lista (25 mp)
+    # Gyors válasz: friss cache, vagy stale (azonnali) + háttér frissítés
     now_c = time.time()
     cached_list = _matches_list_cache.get("data")
-    if (
+    cache_age = now_c - _matches_list_cache.get("ts", 0)
+    cache_ok = (
         isinstance(cached_list, list)
         and cached_list
-        and (now_c - _matches_list_cache.get("ts", 0)) < MATCHES_LIST_TTL
         and not (len(cached_list) == 1 and str(cached_list[0].get("id")) in ("err", "0"))
-    ):
+    )
+    if cache_ok and cache_age < MATCHES_LIST_TTL:
+        return cached_list
+    if force == 0 and cache_ok and cache_age < 120:
+        def _bg_refresh_matches():
+            try:
+                get_matches(force=1)
+            except Exception as ex:
+                print("[matches] bg refresh:", ex)
+            finally:
+                _matches_list_cache["refreshing"] = False
+        if not _matches_list_cache.get("refreshing"):
+            _matches_list_cache["refreshing"] = True
+            threading.Thread(target=_bg_refresh_matches, daemon=True).start()
         return cached_list
 
     try:
@@ -2357,15 +2374,15 @@ def get_matches():
             f_hl_hi = pool.submit(fetch_highlightly_highlights)
             f_hl_day = pool.submit(fetch_highlightly_matches_by_date, today_iso, 100)
             try:
-                data = f_sp.result() or {}
+                data = f_sp.result(timeout=9) or {}
             except Exception:
                 data = _statpal_cache.get("data") or {}
             try:
-                highlights_data = f_hl_hi.result() or []
+                highlights_data = f_hl_hi.result(timeout=4) or []
             except Exception:
                 highlights_data = []
             try:
-                hl_day = f_hl_day.result() or []
+                hl_day = f_hl_day.result(timeout=4) or []
             except Exception:
                 hl_day = []
 
