@@ -1,7 +1,5 @@
 package com.sportapp.ui
 
-@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
-
 import android.content.Context
 import android.content.Intent
 import androidx.compose.foundation.background
@@ -477,9 +475,10 @@ fun AddToTicketDialog(
                 Text("Piac", fontSize = 12.sp, color = Color.Gray)
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     listOf("1X2", "BTTS", "OU25", "DC_1X", "DC_X2").forEach { m ->
-                        FilterChip(
-                            selected = market == m,
-                            onClick = {
+                        Surface(
+                            shape = RoundedCornerShape(16.dp),
+                            color = if (market == m) Color(0x3300E5A8) else Color(0x22FFFFFF),
+                            modifier = Modifier.clickable {
                                 market = m
                                 pick = when (m) {
                                     "1X2" -> "1"
@@ -489,18 +488,21 @@ fun AddToTicketDialog(
                                     "DC_X2" -> "X2"
                                     else -> "1"
                                 }
-                            },
-                            label = { Text(m, fontSize = 10.sp) }
-                        )
+                            }
+                        ) {
+                            Text(m, modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp), fontSize = 11.sp)
+                        }
                     }
                 }
                 Text("Választás", fontSize = 12.sp, color = Color.Gray)
                 picks.forEach { (value, label) ->
-                    FilterChip(
-                        selected = pick == value,
-                        onClick = { pick = value },
-                        label = { Text(label, fontSize = 12.sp) }
-                    )
+                    Surface(
+                        shape = RoundedCornerShape(16.dp),
+                        color = if (pick == value) Color(0x3300E5A8) else Color(0x22FFFFFF),
+                        modifier = Modifier.clickable { pick = value }
+                    ) {
+                        Text(label, modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp), fontSize = 12.sp)
+                    }
                 }
                 Text(
                     "Tájékoztató jellegű – nem fogadási tanács.",
