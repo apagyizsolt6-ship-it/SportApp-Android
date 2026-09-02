@@ -5,13 +5,13 @@ import android.content.Intent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -25,17 +25,28 @@ import androidx.compose.ui.unit.sp
 import com.sportapp.models.MatchResponse
 import org.json.JSONArray
 import org.json.JSONObject
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.UUID
 
-/** Egy szelvény-sor (Tippmix-szerű segéd) */
+/** Egy szelvény-sor */
 data class TicketLeg(
     val id: String,
     val matchId: String,
     val homeTeam: String,
     val awayTeam: String,
-    val market: String, // 1X2 | BTTS | OU25 | DC_1X | DC_X2
+    val market: String,
     val pick: String,
     val addedAt: Long = System.currentTimeMillis()
+)
+
+/** Mentett szelvény (max 20) */
+data class SavedTicket(
+    val id: String,
+    val name: String,
+    val createdAt: Long,
+    val legs: List<TicketLeg>
 )
 
 enum class LegStatus {
@@ -43,67 +54,180 @@ enum class LegStatus {
 }
 
 object TicketPrefs {
-    private const val P = "ticket_szelveny"
-    private const val KEY = "legs_json"
+    private const val P = "ticket_szelveny_v2"
+    private const val KEY_ALL = "tickets_json"
+    private const val KEY_ACTIVE = "active_id"
+    private const val LEGACY = "ticket_szelveny"
+    const val MAX_TICKETS = 20
 
-    fun load(ctx: Context): List<TicketLeg> {
-        val raw = ctx.getSharedPreferences(P, Context.MODE_PRIVATE).getString(KEY, "[]") ?: "[]"
+    private fun prefs(ctx: Context) = ctx.getSharedPreferences(P, Context.MODE_PRIVATE)
+
+    private fun legFromJson(o: JSONObject) = TicketLeg(
+        id = o.optString("id"),
+        matchId = o.optString("matchId"),
+        homeTeam = o.optString("homeTeam"),
+        awayTeam = o.optString("awayTeam"),
+        market = o.optString("market"),
+        pick = o.optString("pick"),
+        addedAt = o.optLong("addedAt", 0L)
+    )
+
+    private fun legToJson(leg: TicketLeg) = JSONObject()
+        .put("id", leg.id)
+        .put("matchId", leg.matchId)
+        .put("homeTeam", leg.homeTeam)
+        .put("awayTeam", leg.awayTeam)
+        .put("market", leg.market)
+        .put("pick", leg.pick)
+        .put("addedAt", leg.addedAt)
+
+    private fun ticketFromJson(o: JSONObject): SavedTicket {
+        val legsArr = o.optJSONArray("legs") ?: JSONArray()
+        val legs = buildList {
+            for (i in 0 until legsArr.length()) {
+                add(legFromJson(legsArr.getJSONObject(i)))
+            }
+        }
+        return SavedTicket(
+            id = o.optString("id"),
+            name = o.optString("name", "Szelvény"),
+            createdAt = o.optLong("createdAt", System.currentTimeMillis()),
+            legs = legs
+        )
+    }
+
+    private fun ticketToJson(t: SavedTicket): JSONObject {
+        val legsArr = JSONArray()
+        t.legs.forEach { legsArr.put(legToJson(it)) }
+        return JSONObject()
+            .put("id", t.id)
+            .put("name", t.name)
+            .put("createdAt", t.createdAt)
+            .put("legs", legsArr)
+    }
+
+    /** Régi egy-szelvényes mentés átvétele */
+    private fun migrateLegacy(ctx: Context): List<SavedTicket> {
+        val legacy = ctx.getSharedPreferences(LEGACY, Context.MODE_PRIVATE)
+        val raw = legacy.getString("legs_json", null) ?: return emptyList()
+        return try {
+            val arr = JSONArray(raw)
+            if (arr.length() == 0) return emptyList()
+            val legs = buildList {
+                for (i in 0 until arr.length()) add(legFromJson(arr.getJSONObject(i)))
+            }
+            listOf(
+                SavedTicket(
+                    id = UUID.randomUUID().toString(),
+                    name = "Szelvény 1",
+                    createdAt = System.currentTimeMillis(),
+                    legs = legs
+                )
+            )
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    fun loadAll(ctx: Context): List<SavedTicket> {
+        val raw = prefs(ctx).getString(KEY_ALL, null)
+        if (raw.isNullOrBlank()) {
+            val migrated = migrateLegacy(ctx)
+            if (migrated.isNotEmpty()) {
+                saveAll(ctx, migrated)
+                setActiveId(ctx, migrated.first().id)
+                ctx.getSharedPreferences(LEGACY, Context.MODE_PRIVATE).edit().remove("legs_json").apply()
+            }
+            return migrated
+        }
         return try {
             val arr = JSONArray(raw)
             buildList {
-                for (i in 0 until arr.length()) {
-                    val o = arr.getJSONObject(i)
-                    add(
-                        TicketLeg(
-                            id = o.optString("id"),
-                            matchId = o.optString("matchId"),
-                            homeTeam = o.optString("homeTeam"),
-                            awayTeam = o.optString("awayTeam"),
-                            market = o.optString("market"),
-                            pick = o.optString("pick"),
-                            addedAt = o.optLong("addedAt", 0L)
-                        )
-                    )
-                }
+                for (i in 0 until arr.length()) add(ticketFromJson(arr.getJSONObject(i)))
             }
         } catch (_: Exception) {
             emptyList()
         }
     }
 
-    fun save(ctx: Context, legs: List<TicketLeg>) {
+    fun saveAll(ctx: Context, tickets: List<SavedTicket>) {
         val arr = JSONArray()
-        legs.forEach { leg ->
-            arr.put(
-                JSONObject()
-                    .put("id", leg.id)
-                    .put("matchId", leg.matchId)
-                    .put("homeTeam", leg.homeTeam)
-                    .put("awayTeam", leg.awayTeam)
-                    .put("market", leg.market)
-                    .put("pick", leg.pick)
-                    .put("addedAt", leg.addedAt)
-            )
+        tickets.take(MAX_TICKETS).forEach { arr.put(ticketToJson(it)) }
+        prefs(ctx).edit().putString(KEY_ALL, arr.toString()).apply()
+    }
+
+    fun activeId(ctx: Context): String? = prefs(ctx).getString(KEY_ACTIVE, null)
+
+    fun setActiveId(ctx: Context, id: String) {
+        prefs(ctx).edit().putString(KEY_ACTIVE, id).apply()
+    }
+
+    fun getActive(ctx: Context): SavedTicket? {
+        val all = loadAll(ctx)
+        if (all.isEmpty()) return null
+        val aid = activeId(ctx)
+        return all.find { it.id == aid } ?: all.first().also { setActiveId(ctx, it.id) }
+    }
+
+    fun createTicket(ctx: Context, name: String? = null): SavedTicket? {
+        val all = loadAll(ctx).toMutableList()
+        if (all.size >= MAX_TICKETS) return null
+        val n = all.size + 1
+        val ticket = SavedTicket(
+            id = UUID.randomUUID().toString(),
+            name = name?.takeIf { it.isNotBlank() } ?: "Szelvény $n",
+            createdAt = System.currentTimeMillis(),
+            legs = emptyList()
+        )
+        all.add(0, ticket)
+        saveAll(ctx, all)
+        setActiveId(ctx, ticket.id)
+        return ticket
+    }
+
+    fun updateTicket(ctx: Context, ticket: SavedTicket) {
+        val all = loadAll(ctx).map { if (it.id == ticket.id) ticket else it }
+        saveAll(ctx, all)
+    }
+
+    fun deleteTicket(ctx: Context, id: String) {
+        val all = loadAll(ctx).filter { it.id != id }
+        saveAll(ctx, all)
+        if (activeId(ctx) == id) {
+            if (all.isNotEmpty()) setActiveId(ctx, all.first().id)
+            else prefs(ctx).edit().remove(KEY_ACTIVE).apply()
         }
-        ctx.getSharedPreferences(P, Context.MODE_PRIVATE).edit().putString(KEY, arr.toString()).apply()
     }
 
-    fun add(ctx: Context, leg: TicketLeg, maxLegs: Int = 12): List<TicketLeg> {
-        val cur = load(ctx).filter { it.matchId != leg.matchId || it.market != leg.market }.toMutableList()
-        cur.add(0, leg)
-        val next = cur.take(maxLegs)
-        save(ctx, next)
-        return next
+    fun renameTicket(ctx: Context, id: String, name: String) {
+        val all = loadAll(ctx).map {
+            if (it.id == id) it.copy(name = name.take(40).ifBlank { it.name }) else it
+        }
+        saveAll(ctx, all)
     }
 
-    fun remove(ctx: Context, legId: String): List<TicketLeg> {
-        val next = load(ctx).filter { it.id != legId }
-        save(ctx, next)
-        return next
+    /** Láb hozzáadása az aktív szelvényhez */
+    fun addLeg(ctx: Context, leg: TicketLeg, maxLegs: Int = 15): Boolean {
+        var active = getActive(ctx)
+        if (active == null) {
+            active = createTicket(ctx) ?: return false
+        }
+        val legs = active.legs
+            .filter { it.matchId != leg.matchId || it.market != leg.market }
+            .toMutableList()
+        legs.add(0, leg)
+        updateTicket(ctx, active.copy(legs = legs.take(maxLegs)))
+        return true
     }
 
-    fun clear(ctx: Context) {
-        save(ctx, emptyList())
+    fun removeLeg(ctx: Context, legId: String) {
+        val active = getActive(ctx) ?: return
+        updateTicket(ctx, active.copy(legs = active.legs.filter { it.id != legId }))
+    }
+
+    fun clearActiveLegs(ctx: Context) {
+        val active = getActive(ctx) ?: return
+        updateTicket(ctx, active.copy(legs = emptyList()))
     }
 }
 
@@ -131,28 +255,22 @@ fun evaluateTicketLeg(leg: TicketLeg, match: MatchResponse?): LegStatus {
             val r = result1x2()
             if (r == null) return if (live) LegStatus.LIVE else LegStatus.PENDING
             val want = when {
-                pick.startsWith("1") || pick.contains("HAZAI") || pick == leg.homeTeam.uppercase() -> "1"
-                pick.startsWith("2") || pick.contains("VENDÉG") || pick.contains("VENDEG") || pick == leg.awayTeam.uppercase() -> "2"
+                pick.startsWith("1") || pick.contains("HAZAI") -> "1"
+                pick.startsWith("2") || pick.contains("VENDÉG") || pick.contains("VENDEG") -> "2"
                 pick.startsWith("X") || pick.contains("DÖNTETLEN") || pick.contains("DONTETLEN") || pick.contains("DRAW") -> "X"
                 else -> pick.take(1)
             }
-            return when {
-                finished -> if (r == want) LegStatus.WON else LegStatus.LOST
-                live -> {
-                    // Előre elbukott? (pl. 2-0 és X tipp) – óvatos: csak döntetlen tippnél ha van gól
-                    if (want == "X" && (hs ?: 0) + (as_ ?: 0) > 0) LegStatus.LIVE
-                    else LegStatus.LIVE
-                }
-                else -> LegStatus.PENDING
-            }
+            return if (finished) {
+                if (r == want) LegStatus.WON else LegStatus.LOST
+            } else if (live) LegStatus.LIVE else LegStatus.PENDING
         }
         market == "BTTS" -> {
             if (hs == null || as_ == null) return if (live) LegStatus.LIVE else LegStatus.PENDING
             val both = hs > 0 && as_ > 0
-            val wantYes = pick.contains("IGEN") || pick == "YES" || pick == "I" || pick == "Y"
+            val wantYes = pick.contains("IGEN") || pick == "YES" || pick == "Y"
             val wantNo = pick.contains("NEM") || pick == "NO" || pick == "N"
             if (!finished) {
-                if (wantYes && both) return LegStatus.WON // már bejött élőben is
+                if (wantYes && both) return LegStatus.WON
                 if (wantNo && both) return LegStatus.LOST
                 return if (live) LegStatus.LIVE else LegStatus.PENDING
             }
@@ -162,10 +280,9 @@ fun evaluateTicketLeg(leg: TicketLeg, match: MatchResponse?): LegStatus {
         market == "OU25" || market.contains("OVER") || market.contains("UNDER") -> {
             if (hs == null || as_ == null) return if (live) LegStatus.LIVE else LegStatus.PENDING
             val total = hs + as_
-            val over = pick.contains("OVER") || pick.contains("TÖBB") || pick.contains("TOBB") || pick.contains("+")
             val under = pick.contains("UNDER") || pick.contains("KEVESEBB")
             if (!finished) {
-                if (over && total >= 3) return LegStatus.WON
+                if (!under && total >= 3) return LegStatus.WON
                 if (under && total >= 3) return LegStatus.LOST
                 return if (live) LegStatus.LIVE else LegStatus.PENDING
             }
@@ -173,21 +290,16 @@ fun evaluateTicketLeg(leg: TicketLeg, match: MatchResponse?): LegStatus {
             return if (ok) LegStatus.WON else LegStatus.LOST
         }
         market == "DC_1X" || market == "1X" -> {
-            val r = result1x2()
-            if (r == null) return if (live) LegStatus.LIVE else LegStatus.PENDING
+            val r = result1x2() ?: return if (live) LegStatus.LIVE else LegStatus.PENDING
             if (!finished) return if (live) LegStatus.LIVE else LegStatus.PENDING
             return if (r == "1" || r == "X") LegStatus.WON else LegStatus.LOST
         }
         market == "DC_X2" || market == "X2" -> {
-            val r = result1x2()
-            if (r == null) return if (live) LegStatus.LIVE else LegStatus.PENDING
+            val r = result1x2() ?: return if (live) LegStatus.LIVE else LegStatus.PENDING
             if (!finished) return if (live) LegStatus.LIVE else LegStatus.PENDING
             return if (r == "X" || r == "2") LegStatus.WON else LegStatus.LOST
         }
-        else -> {
-            if (finished) return LegStatus.PENDING
-            return if (live) LegStatus.LIVE else LegStatus.PENDING
-        }
+        else -> if (finished) LegStatus.PENDING else if (live) LegStatus.LIVE else LegStatus.PENDING
     }
 }
 
@@ -203,12 +315,24 @@ fun TicketAssistantPanel(
     onRequestAddFromList: () -> Unit = {}
 ) {
     val context = LocalContext.current
-    var legs by remember { mutableStateOf(TicketPrefs.load(context)) }
+    var tickets by remember { mutableStateOf(TicketPrefs.loadAll(context)) }
+    var activeId by remember {
+        mutableStateOf(TicketPrefs.activeId(context) ?: tickets.firstOrNull()?.id)
+    }
+    var showNameDialog by remember { mutableStateOf(false) }
+    var renameTarget by remember { mutableStateOf<SavedTicket?>(null) }
+    var newName by remember { mutableStateOf("") }
+
+    fun reload() {
+        tickets = TicketPrefs.loadAll(context)
+        activeId = TicketPrefs.activeId(context) ?: tickets.firstOrNull()?.id
+    }
+
+    val active = tickets.find { it.id == activeId } ?: tickets.firstOrNull()
+    val legs = active?.legs.orEmpty()
     val matchMap = remember(matches) { matches.associateBy { it.id } }
 
-    val evaluated = legs.map { leg ->
-        leg to evaluateTicketLeg(leg, matchMap[leg.matchId])
-    }
+    val evaluated = legs.map { leg -> leg to evaluateTicketLeg(leg, matchMap[leg.matchId]) }
     val liveCount = evaluated.count { it.second == LegStatus.LIVE }
     val wonCount = evaluated.count { it.second == LegStatus.WON }
     val lostCount = evaluated.count { it.second == LegStatus.LOST }
@@ -220,18 +344,66 @@ fun TicketAssistantPanel(
             .fillMaxSize()
             .padding(horizontal = 12.dp, vertical = 8.dp)
     ) {
+        Text("Szelvény segéd", color = textColor, fontWeight = FontWeight.Bold, fontSize = 20.sp)
         Text(
-            "Szelvény segéd",
-            color = textColor,
-            fontWeight = FontWeight.Bold,
-            fontSize = 20.sp
-        )
-        Text(
-            "Élő követés · tájékoztató – nem fogadási tanács",
+            "Élő követés · max ${TicketPrefs.MAX_TICKETS} mentett szelvény · nem fogadási tanács",
             color = subTextColor,
             fontSize = 11.sp
         )
-        Spacer(Modifier.height(12.dp))
+        Spacer(Modifier.height(10.dp))
+
+        // Szelvény választó sáv
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            tickets.forEach { t ->
+                val selected = t.id == active?.id
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = if (selected) primaryGreen.copy(alpha = 0.25f) else cardBg,
+                    border = androidx.compose.foundation.BorderStroke(
+                        1.dp,
+                        if (selected) primaryGreen else Color(0x33A0C4FF)
+                    ),
+                    modifier = Modifier.clickable {
+                        TicketPrefs.setActiveId(context, t.id)
+                        activeId = t.id
+                    }
+                ) {
+                    Text(
+                        "${t.name} (${t.legs.size})",
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        color = if (selected) primaryGreen else textColor,
+                        fontSize = 12.sp,
+                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
+                    )
+                }
+            }
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = cardBg,
+                border = androidx.compose.foundation.BorderStroke(1.dp, primaryGreen.copy(alpha = 0.5f)),
+                modifier = Modifier.clickable {
+                    if (tickets.size >= TicketPrefs.MAX_TICKETS) return@clickable
+                    newName = "Szelvény ${tickets.size + 1}"
+                    showNameDialog = true
+                }
+            ) {
+                Text(
+                    "+ Új",
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    color = primaryGreen,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
+
+        Spacer(Modifier.height(10.dp))
 
         // Összegző
         Column(
@@ -246,8 +418,23 @@ fun TicketAssistantPanel(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("Mai szelvény", color = textColor, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
-                Text("${legs.size} tipp", color = subTextColor, fontSize = 12.sp)
+                Column {
+                    Text(
+                        active?.name ?: "Nincs szelvény",
+                        color = textColor,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 14.sp
+                    )
+                    active?.let {
+                        val df = remember { SimpleDateFormat("MM.dd HH:mm", Locale.getDefault()) }
+                        Text(
+                            "Mentve: ${df.format(Date(it.createdAt))} · ${it.legs.size} tipp",
+                            color = subTextColor,
+                            fontSize = 11.sp
+                        )
+                    }
+                }
+                Text("${tickets.size}/${TicketPrefs.MAX_TICKETS}", color = subTextColor, fontSize = 12.sp)
             }
             Spacer(Modifier.height(8.dp))
             LinearProgressIndicator(
@@ -267,24 +454,46 @@ fun TicketAssistantPanel(
             }
         }
 
-        Spacer(Modifier.height(10.dp))
+        Spacer(Modifier.height(8.dp))
 
         Row(
             Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
             OutlinedButton(
                 onClick = onRequestAddFromList,
-                modifier = Modifier.weight(1f)
-            ) { Text("Meccs hozzáadása", fontSize = 12.sp) }
+                modifier = Modifier.weight(1f),
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+            ) { Text("Meccs +", fontSize = 11.sp) }
+            TextButton(
+                onClick = {
+                    active?.let {
+                        newName = it.name
+                        renameTarget = it
+                    }
+                },
+                enabled = active != null
+            ) { Text("Átnevez", fontSize = 11.sp) }
+            TextButton(onClick = {
+                TicketPrefs.clearActiveLegs(context)
+                reload()
+            }, enabled = legs.isNotEmpty()) {
+                Text("Ürít", fontSize = 11.sp, color = Color(0xFFFF9800))
+            }
+            TextButton(
+                onClick = {
+                    active?.let {
+                        TicketPrefs.deleteTicket(context, it.id)
+                        reload()
+                    }
+                },
+                enabled = active != null
+            ) { Text("Töröl", fontSize = 11.sp, color = Color(0xFFE53935)) }
             if (legs.isNotEmpty()) {
                 TextButton(onClick = {
-                    TicketPrefs.clear(context)
-                    legs = emptyList()
-                }) { Text("Ürít", fontSize = 12.sp, color = Color(0xFFE53935)) }
-                TextButton(onClick = {
                     val body = buildString {
-                        append("⚽ SportApp szelvény\n")
+                        append("⚽ ${active?.name ?: "Szelvény"}\n")
                         evaluated.forEach { (leg, st) ->
                             val label = when (st) {
                                 LegStatus.WON -> "BEJÖTT"
@@ -305,21 +514,27 @@ fun TicketAssistantPanel(
                             "Szelvény megosztása"
                         )
                     )
-                }) { Text("Megosztás", fontSize = 12.sp) }
+                }) { Text("↗", fontSize = 12.sp) }
             }
         }
 
         Spacer(Modifier.height(8.dp))
 
-        if (legs.isEmpty()) {
-            Box(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(24.dp),
-                contentAlignment = Alignment.Center
-            ) {
+        if (tickets.isEmpty()) {
+            Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("Még nincs mentett szelvény.", color = subTextColor, fontSize = 13.sp)
+                    Spacer(Modifier.height(8.dp))
+                    Button(onClick = {
+                        TicketPrefs.createTicket(context)
+                        reload()
+                    }) { Text("Első szelvény létrehozása") }
+                }
+            }
+        } else if (legs.isEmpty()) {
+            Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
                 Text(
-                    "Még üres a szelvény.\nA listán a 🎫 gombbal vagy innen „Meccs hozzáadása”.",
+                    "Ez a szelvény üres.\n🎫 a listán, vagy „Meccs +”.\nA sorok automatikusan mentődnek.",
                     color = subTextColor,
                     fontSize = 13.sp
                 )
@@ -341,12 +556,68 @@ fun TicketAssistantPanel(
                         subTextColor = subTextColor,
                         onClick = { m?.let(onOpenMatch) },
                         onRemove = {
-                            legs = TicketPrefs.remove(context, leg.id)
+                            TicketPrefs.removeLeg(context, leg.id)
+                            reload()
                         }
                     )
                 }
             }
         }
+    }
+
+    // Új szelvény név
+    if (showNameDialog) {
+        AlertDialog(
+            onDismissRequest = { showNameDialog = false },
+            title = { Text("Új szelvény") },
+            text = {
+                OutlinedTextField(
+                    value = newName,
+                    onValueChange = { newName = it },
+                    label = { Text("Név") },
+                    singleLine = true
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val t = TicketPrefs.createTicket(context, newName)
+                    showNameDialog = false
+                    reload()
+                    if (t == null) {
+                        // max elérve
+                    }
+                }) { Text("Mentés") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showNameDialog = false }) { Text("Mégse") }
+            }
+        )
+    }
+
+    // Átnevezés
+    renameTarget?.let { target ->
+        AlertDialog(
+            onDismissRequest = { renameTarget = null },
+            title = { Text("Átnevezés") },
+            text = {
+                OutlinedTextField(
+                    value = newName,
+                    onValueChange = { newName = it },
+                    label = { Text("Név") },
+                    singleLine = true
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    TicketPrefs.renameTicket(context, target.id, newName)
+                    renameTarget = null
+                    reload()
+                }) { Text("Mentés") }
+            },
+            dismissButton = {
+                TextButton(onClick = { renameTarget = null }) { Text("Mégse") }
+            }
+        )
     }
 }
 
@@ -410,11 +681,7 @@ private fun TicketLegRow(
                 fontSize = 13.sp,
                 maxLines = 1
             )
-            Text(
-                "${leg.market} · ${leg.pick}",
-                color = subTextColor,
-                fontSize = 11.sp
-            )
+            Text("${leg.market} · ${leg.pick}", color = subTextColor, fontSize = 11.sp)
         }
         Column(horizontalAlignment = Alignment.End) {
             Text(score, color = primaryGreen, fontWeight = FontWeight.Bold, fontSize = 14.sp)
@@ -423,10 +690,7 @@ private fun TicketLegRow(
             }
         }
         Spacer(Modifier.width(8.dp))
-        Surface(
-            shape = RoundedCornerShape(8.dp),
-            color = badgeColor.copy(alpha = 0.2f)
-        ) {
+        Surface(shape = RoundedCornerShape(8.dp), color = badgeColor.copy(alpha = 0.2f)) {
             Text(
                 badgeText,
                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
@@ -440,9 +704,7 @@ private fun TicketLegRow(
             "✕",
             color = subTextColor,
             fontSize = 14.sp,
-            modifier = Modifier
-                .clickable(onClick = onRemove)
-                .padding(4.dp)
+            modifier = Modifier.clickable(onClick = onRemove).padding(4.dp)
         )
     }
 }
@@ -456,6 +718,7 @@ fun AddToTicketDialog(
     val context = LocalContext.current
     var market by remember { mutableStateOf("1X2") }
     var pick by remember { mutableStateOf("1") }
+    val activeName = remember { TicketPrefs.getActive(context)?.name ?: "aktív szelvény" }
 
     val picks = when (market) {
         "1X2" -> listOf("1" to "Hazai (1)", "X" to "Döntetlen", "2" to "Vendég (2)")
@@ -472,6 +735,7 @@ fun AddToTicketDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("${match.homeTeam} – ${match.awayTeam}", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                Text("Mentés ide: $activeName", fontSize = 11.sp, color = Color.Gray)
                 Text("Piac", fontSize = 12.sp, color = Color.Gray)
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     listOf("1X2", "BTTS", "OU25", "DC_1X", "DC_X2").forEach { m ->
@@ -504,16 +768,16 @@ fun AddToTicketDialog(
                         Text(label, modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp), fontSize = 12.sp)
                     }
                 }
-                Text(
-                    "Tájékoztató jellegű – nem fogadási tanács.",
-                    fontSize = 10.sp,
-                    color = Color.Gray
-                )
+                Text("Automatikusan mentődik az aktív szelvényre.", fontSize = 10.sp, color = Color.Gray)
             }
         },
         confirmButton = {
             TextButton(onClick = {
-                TicketPrefs.add(
+                // Ha nincs aktív szelvény, létrehoz egyet
+                if (TicketPrefs.getActive(context) == null) {
+                    TicketPrefs.createTicket(context)
+                }
+                TicketPrefs.addLeg(
                     context,
                     TicketLeg(
                         id = UUID.randomUUID().toString(),
@@ -526,7 +790,7 @@ fun AddToTicketDialog(
                 )
                 onAdded()
                 onDismiss()
-            }) { Text("Hozzáad") }
+            }) { Text("Mentés") }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) { Text("Mégse") }
