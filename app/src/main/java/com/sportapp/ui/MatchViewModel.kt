@@ -59,7 +59,7 @@ class MatchViewModel : ViewModel() {
         autoJob?.cancel()
         autoJob = viewModelScope.launch {
             while (true) {
-                fetchMatches(showLoading = _matches.value.isEmpty())
+                fetchMatches(showLoading = false)
                 val hasLive = _matches.value.any { m ->
                     val s = m.status.trim().uppercase().replace(".", "")
                     s in setOf("1H", "2H", "HT", "LIVE", "ET", "INPLAY") ||
@@ -82,7 +82,7 @@ class MatchViewModel : ViewModel() {
 
     fun fetchMatches(showLoading: Boolean = true) {
         viewModelScope.launch {
-            if (showLoading) _isLoading.value = true
+            if (showLoading && _matches.value.isEmpty()) _isLoading.value = true
             try {
                 val offset = dayOffset
                 val list = if (offset == 0) {
