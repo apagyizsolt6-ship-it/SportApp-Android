@@ -89,7 +89,7 @@ internal fun isMatchLive(status: String?, minute: Int?): Boolean {
 /** Kickoff millis, vagy null. */
 internal fun matchKickoffMillis(match: MatchResponse): Long? {
     val timeStr = match.kickoffTime?.trim()?.takeIf { it.contains(":") }
-        ?: match.status.trim().takeIf { it.contains(":") && it.length <= 5 }
+        ?: (match.status ?: "").trim().takeIf { it.contains(":") && it.length <= 5 }
         ?: return null
     val parts = timeStr.split(":")
     if (parts.size < 2) return null
@@ -153,7 +153,7 @@ enum class MatchSortMode { LEAGUE, TIME, LIVE_FIRST }
 /** 15 perccel a kickoff előtt értesítés. Siker: true. */
 private fun scheduleMatchReminder(context: android.content.Context, match: MatchResponse): Boolean {
     val timeStr = match.kickoffTime?.trim()?.takeIf { it.contains(":") }
-        ?: match.status.trim().takeIf { it.contains(":") && it.length <= 5 }
+        ?: (match.status ?: "").trim().takeIf { it.contains(":") && it.length <= 5 }
         ?: return false
     val parts = timeStr.split(":")
     if (parts.size < 2) return false

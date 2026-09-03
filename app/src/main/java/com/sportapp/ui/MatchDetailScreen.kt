@@ -963,7 +963,7 @@ private fun MatchDetailScoreboard(
     sub: Color,
     green: Color
 ) {
-    val statusU = match.status.trim().uppercase().replace(".", "")
+    val statusU = (match.status ?: "").trim().uppercase().replace(".", "")
     val isLive = statusU in setOf("1H", "2H", "HT", "LIVE", "ET", "INPLAY") ||
         ((match.minute ?: 0) > 0 && statusU !in setOf(
             "FT", "AET", "PEN", "PENS", "NS", "TBD", "PST", "CANC", "FINISHED"
@@ -977,9 +977,9 @@ private fun MatchDetailScoreboard(
         }
     }
     val liveMinute = rememberLiveMinute(
-        matchId = match.id,
+        matchId = match.id ?: match.matchId ?: "unknown",
         serverMinute = match.minute,
-        status = match.status,
+        status = match.status ?: "",
         isLive = isLive,
         pulseMs = detailPulse
     )
@@ -1116,7 +1116,7 @@ private fun SummaryTab(
         ty.contains("goal") || ty == "penalty"
     }
     val scheduled = isScheduledStatus(match.status, match.minute)
-    val finished = match.status.equals("FT", true) || match.status.equals("AET", true)
+    val finished = (match.status ?: "").equals("FT", true) || (match.status ?: "").equals("AET", true)
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),

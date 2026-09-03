@@ -61,7 +61,7 @@ class MatchViewModel : ViewModel() {
             while (true) {
                 fetchMatches(showLoading = false)
                 val hasLive = _matches.value.any { m ->
-                    val s = m.status.trim().uppercase().replace(".", "")
+                    val s = (m.status ?: "").trim().uppercase().replace(".", "")
                     s in setOf("1H", "2H", "HT", "LIVE", "ET", "INPLAY") ||
                         ((m.minute ?: 0) > 0 && s !in setOf("FT", "AET", "PEN", "NS", "TBD", "PST", "CANC"))
                 }
