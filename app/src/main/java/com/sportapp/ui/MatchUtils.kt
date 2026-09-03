@@ -1,5 +1,8 @@
 package com.sportapp.ui
 
+/** Compose Text() soha ne kapjon null-t. */
+fun safeText(s: String?): String = s?.trim().orEmpty()
+
 import android.app.AlarmManager
 import android.app.PendingIntent
 import android.content.Intent

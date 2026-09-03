@@ -528,9 +528,18 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
             if (onlyPinnedLeagues && !isLeagueFav) return@filter false
             if (onlyFavorites) {
                 val teamHit = followedTeamNames.any { team ->
-                    match.homeTeam.equals(team, true) || match.awayTeam.equals(team, true)
+                    match.homeTeam.equals(team, true) || match.awayTeam.equals(team, true) ||
+                        match.homeTeam.contains(team, true) || match.awayTeam.contains(team, true)
                 }
                 if (!isMatchFav && !isLeagueFav && !teamHit && !followedMatchIds.contains(match.id))
+                    return@filter false
+            }
+            if (onlyFollowed) {
+                val teamHit = followedTeamNames.any { team ->
+                    match.homeTeam.equals(team, true) || match.awayTeam.equals(team, true) ||
+                        match.homeTeam.contains(team, true) || match.awayTeam.contains(team, true)
+                }
+                if (!teamHit && !followedMatchIds.contains(match.id))
                     return@filter false
             }
             val matchesSearch = matchesSmartSearch(match, searchQuery)
@@ -798,6 +807,13 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                     ) {
 
                         Text(
+                        text = "⚙️",
+                        fontSize = 16.sp,
+                        modifier = Modifier
+                            .clickable { showSettings = true }
+                            .padding(horizontal = 6.dp)
+                    )
+                    Text(
                             text = if (isDarkMode) "☀️" else "🌙",
                             fontSize = 16.sp
                         )
@@ -995,6 +1011,11 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                     selected = onlyFavorites,
                     onClick = { onlyFavorites = !onlyFavorites },
                     label = { Text("Kedvencek", fontSize = 11.sp) }
+                )
+                FilterChip(
+                    selected = onlyFollowed,
+                    onClick = { onlyFollowed = !onlyFollowed },
+                    label = { Text("Követett", fontSize = 11.sp) }
                 )
                 FilterChip(
                     selected = onlyTopLeagues,
@@ -2765,5 +2786,9 @@ onFavoriteToggle = { toggleFavorite(match.id) },
             },
             containerColor = if (isDarkMode) Color(0xFF1E293B) else Color.White
         )
+    }
+
+    if (showSettings) {
+        SettingsDialog(isDarkMode = isDarkMode, onDismiss = { showSettings = false })
     }
 }

@@ -5,11 +5,13 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.sportapp.api.RetrofitInstance
 import com.sportapp.models.MatchResponse
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.time.LocalDate
 import java.util.Calendar
@@ -23,6 +25,9 @@ class MatchViewModel(app: Application) : AndroidViewModel(app) {
     private val _isLoading = MutableStateFlow(true)
     val isLoading: StateFlow<Boolean> = _isLoading
 
+    private val _isRefreshing = MutableStateFlow(false)
+    val isRefreshing: StateFlow<Boolean> = _isRefreshing
+
     private val _loadError = MutableStateFlow<String?>(null)
     val loadError: StateFlow<String?> = _loadError
 
@@ -35,14 +40,14 @@ class MatchViewModel(app: Application) : AndroidViewModel(app) {
     private val _isLoadingAi = MutableStateFlow(false)
     val isLoadingAi: StateFlow<Boolean> = _isLoadingAi
 
-    private val REFRESH_INTERVAL_MS = 15_000L
-    private val REFRESH_IDLE_MS = 35_000L
+    private val REFRESH_INTERVAL_MS = 18_000L
+    private val REFRESH_IDLE_MS = 40_000L
 
     private var dayOffset: Int = 0
     private var autoJob: Job? = null
+    private var fetchJob: Job? = null
 
     init {
-        // Offline: azonnal töltsük a cache-t, ha van
         val cached = MatchCache.load(getApplication(), dateForOffset(0))
         if (cached.isNotEmpty()) {
             _matches.value = cached
@@ -58,17 +63,18 @@ class MatchViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         dayOffset = offset
-        // Másik nap: próbáljunk cache-t
         val cached = MatchCache.load(getApplication(), dateForOffset(offset))
         if (cached.isNotEmpty()) {
             _matches.value = cached
             _fromCache.value = true
             _loadError.value = null
+            _isLoading.value = false
+            fetchMatches(showLoading = false)
         } else {
             _matches.value = emptyList()
             _fromCache.value = false
+            fetchMatches(showLoading = true)
         }
-        fetchMatches(showLoading = true)
         autoJob?.cancel()
         if (offset == 0) startAutoRefresh()
     }
@@ -76,14 +82,15 @@ class MatchViewModel(app: Application) : AndroidViewModel(app) {
     private fun startAutoRefresh() {
         autoJob?.cancel()
         autoJob = viewModelScope.launch {
+            fetchMatches(showLoading = _matches.value.isEmpty())
             while (true) {
-                fetchMatches(showLoading = false)
                 val hasLive = _matches.value.any { m ->
                     val s = (m.status ?: "").trim().uppercase().replace(".", "")
                     s in setOf("1H", "2H", "HT", "LIVE", "ET", "INPLAY") ||
                         ((m.minute ?: 0) > 0 && s !in setOf("FT", "AET", "PEN", "NS", "TBD", "PST", "CANC"))
                 }
                 delay(if (hasLive) REFRESH_INTERVAL_MS else REFRESH_IDLE_MS)
+                fetchMatches(showLoading = false)
             }
         }
     }
@@ -99,36 +106,39 @@ class MatchViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun fetchMatches(showLoading: Boolean = true) {
-        viewModelScope.launch {
-            if (showLoading && _matches.value.isEmpty()) _isLoading.value = true
+        if (fetchJob?.isActive == true) return
+        fetchJob = viewModelScope.launch {
+            val hadData = _matches.value.isNotEmpty()
+            if (showLoading && !hadData) _isLoading.value = true
+            if (hadData) _isRefreshing.value = true
             try {
                 val offset = dayOffset
                 val dateIso = dateForOffset(offset)
-                val list = if (offset == 0) {
-                    val main = try {
-                        RetrofitInstance.api.getMatches()
-                    } catch (_: Exception) {
-                        emptyList()
-                    }
-                    if (main.isNotEmpty()) {
-                        main
-                    } else {
-                        try {
+                val list = withContext(Dispatchers.IO) {
+                    if (offset == 0) {
+                        val main = try {
+                            RetrofitInstance.api.getMatches()
+                        } catch (_: Exception) {
+                            emptyList()
+                        }
+                        if (main.isNotEmpty()) main
+                        else try {
                             RetrofitInstance.api.getMatchesByDate(dateIso)
                         } catch (_: Exception) {
                             emptyList()
                         }
+                    } else {
+                        RetrofitInstance.api.getMatchesByDate(dateIso)
                     }
-                } else {
-                    RetrofitInstance.api.getMatchesByDate(dateIso)
                 }
                 if (list.isNotEmpty()) {
                     _matches.value = list
                     _loadError.value = null
                     _fromCache.value = false
-                    MatchCache.save(getApplication(), dateIso, list)
+                    withContext(Dispatchers.IO) {
+                        MatchCache.save(getApplication(), dateIso, list)
+                    }
                 } else if (_matches.value.isEmpty()) {
-                    // Üres válasz – próbáljunk cache-t
                     val cached = MatchCache.load(getApplication(), dateIso)
                     if (cached.isNotEmpty()) {
                         _matches.value = cached
@@ -149,7 +159,8 @@ class MatchViewModel(app: Application) : AndroidViewModel(app) {
                     }
                 }
             } finally {
-                if (showLoading) _isLoading.value = false
+                _isLoading.value = false
+                _isRefreshing.value = false
             }
         }
     }
@@ -159,7 +170,9 @@ class MatchViewModel(app: Application) : AndroidViewModel(app) {
             _isLoadingAi.value = true
             _aiAnalysis.value = null
             try {
-                val r = RetrofitInstance.api.getAiAnalysis(matchId)
+                val r = withContext(Dispatchers.IO) {
+                    RetrofitInstance.api.getAiAnalysis(matchId)
+                }
                 val direct = try {
                     r.analysis.takeIf { it.isNotBlank() }
                 } catch (_: Exception) {
@@ -193,7 +206,7 @@ class MatchViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun retry() {
-        fetchMatches(showLoading = true)
+        fetchMatches(showLoading = _matches.value.isEmpty())
     }
 
     fun clearAiAnalysis() {
