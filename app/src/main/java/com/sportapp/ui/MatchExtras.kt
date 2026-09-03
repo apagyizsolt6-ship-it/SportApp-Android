@@ -6,6 +6,8 @@ import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
@@ -467,10 +469,14 @@ fun WhoWinsVote(
                             fontWeight = FontWeight.Black,
                             fontSize = 14.sp
                         )
-                        Text(label, color = sub, fontSize = 9.sp, maxLines = 1)
+                        Text(label, color = sub, fontSize = 10.sp, maxLines = 1)
                     }
                 }
             }
+        }
+        if (vote != null) {
+            Spacer(modifier = Modifier.height(6.dp))
+            Text("Szavazatod: $vote", color = green, fontSize = 11.sp)
         }
     }
 }
@@ -492,106 +498,222 @@ fun PlayerCardDialogWithOpen(
     val name = player.name ?: "Játékos"
     val bench = player.isBench == true
     val pid = player.playerId?.trim().orEmpty()
-    var summaryText by remember { mutableStateOf<String?>(null) }
-    var statMap by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
-    var photoUrl by remember { mutableStateOf<String?>(null) }
+    var summary by remember { mutableStateOf<com.sportapp.api.PlayerSummaryResponse?>(null) }
     var loading by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(pid) {
         if (pid.isBlank()) return@LaunchedEffect
         loading = true
+        error = null
         try {
-            val s = RetrofitInstance.api.getPlayerSummary(pid)
-            photoUrl = s.photo
-            if (s.available == true) {
-                val sb = StringBuilder()
-                s.season?.let { sb.appendLine("Szezon: $it") }
-                s.team?.let { sb.appendLine("Csapat: $it") }
-                s.position?.let { sb.appendLine("Poszt: $it") }
-                val st = s.stats.orEmpty()
-                val mapped = linkedMapOf<String, String>()
-                fun pick(vararg keys: String, label: String) {
-                    for (k in keys) {
-                        val v = st[k] ?: st.entries.find { it.key.equals(k, true) }?.value
-                        if (v != null) {
-                            mapped[label] = v.toString()
-                            return
-                        }
-                    }
-                }
-                pick("goals", "goal", "Goals", label = "Gól")
-                pick("assists", "assist", "Assists", label = "Gólpassz")
-                pick("appearances", "games", "apps", label = "Meccs")
-                pick("minutes", "Minutes", label = "Perc")
-                pick("yellowCards", "yellow", "Yellow", label = "Sárga")
-                pick("redCards", "red", "Red", label = "Piros")
-                pick("rating", "Rating", label = "Rating")
-                st.entries.forEach { (k, v) ->
-                    if (mapped.size < 10 && mapped.values.none { it == v.toString() }) {
-                        if (k !in mapped) mapped[k] = v.toString()
-                    }
-                }
-                statMap = mapped
-                if (mapped.isEmpty()) {
-                    st.entries.take(12).forEach { (k, v) -> sb.appendLine("• $k: $v") }
-                }
-                summaryText = sb.toString().ifBlank { s.message }
-            } else {
-                summaryText = s.message ?: "Nincs szezonadat."
-            }
+            summary = RetrofitInstance.api.getPlayerSummary(pid)
         } catch (e: Exception) {
-            summaryText = "Stat betöltés sikertelen: ${e.message}"
+            error = e.message
         } finally {
             loading = false
         }
     }
 
+    fun anyToStr(v: Any?): String {
+        if (v == null) return "–"
+        return when (v) {
+            is Number -> {
+                val d = v.toDouble()
+                if (d == d.toLong().toDouble()) d.toLong().toString() else String.format("%.2f", d)
+            }
+            else -> v.toString().ifBlank { "–" }
+        }
+    }
+
+    fun statLabel(key: String): String = when (key.lowercase()) {
+        "goals", "goal" -> "Gól"
+        "assists", "assist" -> "Gólpassz"
+        "appearances", "games" -> "Meccs"
+        "minutes", "minutes_played" -> "Perc"
+        "starting_lineups" -> "Kezdő"
+        "yellowcards", "yellow", "yellowcards" -> "Sárga"
+        "redcards", "red" -> "Piros"
+        "shots_total", "shots" -> "Lövés"
+        "shots_on_target" -> "Kapura"
+        "key_passes" -> "Kulcspassz"
+        "rating" -> "Értékelés"
+        "tackles" -> "Szerelés"
+        "interceptions" -> "Intercept"
+        "duels_won" -> "Párbaj+"
+        "pen_scored" -> "11-es gól"
+        "saves" -> "Védés"
+        "goals_conceded" -> "Kapott gól"
+        else -> key
+    }
+
+    fun buildStatMap(raw: Map<String, Any?>?): List<Pair<String, String>> {
+        if (raw.isNullOrEmpty()) return emptyList()
+        val order = listOf(
+            "goals", "assists", "appearances", "minutes_played", "minutes",
+            "yellowcards", "yellowCards", "redcards", "redCards",
+            "shots_total", "shots_on_target", "rating", "key_passes", "tackles"
+        )
+        val out = linkedMapOf<String, String>()
+        for (k in order) {
+            val v = raw[k]
+            if (v != null && v.toString().isNotBlank()) {
+                out[statLabel(k)] = anyToStr(v)
+            }
+        }
+        raw.forEach { (k, v) ->
+            if (v != null && v.toString().isNotBlank() && out.size < 12) {
+                val lab = statLabel(k)
+                if (!out.containsKey(lab)) out[lab] = anyToStr(v)
+            }
+        }
+        return out.entries.map { it.key to it.value }
+    }
+
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(name, fontWeight = FontWeight.Bold) },
+        title = {
+            Column {
+                Text(summary?.name ?: name, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                Text(
+                    "Mez $num · $pos · ${if (bench) "Cserepad" else "Kezdő"}",
+                    fontSize = 12.sp,
+                    color = Color(0xFF9BB0C9)
+                )
+            }
+        },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Csapat: ${teamHint.ifBlank { "–" }}", fontSize = 13.sp)
-                Text("Mez: $num  ·  Poszt: $pos  ·  ${if (bench) "Cserepad" else "Kezdő"}", fontSize = 13.sp)
-                if (pid.isNotBlank()) {
-                    Text("ID: $pid", fontSize = 10.sp, color = Color(0xFF9BB0C9))
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 480.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                val team = summary?.team ?: teamHint
+                if (team.isNotBlank()) {
+                    Text("Csapat: $team", fontSize = 13.sp, color = Color(0xFFF0F6FF))
                 }
+                summary?.season?.let {
+                    Text("Szezon: $it", fontSize = 12.sp, color = Color(0xFF9BB0C9))
+                }
+                summary?.source?.let {
+                    Text("Forrás: $it", fontSize = 10.sp, color = Color(0xFF6B7C93))
+                }
+
+                // Bio
+                val bio = summary?.bio.orEmpty()
+                if (bio.isNotEmpty()) {
+                    Text("Profil", fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = Color(0xFF00E5A8))
+                    val bioLine = buildList {
+                        bio["age"]?.let { add("Kor: ${anyToStr(it)}") }
+                        bio["nationality"]?.let { add(anyToStr(it)) }
+                        bio["height"]?.let { add("${anyToStr(it)} cm") }
+                        bio["weight"]?.let { add("${anyToStr(it)} kg") }
+                        bio["preferred_foot"]?.let { add("Láb: ${anyToStr(it)}") }
+                        bio["birthdate"]?.let { add("Szül.: ${anyToStr(it)}") }
+                        bio["market_value_eur"]?.let {
+                            val mv = anyToStr(it)
+                            if (mv != "–") add("Érték: $mv €")
+                        }
+                    }.joinToString(" · ")
+                    if (bioLine.isNotBlank()) {
+                        Text(bioLine, fontSize = 12.sp, color = Color(0xFF9BB0C9))
+                    }
+                }
+
                 when {
-                    loading -> Text("Szezonstat betöltése…", fontSize = 12.sp, color = Color(0xFF9BB0C9))
-                    statMap.isNotEmpty() -> {
-                        // Stat kártyák
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            statMap.entries.take(4).forEach { (label, value) ->
-                                Column(
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .background(Color(0xFF1A2D4D))
-                                        .padding(8.dp),
-                                    horizontalAlignment = Alignment.CenterHorizontally
+                    loading -> {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                strokeWidth = 2.dp,
+                                color = Color(0xFF00E5A8)
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text("Adatlap betöltése…", fontSize = 12.sp, color = Color(0xFF9BB0C9))
+                        }
+                    }
+                    error != null -> Text("Hiba: $error", fontSize = 12.sp, color = Color(0xFFFF8A80))
+                    summary?.available == true -> {
+                        val cards = buildStatMap(summary?.stats)
+                        if (cards.isNotEmpty()) {
+                            Text("Szezon stat", fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = Color(0xFF00E5A8))
+                            cards.chunked(4).forEach { row ->
+                                Row(
+                                    Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
-                                    Text(value, color = Color(0xFF00E5A8), fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                                    Text(label, color = Color(0xFF9BB0C9), fontSize = 10.sp, maxLines = 1)
+                                    row.forEach { (lab, value) ->
+                                        Column(
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .background(Color(0xFF1A2D4D))
+                                                .padding(8.dp),
+                                            horizontalAlignment = Alignment.CenterHorizontally
+                                        ) {
+                                            Text(value, color = Color(0xFF00E5A8), fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                                            Text(lab, color = Color(0xFF9BB0C9), fontSize = 10.sp, maxLines = 1)
+                                        }
+                                    }
+                                    repeat(4 - row.size) { Spacer(Modifier.weight(1f)) }
                                 }
                             }
                         }
-                        if (statMap.size > 4) {
+
+                        val overall = buildStatMap(summary?.overall)
+                        if (overall.isNotEmpty()) {
+                            Text("Karrier (klub)", fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = Color(0xFF00E5A8))
                             Text(
-                                statMap.entries.drop(4).joinToString(" · ") { "${it.key}: ${it.value}" },
+                                overall.joinToString(" · ") { "${it.first}: ${it.second}" },
                                 fontSize = 11.sp,
                                 color = Color(0xFF9BB0C9)
                             )
                         }
-                        if (!summaryText.isNullOrBlank()) {
-                            Text(summaryText!!, fontSize = 11.sp, color = Color(0xFF9BB0C9))
+
+                        val leagues = summary?.leagueStats.orEmpty()
+                        if (leagues.isNotEmpty()) {
+                            Text("Bajnokságok", fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = Color(0xFF00E5A8))
+                            leagues.take(5).forEach { row ->
+                                val lg = row["league"]?.toString().orEmpty()
+                                val season = row["season"]?.toString().orEmpty()
+                                val teamN = row["team"]?.toString().orEmpty()
+                                @Suppress("UNCHECKED_CAST")
+                                val st = row["stats"] as? Map<String, Any?>
+                                val g = st?.get("goals") ?: st?.get("goal")
+                                val a = st?.get("assists") ?: st?.get("assist")
+                                val apps = st?.get("appearances") ?: st?.get("games")
+                                Text(
+                                    buildString {
+                                        if (season.isNotBlank()) append("$season · ")
+                                        if (lg.isNotBlank()) append(lg)
+                                        if (teamN.isNotBlank()) append(" ($teamN)")
+                                        append(" — ")
+                                        append("G ${anyToStr(g)} · A ${anyToStr(a)} · M ${anyToStr(apps)}")
+                                    },
+                                    fontSize = 11.sp,
+                                    color = Color(0xFFCFD8E6)
+                                )
+                            }
+                        }
+
+                        val transfers = summary?.transfers.orEmpty()
+                        if (transfers.isNotEmpty()) {
+                            Text("Transzferek", fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = Color(0xFF00E5A8))
+                            transfers.take(6).forEach { tr ->
+                                val line = tr.entries.take(4).joinToString(" · ") { "${it.key}: ${anyToStr(it.value)}" }
+                                Text("• $line", fontSize = 10.sp, color = Color(0xFF9BB0C9))
+                            }
                         }
                     }
-                    !summaryText.isNullOrBlank() -> Text(summaryText!!, fontSize = 12.sp)
+                    pid.isBlank() -> Text(
+                        "Nincs player_id – a kezdő11 nem adta át a játékos azonosítót.",
+                        fontSize = 12.sp,
+                        color = Color(0xFF9BB0C9)
+                    )
                     else -> Text(
-                        "Nincs player_id – a Highlightly nem adta át a játékos azonosítót.",
+                        summary?.message ?: "Nincs elérhető játékosadat.",
                         fontSize = 12.sp,
                         color = Color(0xFF9BB0C9)
                     )
@@ -600,7 +722,7 @@ fun PlayerCardDialogWithOpen(
         },
         confirmButton = {
             TextButton(onClick = {
-                onYoutube("$name $teamHint football")
+                onYoutube("${summary?.name ?: name} ${summary?.team ?: teamHint} football")
             }) { Text("YouTube") }
         },
         dismissButton = {
