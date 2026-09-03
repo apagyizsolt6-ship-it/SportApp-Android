@@ -14,7 +14,7 @@ STATPAL_KEY = os.getenv("STATPAL_KEY")
 HIGHLIGHTLY_KEY = os.getenv("HIGHLIGHTLY_KEY")
 GEMINI_KEY = os.getenv("GEMINI_KEY") or os.getenv("GOOGLE_API_KEY")
 
-STATPAL_CACHE_TTL = 25
+STATPAL_CACHE_TTL = 40
 HIGHLIGHTLY_CACHE_TTL = 90
 TEAM_IMAGE_CACHE_TTL = 21600
 IMAGE_PROXY_BASE_URL = os.getenv(
@@ -193,7 +193,7 @@ _lineups_cache = {}
 _stats_cache = {}
 _hl_date_cache = {}
 _matches_list_cache = {"data": None, "ts": 0}
-MATCHES_LIST_TTL = 25
+MATCHES_LIST_TTL = 45
 _hl_h2h_cache = {}
 _hl_form_cache = {}
 _odds_cache_hits = 0
@@ -2348,7 +2348,7 @@ def get_matches(force: int = 0):
     )
     if cache_ok and cache_age < MATCHES_LIST_TTL:
         return cached_list
-    if force == 0 and cache_ok and cache_age < 120:
+    if force == 0 and cache_ok and cache_age < 180:
         def _bg_refresh_matches():
             try:
                 get_matches(force=1)
