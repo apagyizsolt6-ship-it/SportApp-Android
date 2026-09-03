@@ -1,8 +1,5 @@
 package com.sportapp.ui
 
-/** Compose Text() soha ne kapjon null-t. */
-fun safeText(s: String?): String = s?.trim().orEmpty()
-
 import android.app.AlarmManager
 import android.app.PendingIntent
 import android.content.Intent
@@ -14,6 +11,9 @@ import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import java.util.Calendar
 import java.util.Locale
+
+/** Compose Text() soha ne kapjon null-t. */
+fun safeText(s: String?): String = s?.trim().orEmpty()
 
 internal fun isMatchFinished(status: String?): Boolean {
     val s = status?.trim()?.uppercase()?.replace(".", "")?.replace(" ", "") ?: return false

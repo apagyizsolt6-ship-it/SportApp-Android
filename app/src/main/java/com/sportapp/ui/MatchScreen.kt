@@ -359,6 +359,8 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
     }
     var onlyPinnedLeagues by remember { mutableStateOf(false) }
     var onlyFavorites by remember { mutableStateOf(false) }
+    var onlyFollowed by remember { mutableStateOf(false) }
+    var showSettings by remember { mutableStateOf(false) }
     var onlyTopLeagues by remember { mutableStateOf(false) }
     var onlyNext60 by remember { mutableStateOf(false) }
 
