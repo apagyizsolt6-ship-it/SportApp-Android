@@ -65,6 +65,7 @@ import com.sportapp.models.StatisticsResponse
 import coil.compose.SubcomposeAsyncImage
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import androidx.lifecycle.viewmodel.compose.viewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -75,7 +76,8 @@ fun MatchDetailDialog(
     onFavoriteToggle: () -> Unit,
     onDismiss: () -> Unit,
     onVideoClick: (HighlightVideo) -> Unit,
-    onAddOddsToTicket: (market: String, pick: String, odds: Double?) -> Unit = { _, _, _ -> }
+    onAddOddsToTicket: (market: String, pick: String, odds: Double?) -> Unit = { _, _, _ -> },
+    detailVm: MatchDetailViewModel = viewModel()
 ) {
     // Kék üveg paletta – egyezik a MatchScreen-nel
     val bg = if (isDarkMode) Color(0xFF0B1426) else Color(0xFFE8F1FF)
@@ -85,6 +87,9 @@ fun MatchDetailDialog(
     val green = Color(0xFF00E5A8)
     val accent = Color(0xFF4DA3FF)
     val glassBorder = if (isDarkMode) Color(0x33A0C4FF) else Color(0x55FFFFFF)
+
+    val ui by detailVm.state.collectAsState()
+    LaunchedEffect(match.id) { detailVm.start(match) }
 
     var selectedTab by remember { mutableIntStateOf(0) }
     val ctx = LocalContext.current
@@ -97,191 +102,33 @@ fun MatchDetailDialog(
     var previousTab by remember { mutableIntStateOf(0) }
     val tabs = listOf("Összefoglaló", "Események", "Statisztika", "Összeállítás", "Videók", "Tabella")
 
-    var detail by remember { mutableStateOf(match) }
-    var events by remember { mutableStateOf(match.events.orEmpty()) }
-    var stats by remember { mutableStateOf<List<StatItem>>(emptyList()) }
-    var lineups by remember { mutableStateOf<LineupsResponse?>(null) }
-    var videos by remember { mutableStateOf<List<HighlightVideo>>(emptyList()) }
-    var oddsHomeUi by remember { mutableStateOf(match.oddsHome) }
-    var oddsDrawUi by remember { mutableStateOf(match.oddsDraw) }
-    var oddsAwayUi by remember { mutableStateOf(match.oddsAway) }
-    var oddsSource by remember { mutableStateOf<String?>(null) }
-    var oddsMarkets by remember { mutableStateOf<List<Map<String, Any?>>>(emptyList()) }
-    var standings by remember { mutableStateOf<List<StandingTeam>>(emptyList()) }
-    var loadingTab by remember { mutableStateOf(false) }
-    var errorMsg by remember { mutableStateOf<String?>(null) }
+    // Adatok a ViewModel-ből (egy forrás)
+    val detail = ui.detail ?: match
+    val events = ui.events.ifEmpty { match.events.orEmpty() }
+    val stats = ui.stats
+    val lineups = ui.lineups
+    val videos = ui.videos
+    val oddsHomeUi = ui.oddsHome
+    val oddsDrawUi = ui.oddsDraw
+    val oddsAwayUi = ui.oddsAway
+    val oddsSource = ui.oddsSource
+    val oddsMarkets = ui.oddsMarkets
+    val standings = ui.standings
+    val loadingTab = ui.loadingTab
+    val errorMsg = ui.errorMsg
+    val h2h = ui.h2h
+    val form = ui.form
+    val aiText = ui.aiText
+    val showAi = ui.showAi
+    val isRefreshing = ui.isRefreshing
+    val lastRefreshedAt = ui.lastRefreshedAt
 
     val scope = rememberCoroutineScope()
     val hlId = (detail.highlightMatchId ?: match.highlightMatchId)?.trim().orEmpty()
-    var h2h by remember { mutableStateOf<H2hResponse?>(null) }
-    var form by remember { mutableStateOf<FormResponse?>(null) }
-    var aiText by remember { mutableStateOf<String?>(null) }
-    var showAi by remember { mutableStateOf(false) }
     val context = LocalContext.current
 
-    // Élő frissítés: score + events 20 mp-enként, amíg a részlet nyitva van.
-    // A lista ViewModel TTL-jével összhangban (backend cache 20 mp).
-    var isRefreshing by remember { mutableStateOf(false) }
-    var lastRefreshedAt by remember { mutableStateOf<Long?>(null) }
-
-    LaunchedEffect(match.id) {
-        // Első betöltés azonnal, utána 20 mp ciklus
-        while (true) {
-            try {
-                isRefreshing = true
-                val d = RetrofitInstance.api.getMatchDetail(match.id)
-                detail = d
-                if (!d.events.isNullOrEmpty()) {
-                    events = d.events.orEmpty()
-                } else if (events.isEmpty() && !match.events.isNullOrEmpty()) {
-                    events = match.events.orEmpty()
-                }
-                lastRefreshedAt = System.currentTimeMillis()
-                // H2H egyszer (vagy ha üres)
-                if (h2h == null) {
-                    try {
-                        h2h = RetrofitInstance.api.getMatchH2h(match.id)
-                    } catch (_: Exception) {
-                    }
-                }
-                if (form == null) {
-                    try {
-                        form = RetrofitInstance.api.getMatchForm(match.id)
-                    } catch (_: Exception) {
-                    }
-                }
-            } catch (_: Exception) {
-                // hálózati hiba: megtartjuk az utolsó ismert adatot
-            } finally {
-                isRefreshing = false
-            }
-
-            // Ha a meccs már vége, ne spammeljük feleslegesen az API-t
-            val finished = detail.status == "FT" || detail.status == "info" || detail.status == "error"
-            if (finished) break
-
-            delay(30_000L)
-        }
-    }
-
-    // Élő meccs + Statisztika tab: stats is 20 mp-enként
-    LaunchedEffect(match.id) {
-        try {
-            val o = RetrofitInstance.api.getMatchOdds(match.id)
-            fun num(key: String): Double? {
-                val v = o[key] ?: return null
-                return when (v) {
-                    is Number -> v.toDouble()
-                    is String -> v.toDoubleOrNull()
-                    else -> null
-                }
-            }
-            oddsHomeUi = num("odds_home")
-            oddsDrawUi = num("odds_draw")
-            oddsAwayUi = num("odds_away")
-            oddsSource = o["source"]?.toString()
-            val rawMarkets = o["markets"]
-            if (rawMarkets is List<*>) {
-                oddsMarkets = rawMarkets.mapNotNull { item ->
-                    if (item is Map<*, *>) {
-                        item.entries.associate { (k, v) -> k.toString() to v }
-                    } else null
-                }
-            }
-        } catch (_: Exception) {
-        }
-    }
-
-    LaunchedEffect(match.id, selectedTab, detail.status) {
-        val live = detail.status != "FT"
-                && detail.status != "NS"
-                && detail.status != "info"
-                && detail.status != "error"
-        if (selectedTab != 2 || !live || hlId.isBlank()) return@LaunchedEffect
-        while (true) {
-            try {
-                val r = RetrofitInstance.api.getMatchStatistics(hlId)
-                if (!r.items.isNullOrEmpty()) {
-                    stats = r.items.orEmpty()
-                    errorMsg = null
-                }
-            } catch (_: Exception) {
-            }
-            delay(30_000L)
-            if (detail.status == "FT") break
-        }
-    }
-
-    fun loadTab(index: Int) {
-        scope.launch {
-            loadingTab = true
-            errorMsg = null
-            try {
-                when (index) {
-                    2 -> { // stats
-                        if (stats.isEmpty()) {
-                            val r = try {
-                                if (hlId.isNotBlank()) {
-                                    RetrofitInstance.api.getMatchStatistics(hlId)
-                                } else {
-                                    RetrofitInstance.api.getMatchStatisticsByMatchId(match.id)
-                                }
-                            } catch (_: Exception) {
-                                RetrofitInstance.api.getMatchStatisticsByMatchId(match.id)
-                            }
-                            stats = r.items.orEmpty()
-                            if (stats.isEmpty()) {
-                                errorMsg = "Ehhez a meccshez még nincs statisztika (alsóbb ligáknál gyakran hiányzik)."
-                            }
-                        }
-                    }
-                    3 -> { // lineups
-                        if (lineups == null || lineups?.available != true) {
-                            lineups = try {
-                                if (hlId.isNotBlank()) {
-                                    RetrofitInstance.api.getMatchLineups(hlId)
-                                } else {
-                                    RetrofitInstance.api.getMatchLineupsByMatchId(match.id)
-                                }
-                            } catch (_: Exception) {
-                                RetrofitInstance.api.getMatchLineupsByMatchId(match.id)
-                            }
-                            if (lineups?.available != true) {
-                                errorMsg = "Az összeállítás ehhez a meccshez nem érhető el."
-                            }
-                        }
-                    }
-                    4 -> { // videos
-                        if (hlId.isNotBlank() && videos.isEmpty()) {
-                            videos = RetrofitInstance.api.getMatchHighlights(hlId)
-                                .filter { !it.embedUrl.isNullOrBlank() || !it.url.isNullOrBlank() }
-                                .sortedWith(
-                                    compareByDescending<HighlightVideo> {
-                                        it.category.equals("goal-clip", ignoreCase = true)
-                                    }.thenBy { it.title.orEmpty() }
-                                )
-                            if (videos.isEmpty()) errorMsg = "Nincs elérhető videó."
-                        } else if (hlId.isBlank()) {
-                            errorMsg = "Nincs Highlightly videó ehhez a meccshez."
-                        }
-                    }
-                    5 -> { // standings
-                        val lid = match.leagueId.orEmpty().trim()
-                        if (lid.isNotBlank() && standings.isEmpty()) {
-                            standings = RetrofitInstance.api.getStandings(lid)
-                            if (standings.isEmpty()) errorMsg = "Tabella nem elérhető."
-                        } else if (lid.isBlank()) {
-                            errorMsg = "Nincs liga azonosító."
-                        }
-                    }
-                }
-            } catch (e: Exception) {
-                errorMsg = "Betöltési hiba: ${e.message?.take(40) ?: "ismeretlen"}"
-            } finally {
-                loadingTab = false
-            }
-        }
-    }
+    // Tab váltás → ViewModel tölti a tartalmat
+    // (a UI selectedTab és a VM selectedTab szinkronban)
 
     Dialog(
         onDismissRequest = onDismiss,
@@ -346,39 +193,14 @@ fun MatchDetailDialog(
                         text = "🔄",
                         fontSize = 16.sp,
                         modifier = Modifier
-                            .clickable {
-                                scope.launch {
-                                    try {
-                                        isRefreshing = true
-                                        val d = RetrofitInstance.api.getMatchDetail(match.id)
-                                        detail = d
-                                        if (!d.events.isNullOrEmpty()) events = d.events.orEmpty()
-                                        h2h = RetrofitInstance.api.getMatchH2h(match.id)
-                                        lastRefreshedAt = System.currentTimeMillis()
-                                    } catch (_: Exception) {
-                                    } finally {
-                                        isRefreshing = false
-                                    }
-                                }
-                            }
+                            .clickable { detailVm.refreshNow() }
                             .padding(horizontal = 6.dp)
                     )
                     Text(
                         text = "🤖",
                         fontSize = 18.sp,
                         modifier = Modifier
-                            .clickable {
-                                scope.launch {
-                                    showAi = true
-                                    aiText = null
-                                    try {
-                                        val r = RetrofitInstance.api.getAiAnalysis(match.id)
-                                        aiText = extractAiText(r)
-                                    } catch (e: Exception) {
-                                        aiText = "AI nem elérhető."
-                                    }
-                                }
-                            }
+.clickable { detailVm.loadAi() }
                             .padding(horizontal = 6.dp)
                     )
                     Text(
@@ -473,7 +295,7 @@ fun MatchDetailDialog(
                             onClick = {
                                 previousTab = selectedTab
                                 selectedTab = index
-                                loadTab(index)
+                                detailVm.selectTab(index)
                             },
                             text = {
                                 Text(
@@ -758,7 +580,7 @@ fun MatchDetailDialog(
 
         if (showAi) {
             AlertDialog(
-                onDismissRequest = { showAi = false },
+                onDismissRequest = { detailVm.dismissAi() },
                 title = {
                     Text("🤖 AI elemzés", fontWeight = FontWeight.Bold, color = green)
                 },
@@ -770,7 +592,7 @@ fun MatchDetailDialog(
                     }
                 },
                 confirmButton = {
-                    TextButton(onClick = { showAi = false }) {
+                    TextButton(onClick = { detailVm.dismissAi() }) {
                         Text("Bezárás", color = green)
                     }
                 }
@@ -881,7 +703,7 @@ private fun huStatName(raw: String?): String {
     return raw.trim()
 }
 
-private fun extractAiText(r: Any): String {
+internal fun extractAiText(r: Any): String {
     val preferred = listOf(
         "summary", "analysis", "text", "message", "content",
         "result", "prediction", "output", "answer"

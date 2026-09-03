@@ -1,6 +1,7 @@
 package com.sportapp.ui
 
-import androidx.lifecycle.ViewModel
+import android.app.Application
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.sportapp.api.RetrofitInstance
 import com.sportapp.models.MatchResponse
@@ -9,12 +10,12 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
 import java.time.LocalDate
 import java.util.Calendar
-import java.text.SimpleDateFormat
 import java.util.Locale
 
-class MatchViewModel : ViewModel() {
+class MatchViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _matches = MutableStateFlow<List<MatchResponse>>(emptyList())
     val matches: StateFlow<List<MatchResponse>> = _matches
@@ -25,31 +26,48 @@ class MatchViewModel : ViewModel() {
     private val _loadError = MutableStateFlow<String?>(null)
     val loadError: StateFlow<String?> = _loadError
 
+    private val _fromCache = MutableStateFlow(false)
+    val fromCache: StateFlow<Boolean> = _fromCache
+
     private val _aiAnalysis = MutableStateFlow<String?>(null)
     val aiAnalysis: StateFlow<String?> = _aiAnalysis
 
     private val _isLoadingAi = MutableStateFlow(false)
     val isLoadingAi: StateFlow<Boolean> = _isLoadingAi
 
-    /** Élő meccsnél sűrűbb poll, egyébként kímélőbb. */
     private val REFRESH_INTERVAL_MS = 15_000L
     private val REFRESH_IDLE_MS = 35_000L
 
-    /** 0 = ma; -1 tegnap; +1 holnap … */
     private var dayOffset: Int = 0
     private var autoJob: Job? = null
 
     init {
+        // Offline: azonnal töltsük a cache-t, ha van
+        val cached = MatchCache.load(getApplication(), dateForOffset(0))
+        if (cached.isNotEmpty()) {
+            _matches.value = cached
+            _fromCache.value = true
+            _isLoading.value = false
+        }
         startAutoRefresh()
     }
 
     fun setDayOffset(offset: Int) {
         if (dayOffset == offset) {
-            // Ugyanaz a nap – ha üres a lista, próbáljuk újra
             if (_matches.value.isEmpty()) fetchMatches(showLoading = true)
             return
         }
         dayOffset = offset
+        // Másik nap: próbáljunk cache-t
+        val cached = MatchCache.load(getApplication(), dateForOffset(offset))
+        if (cached.isNotEmpty()) {
+            _matches.value = cached
+            _fromCache.value = true
+            _loadError.value = null
+        } else {
+            _matches.value = emptyList()
+            _fromCache.value = false
+        }
         fetchMatches(showLoading = true)
         autoJob?.cancel()
         if (offset == 0) startAutoRefresh()
@@ -85,8 +103,8 @@ class MatchViewModel : ViewModel() {
             if (showLoading && _matches.value.isEmpty()) _isLoading.value = true
             try {
                 val offset = dayOffset
+                val dateIso = dateForOffset(offset)
                 val list = if (offset == 0) {
-                    // Ma: először a gazdag StatPal lista (/api/matches)
                     val main = try {
                         RetrofitInstance.api.getMatches()
                     } catch (_: Exception) {
@@ -95,22 +113,40 @@ class MatchViewModel : ViewModel() {
                     if (main.isNotEmpty()) {
                         main
                     } else {
-                        // Fallback: by-date
                         try {
-                            RetrofitInstance.api.getMatchesByDate(dateForOffset(0))
+                            RetrofitInstance.api.getMatchesByDate(dateIso)
                         } catch (_: Exception) {
                             emptyList()
                         }
                     }
                 } else {
-                    RetrofitInstance.api.getMatchesByDate(dateForOffset(offset))
+                    RetrofitInstance.api.getMatchesByDate(dateIso)
                 }
-                _matches.value = list
-                _loadError.value = null
+                if (list.isNotEmpty()) {
+                    _matches.value = list
+                    _loadError.value = null
+                    _fromCache.value = false
+                    MatchCache.save(getApplication(), dateIso, list)
+                } else if (_matches.value.isEmpty()) {
+                    // Üres válasz – próbáljunk cache-t
+                    val cached = MatchCache.load(getApplication(), dateIso)
+                    if (cached.isNotEmpty()) {
+                        _matches.value = cached
+                        _fromCache.value = true
+                        _loadError.value = "Offline cache – nincs friss adat"
+                    }
+                }
             } catch (e: Exception) {
                 e.printStackTrace()
                 if (_matches.value.isEmpty()) {
-                    _loadError.value = e.message ?: "Hálózati hiba"
+                    val cached = MatchCache.load(getApplication(), dateForOffset(dayOffset))
+                    if (cached.isNotEmpty()) {
+                        _matches.value = cached
+                        _fromCache.value = true
+                        _loadError.value = "Offline mód – cache betöltve"
+                    } else {
+                        _loadError.value = e.message ?: "Hálózati hiba"
+                    }
                 }
             } finally {
                 if (showLoading) _isLoading.value = false
@@ -124,7 +160,6 @@ class MatchViewModel : ViewModel() {
             _aiAnalysis.value = null
             try {
                 val r = RetrofitInstance.api.getAiAnalysis(matchId)
-                // AiAnalysisResponse.analysis – elsődleges
                 val direct = try {
                     r.analysis.takeIf { it.isNotBlank() }
                 } catch (_: Exception) {
