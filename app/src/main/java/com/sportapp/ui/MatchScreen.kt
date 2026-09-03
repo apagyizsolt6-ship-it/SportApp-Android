@@ -124,8 +124,8 @@ internal fun matchesSmartSearch(match: MatchResponse, query: String): Boolean {
     if (query.isBlank()) return true
     val q = query.trim().lowercase()
     val league = match.league.orEmpty().lowercase()
-    val home = match.homeTeam.lowercase()
-    val away = match.awayTeam.lowercase()
+    val home = match.homeTeam.orEmpty().lowercase()
+    val away = match.awayTeam.orEmpty().lowercase()
     if (home.contains(q) || away.contains(q) || league.contains(q)) return true
     val aliases = mapOf(
         "pl" to listOf("premier league"),
@@ -186,7 +186,7 @@ private fun scheduleMatchReminder(context: android.content.Context, match: Match
         putExtra(MatchReminderReceiver.EXTRA_TITLE, "⚽ Hamarosan kezdődik")
         putExtra(
             MatchReminderReceiver.EXTRA_BODY,
-            "${match.homeTeam} vs ${match.awayTeam} · ${match.kickoffTime ?: timeStr}"
+            "${match.homeTeam.orEmpty()} vs ${match.awayTeam.orEmpty()} · ${match.kickoffTime ?: timeStr}"
         )
         putExtra(MatchReminderReceiver.EXTRA_MATCH_ID, match.id)
     }
@@ -413,7 +413,7 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
         }
         val score = "${m.homeScore ?: "-"} : ${m.awayScore ?: "-"}"
         val text = buildString {
-            append("⚽ ${m.homeTeam} $score ${m.awayTeam}\n")
+            append("⚽ ${m.homeTeam.orEmpty()} $score ${m.awayTeam.orEmpty()}\n")
             append("🏆 ${m.league ?: ""}\n")
             append("⏱ $status\n")
             if (m.oddsHome != null) {
@@ -587,7 +587,7 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                     val n = androidx.core.app.NotificationCompat.Builder(context, "sportapp_goals")
                         .setSmallIcon(android.R.drawable.ic_menu_compass)
                         .setContentTitle("⚽ GÓL")
-                        .setContentText("${m.homeTeam} $score ${m.awayTeam}")
+                        .setContentText("${m.homeTeam.orEmpty()} $score ${m.awayTeam.orEmpty()}")
                         .setPriority(androidx.core.app.NotificationCompat.PRIORITY_HIGH)
                         .setAutoCancel(true)
                         .setOnlyAlertOnce(true)
@@ -4997,7 +4997,7 @@ private fun MediaMatchCard(
 
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = "${match.homeTeam} vs ${match.awayTeam}",
+                text = "${match.homeTeam.orEmpty()} vs ${match.awayTeam.orEmpty()}",
                 color = textColor,
                 fontSize = 13.sp,
                 fontWeight = FontWeight.SemiBold,

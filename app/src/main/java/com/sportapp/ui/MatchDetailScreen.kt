@@ -266,7 +266,7 @@ fun MatchDetailDialog(
                         }
                     }
                     5 -> { // standings
-                        val lid = match.leagueId.trim()
+                        val lid = match.leagueId.orEmpty().trim()
                         if (lid.isNotBlank() && standings.isEmpty()) {
                             standings = RetrofitInstance.api.getStandings(lid)
                             if (standings.isEmpty()) errorMsg = "Tabella nem elérhető."
@@ -390,7 +390,7 @@ fun MatchDetailDialog(
                             .clickable {
                                 val score = "${detail.homeScore ?: 0}–${detail.awayScore ?: 0}"
                                 val min = detail.minute?.takeIf { it > 0 }?.let { " ($it')" } ?: ""
-                                val body = "${detail.homeTeam} $score ${detail.awayTeam}$min\n${detail.league.orEmpty()}"
+                                val body = "${detail.homeTeam.orEmpty()} $score ${detail.awayTeam.orEmpty()}$min\n${detail.league.orEmpty()}"
                                 val intent = Intent(Intent.ACTION_SEND).apply {
                                     type = "text/plain"
                                     putExtra(Intent.EXTRA_TEXT, body)
@@ -551,7 +551,7 @@ fun MatchDetailDialog(
                         .padding(10.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    listOf(detail.homeTeam, detail.awayTeam).forEach { teamName ->
+                    listOfNotNull(detail.homeTeam?.takeIf { it.isNotBlank() }, detail.awayTeam?.takeIf { it.isNotBlank() }).forEach { teamName ->
                         val on = followedTeams.any { it.equals(teamName, true) }
                         Text(
                             text = if (on) "★ $teamName" else "☆ $teamName",
@@ -745,8 +745,8 @@ fun MatchDetailDialog(
                         text = text,
                         sub = sub,
                         card = card,
-                        homeTeam = match.homeTeam,
-                        awayTeam = match.awayTeam,
+                        homeTeam = match.homeTeam.orEmpty(),
+                        awayTeam = match.awayTeam.orEmpty(),
                         accent = accent
                     )
                 }
@@ -923,10 +923,11 @@ private fun extractAiText(r: Any): String {
 @Composable
 private fun DetailTeamLogo(
     url: String?,
-    teamName: String,
+    teamName: String?,
     size: androidx.compose.ui.unit.Dp = 48.dp
 ) {
-    val initials = teamName.trim().split(Regex("""\s+"""))
+    val safeName = teamName?.trim().orEmpty()
+    val initials = safeName.split(Regex("""\s+"""))
         .filter { it.isNotBlank() }.take(2)
         .joinToString("") { it.first().uppercase() }
         .ifBlank { "⚽" }
@@ -940,7 +941,7 @@ private fun DetailTeamLogo(
         if (!url.isNullOrBlank()) {
             SubcomposeAsyncImage(
                 model = url,
-                contentDescription = "$teamName logo",
+                contentDescription = "$safeName logo",
                 modifier = Modifier.fillMaxSize(),
                 loading = {
                     Text(initials, color = Color(0xFF8C939D), fontSize = 12.sp, fontWeight = FontWeight.Bold)
@@ -999,7 +1000,7 @@ private fun MatchDetailScoreboard(
                 DetailTeamLogo(url = match.homeLogoUrl, teamName = match.homeTeam, size = 48.dp)
                 Spacer(modifier = Modifier.height(6.dp))
                 Text(
-                    text = match.homeTeam,
+                    text = match.homeTeam.orEmpty(),
                     color = text,
                     fontSize = 13.sp,
                     fontWeight = FontWeight.SemiBold,
@@ -1057,7 +1058,7 @@ private fun MatchDetailScoreboard(
                 DetailTeamLogo(url = match.awayLogoUrl, teamName = match.awayTeam, size = 48.dp)
                 Spacer(modifier = Modifier.height(6.dp))
                 Text(
-                    text = match.awayTeam,
+                    text = match.awayTeam.orEmpty(),
                     color = text,
                     fontSize = 13.sp,
                     fontWeight = FontWeight.SemiBold,
@@ -1160,8 +1161,8 @@ private fun SummaryTab(
                 Text("Forma (utolsó 5)", color = sub, fontSize = 12.sp, fontWeight = FontWeight.Medium)
                 Spacer(modifier = Modifier.height(6.dp))
                 FormRow(
-                    homeName = match.homeTeam,
-                    awayName = match.awayTeam,
+                    homeName = match.homeTeam.orEmpty(),
+                    awayName = match.awayTeam.orEmpty(),
                     homeForm = form?.home.orEmpty(),
                     awayForm = form?.away.orEmpty(),
                     text = text,
@@ -1343,7 +1344,7 @@ private fun AiPrematchTipCard(
             val parts = textFull.split(Regex("(?<=[.!?])\\s+")).filter { it.isNotBlank() }.take(3)
             tip = parts.joinToString(" ")
         } catch (_: Exception) {
-            tip = "${match.homeTeam} hazai előnye és a legutóbbi forma számít. A ${match.awayTeam} kontrákkal veszélyes lehet. Ez tájékoztató, nem fogadási javaslat."
+            tip = "${match.homeTeam.orEmpty()} hazai előnye és a legutóbbi forma számít. A ${match.awayTeam.orEmpty()} kontrákkal veszélyes lehet. Ez tájékoztató, nem fogadási javaslat."
         } finally {
             loading = false
         }

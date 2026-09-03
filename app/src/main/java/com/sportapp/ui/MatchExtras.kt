@@ -116,9 +116,10 @@ object DerbyPrefs {
         "Ferencvaros" to "Ujpest",
         "Fradi" to "Újpest"
     )
-    fun isDerby(home: String, away: String): Boolean {
-        val h = home.lowercase()
-        val a = away.lowercase()
+    fun isDerby(home: String?, away: String?): Boolean {
+        val h = home?.lowercase().orEmpty()
+        val a = away?.lowercase().orEmpty()
+        if (h.isEmpty() || a.isEmpty()) return false
         return PAIRS.any { (x, y) ->
             val xl = x.lowercase(); val yl = y.lowercase()
             (h.contains(xl) && a.contains(yl)) || (h.contains(yl) && a.contains(xl))
@@ -193,8 +194,8 @@ object TeamFollowPrefs {
     private const val KEY = "teams"
     fun teams(ctx: Context): Set<String> =
         ctx.getSharedPreferences(P, Context.MODE_PRIVATE).getStringSet(KEY, emptySet())?.toSet() ?: emptySet()
-    fun toggle(ctx: Context, team: String): Set<String> {
-        val name = team.trim()
+    fun toggle(ctx: Context, team: String?): Set<String> {
+        val name = team?.trim().orEmpty()
         if (name.isEmpty()) return teams(ctx)
         val cur = teams(ctx).toMutableSet()
         val key = cur.find { it.equals(name, true) }
@@ -202,8 +203,9 @@ object TeamFollowPrefs {
         ctx.getSharedPreferences(P, Context.MODE_PRIVATE).edit().putStringSet(KEY, cur).apply()
         return cur
     }
-    fun isFollowed(ctx: Context, team: String): Boolean {
-        val n = team.trim()
+    fun isFollowed(ctx: Context, team: String?): Boolean {
+        val n = team?.trim().orEmpty()
+        if (n.isEmpty()) return false
         return teams(ctx).any { it.equals(n, true) || n.contains(it, true) || it.contains(n, true) }
     }
 }
@@ -440,9 +442,9 @@ fun WhoWinsVote(
         Spacer(modifier = Modifier.height(8.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             listOf(
-                "1" to match.homeTeam.take(10),
+                "1" to match.homeTeam.orEmpty().take(10),
                 "X" to "Döntetlen",
-                "2" to match.awayTeam.take(10)
+                "2" to match.awayTeam.orEmpty().take(10)
             ).forEach { (k, label) ->
                 val sel = vote == k
                 Box(

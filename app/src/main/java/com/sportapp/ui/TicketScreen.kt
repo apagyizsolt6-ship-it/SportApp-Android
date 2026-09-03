@@ -347,7 +347,7 @@ object TicketPrefs {
 /** Egyszerű korreláció: túl sok ugyanabból a meccs-napból / ugyanaz a pick irány */
 fun ticketCorrelationWarning(legs: List<TicketLeg>): String? {
     if (legs.size < 3) return null
-    val homes = legs.count { it.pick.trim().uppercase().let { p -> p == "1" || p.startsWith("1") || "HAZAI" in p } }
+    val homes = legs.count { it.pick.orEmpty().trim().uppercase().let { p -> p == "1" || p.startsWith("1") || "HAZAI" in p } }
     if (homes >= legs.size - 1 && legs.size >= 4) {
         return "Figyelem: majdnem minden láb hazai – erős korreláció."
     }
@@ -392,7 +392,7 @@ fun evaluateTicketLeg(leg: TicketLeg, match: MatchResponse?): LegStatus {
     }
 
     val market = leg.market.uppercase()
-    val pick = leg.pick.trim().uppercase()
+    val pick = leg.pick.orEmpty().trim().uppercase()
 
     return when {
         market == "1X2" || market == "MATCH" -> {
