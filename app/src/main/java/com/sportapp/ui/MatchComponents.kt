@@ -32,6 +32,26 @@ import coil.compose.SubcomposeAsyncImage
 import com.sportapp.api.StandingTeam
 import com.sportapp.models.MatchResponse
 
+
+internal enum class FlagKind {
+    COUNTRY,
+    EUROPE,
+    SOUTH_AMERICA,
+    NORTH_AMERICA,
+    CENTRAL_AMERICA,
+    AFRICA,
+    ASIA,
+    OCEANIA,
+    WORLD,
+    GENERIC
+}
+
+internal data class FlagResult(
+    val kind: FlagKind,
+    val emoji: String? = null
+)
+
+@Composable
 internal fun LeagueFlagIcon(
     countryCode: String?,
     leagueName: String?,
@@ -1235,9 +1255,3 @@ fun FullLeagueTableDialog(
         }
     }
 }
-
-// ================================================================
-// HIGHLIGHTLY VIDEÓ VÁLASZTÓ
-// ================================================================
-
-@Composable

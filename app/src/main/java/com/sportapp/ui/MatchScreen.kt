@@ -2767,27 +2767,3 @@ onFavoriteToggle = { toggleFavorite(match.id) },
         )
     }
 }
-
-// ================================================================
-// ORSZÁG / RÉGIÓ ZÁSZLÓ
-// ================================================================
-
-private enum class FlagKind {
-    COUNTRY,
-    EUROPE,
-    SOUTH_AMERICA,
-    NORTH_AMERICA,
-    CENTRAL_AMERICA,
-    AFRICA,
-    ASIA,
-    OCEANIA,
-    WORLD,
-    GENERIC
-}
-
-private data class FlagResult(
-    val kind: FlagKind,
-    val emoji: String? = null
-)
-
-@Composable

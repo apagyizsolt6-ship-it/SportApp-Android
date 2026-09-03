@@ -29,6 +29,7 @@ import com.sportapp.models.MatchResponse
 import org.json.JSONArray
 import org.json.JSONObject
 
+@Composable
 fun HighlightVideoPickerDialog(
     match: MatchResponse?,
     videos: List<HighlightVideo>,
