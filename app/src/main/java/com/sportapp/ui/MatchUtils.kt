@@ -103,7 +103,7 @@ internal fun matchesSmartSearch(match: MatchResponse, query: String): Boolean {
 enum class MatchSortMode { LEAGUE, TIME, LIVE_FIRST }
 
 /** 15 perccel a kickoff előtt értesítés. Siker: true. */
-private fun scheduleMatchReminder(context: android.content.Context, match: MatchResponse): Boolean {
+internal fun scheduleMatchReminder(context: android.content.Context, match: MatchResponse): Boolean {
     val timeStr = match.kickoffTime?.trim()?.takeIf { it.contains(":") }
         ?: (match.status ?: "").trim().takeIf { it.contains(":") && it.length <= 5 }
         ?: return false
@@ -166,7 +166,7 @@ private fun scheduleMatchReminder(context: android.content.Context, match: Match
     }
 }
 
-private fun todayIso(): String {
+internal fun todayIso(): String {
     return try {
         LocalDate.now().toString()
     } catch (_: Exception) {
@@ -175,7 +175,7 @@ private fun todayIso(): String {
     }
 }
 
-private fun dateIsoWithOffset(offsetDays: Int): String {
+internal fun dateIsoWithOffset(offsetDays: Int): String {
     return try {
         LocalDate.now().plusDays(offsetDays.toLong()).toString()
     } catch (_: Exception) {
@@ -185,14 +185,14 @@ private fun dateIsoWithOffset(offsetDays: Int): String {
     }
 }
 
-private fun matchKickoffDate(match: MatchResponse): String {
+internal fun matchKickoffDate(match: MatchResponse): String {
     val d = match.kickoffDate?.trim().orEmpty()
     if (d.length >= 10) return d.take(10)
     // Ütemezett / élő ma a feedben → ma
     return todayIso()
 }
 
-private fun dayLabel(offset: Int): String {
+internal fun dayLabel(offset: Int): String {
     return when (offset) {
         0 -> "Ma"
         -1 -> "Tegnap"
