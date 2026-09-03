@@ -29,12 +29,19 @@ data class StandingTeam(
 data class PlayerSummaryResponse(
     val available: Boolean? = false,
     @com.google.gson.annotations.SerializedName("player_id") val playerId: String? = null,
+    val source: String? = null,
     val name: String? = null,
     val photo: String? = null,
     val team: String? = null,
     val position: String? = null,
     val season: String? = null,
     val stats: Map<String, @JvmSuppressWildcards Any?>? = null,
+    val bio: Map<String, @JvmSuppressWildcards Any?>? = null,
+    @com.google.gson.annotations.SerializedName("league_stats")
+    val leagueStats: List<Map<String, @JvmSuppressWildcards Any?>>? = null,
+    val overall: Map<String, @JvmSuppressWildcards Any?>? = null,
+    val national: Map<String, @JvmSuppressWildcards Any?>? = null,
+    val transfers: List<Map<String, @JvmSuppressWildcards Any?>>? = null,
     val message: String? = null
 )
 
