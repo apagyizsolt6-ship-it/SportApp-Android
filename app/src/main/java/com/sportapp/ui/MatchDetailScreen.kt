@@ -980,7 +980,7 @@ private fun MatchDetailScoreboard(
     val liveMinute = rememberLiveMinute(
         matchId = match.id ?: match.matchId ?: "unknown",
         serverMinute = match.minute,
-        status = match.status ?: "",
+        status = match.status.orEmpty(),
         isLive = isLive,
         pulseMs = detailPulse
     )
@@ -1071,13 +1071,21 @@ private fun MatchDetailScoreboard(
     }
 }
 
-private fun statusLabel(status: String): String = when (status) {
-    "FT" -> "Vége"
-    "HT" -> "Félidő"
-    "1H" -> "1. Félidő"
-    "2H" -> "2. Félidő"
-    "NS" -> "Kezdés előtt"
-    else -> status
+private fun statusLabel(status: String?): String {
+    val s = status?.trim().orEmpty()
+    if (s.isEmpty()) return "—"
+    val key = s.uppercase().replace(".", "").replace(" ", "")
+    return when (key) {
+        "FT", "AET", "PEN", "PENS", "PSO", "FINISHED", "FULLTIME", "ENDED" -> "Vége"
+        "HT" -> "Félidő"
+        "1H" -> "1. Félidő"
+        "2H" -> "2. Félidő"
+        "NS", "TBD", "SCHEDULED" -> "Kezdés előtt"
+        "LIVE", "INPLAY", "ET" -> "ÉLŐ"
+        "PST", "POSTP", "POSTPONED" -> "Elhalasztva"
+        "CANC", "CANCELLED", "ABD", "ABANDONED" -> "Törölve"
+        else -> s
+    }
 }
 
 private fun eventIcon(type: String?): String {
