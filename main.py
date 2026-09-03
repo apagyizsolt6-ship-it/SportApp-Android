@@ -4626,95 +4626,204 @@ def get_status():
 # =============================================================================
 
 
+
 @app.get("/api/players/{player_id}/summary")
 def get_player_summary(player_id: str):
-    """Highlightly játékos összefoglaló: fotó + szezonstat ha elérhető."""
+    """Játékos full adatlap: StatPal (ha megy) + Highlightly fotó/stat."""
     pid = str(player_id or "").strip()
-    if not pid or not HIGHLIGHTLY_KEY:
-        return {"available": False, "error": "no_key_or_id"}
+    if not pid:
+        return {"available": False, "error": "no_id", "player_id": pid}
+
     out = {
         "available": False,
         "player_id": pid,
+        "source": None,
         "name": None,
         "photo": None,
         "team": None,
         "position": None,
         "season": None,
         "stats": {},
+        "bio": {},
+        "league_stats": [],
+        "overall": {},
+        "national": {},
+        "transfers": [],
         "message": None,
     }
+
+    # Fotó (Highlightly CDN)
     try:
         photo = fetch_player_photo_url(pid)
         if photo:
             out["photo"] = photo
     except Exception:
         pass
-    try:
-        url = f"https://soccer.highlightly.net/players/{pid}/statistics"
-        headers = {
-            "x-rapidapi-key": HIGHLIGHTLY_KEY,
-            "x-rapidapi-host": "football-highlights-api.p.rapidapi.com",
-        }
-        # highlightly host variants
-        for host in (
-            "soccer.highlightly.net",
-            "football-highlights-api.p.rapidapi.com",
-        ):
-            try:
-                h = dict(headers)
-                if "rapidapi" in host:
-                    h["x-rapidapi-host"] = host
-                r = requests.get(
-                    f"https://{host}/players/{pid}/statistics" if "rapidapi" in host
-                    else url,
-                    headers=h if "rapidapi" in host else {"x-rapidapi-key": HIGHLIGHTLY_KEY},
-                    timeout=12,
-                )
-                if r.status_code != 200:
+
+    def _num(v):
+        if v is None or v == "":
+            return None
+        try:
+            if isinstance(v, (int, float)):
+                return v
+            s = str(v).strip().replace(",", ".")
+            if not s:
+                return None
+            if "." in s:
+                return float(s)
+            return int(s)
+        except Exception:
+            return v
+
+    def _pick_stats_row(row: dict) -> dict:
+        keys = [
+            "goals", "assists", "appearances", "minutes_played", "minutes",
+            "starting_lineups", "substitute_in", "yellowcards", "yellowCards", "redcards", "redCards",
+            "shots_total", "shots_on_target", "shots", "key_passes", "pass_attempts", "pass_success",
+            "tackles", "interceptions", "duels_won", "duels_total", "rating",
+            "pen_scored", "pen_missed", "saves", "goals_conceded",
+        ]
+        d = {}
+        for k in keys:
+            if row.get(k) is not None and str(row.get(k)).strip() != "":
+                d[k] = _num(row.get(k))
+        return d
+
+    # ---------- StatPal partial ----------
+    if STATPAL_KEY:
+        try:
+            url = f"https://statpal.io/api/v2/soccer/players/{pid}?access_key={STATPAL_KEY}"
+            r = requests.get(url, headers={"Accept": "application/json"}, timeout=12)
+            if r.status_code == 200:
+                data = r.json() if r.content else {}
+                pl = data.get("player") if isinstance(data, dict) else None
+                if isinstance(pl, dict):
+                    out["source"] = "statpal"
+                    out["name"] = pl.get("name") or out["name"]
+                    out["team"] = pl.get("team") or out["team"]
+                    out["position"] = pl.get("position") or out["position"]
+                    out["bio"] = {
+                        "age": pl.get("age"),
+                        "birthdate": pl.get("birthdate"),
+                        "nationality": pl.get("nationality"),
+                        "birthplace": pl.get("birthplace"),
+                        "birthcountry": pl.get("birthcountry"),
+                        "height": pl.get("height"),
+                        "weight": pl.get("weight"),
+                        "preferred_foot": pl.get("preferred_foot"),
+                        "market_value_eur": pl.get("market_value_eur"),
+                        "team_id": pl.get("team_id"),
+                    }
+                    # league rows
+                    club_league = (pl.get("club_league_statistics") or {}).get("club") or []
+                    if isinstance(club_league, list):
+                        for row in club_league:
+                            if not isinstance(row, dict):
+                                continue
+                            stats_row = _pick_stats_row(row)
+                            out["league_stats"].append({
+                                "team": row.get("team_name"),
+                                "league": row.get("league"),
+                                "season": row.get("season"),
+                                "stats": stats_row,
+                            })
+                            if not out["season"] and row.get("season"):
+                                out["season"] = row.get("season")
+                            if not out["stats"] and stats_row:
+                                out["stats"] = stats_row
+                    # overall
+                    overall = pl.get("overall_club_statistics") or {}
+                    if isinstance(overall, dict) and overall:
+                        out["overall"] = _pick_stats_row(overall)
+                        if not out["stats"]:
+                            out["stats"] = dict(out["overall"])
+                    # national
+                    nat = pl.get("national_team_statistics") or {}
+                    if isinstance(nat, dict):
+                        out["national"] = nat
+                    transfers = pl.get("transfers") or []
+                    if isinstance(transfers, list):
+                        out["transfers"] = transfers[:12]
+                    out["available"] = True
+        except Exception as ex:
+            out["message"] = f"statpal: {str(ex)[:100]}"
+
+    # ---------- Highlightly fallback / merge ----------
+    if HIGHLIGHTLY_KEY:
+        try:
+            headers_base = {
+                "x-rapidapi-key": HIGHLIGHTLY_KEY,
+                "x-rapidapi-host": "football-highlights-api.p.rapidapi.com",
+            }
+            data = None
+            for host, use_host in (
+                ("soccer.highlightly.net", False),
+                ("football-highlights-api.p.rapidapi.com", True),
+            ):
+                try:
+                    h = dict(headers_base)
+                    if use_host:
+                        h["x-rapidapi-host"] = host
+                    url = f"https://{host}/players/{pid}/statistics"
+                    r = requests.get(url, headers=h if use_host else {"x-rapidapi-key": HIGHLIGHTLY_KEY}, timeout=12)
+                    if r.status_code != 200:
+                        continue
+                    data = r.json()
+                    break
+                except Exception:
                     continue
-                data = r.json()
-                # normalize various shapes
+            if data is not None:
                 block = data
-                if isinstance(data, dict):
+                if isinstance(data, list) and data:
+                    block = data[0] if isinstance(data[0], dict) else {}
+                elif isinstance(data, dict):
                     if isinstance(data.get("data"), dict):
                         block = data["data"]
+                    elif isinstance(data.get("data"), list) and data["data"]:
+                        block = data["data"][0]
                     elif isinstance(data.get("player"), dict):
                         block = data["player"]
-                    elif isinstance(data.get("statistics"), list) and data["statistics"]:
-                        block = data["statistics"][0] if isinstance(data["statistics"][0], dict) else data
-                if not isinstance(block, dict):
-                    continue
-                out["name"] = block.get("name") or block.get("playerName") or out["name"]
-                out["team"] = (
-                    (block.get("team") or {}).get("name")
-                    if isinstance(block.get("team"), dict)
-                    else block.get("team") or block.get("teamName")
-                )
-                out["position"] = block.get("position") or block.get("pos")
-                out["season"] = block.get("season") or block.get("league")
-                stats = {}
-                for k in (
-                    "goals", "assists", "appearances", "minutes", "yellowCards",
-                    "redCards", "shots", "passes", "rating", "games", "yellow",
-                    "red", "goal", "assist",
-                ):
-                    if block.get(k) is not None:
-                        stats[k] = block.get(k)
-                # nested statistics
-                inner = block.get("statistics") or block.get("stats") or {}
-                if isinstance(inner, dict):
-                    for k, v in inner.items():
-                        if v is not None and k not in stats:
-                            stats[str(k)] = v
-                out["stats"] = stats
-                out["available"] = bool(out["name"] or stats or out["photo"])
-                if out["available"]:
-                    break
-            except Exception as ex:
-                out["message"] = str(ex)[:120]
-                continue
-    except Exception as ex:
-        out["message"] = str(ex)[:120]
+                if isinstance(block, dict):
+                    if not out["source"]:
+                        out["source"] = "highlightly"
+                    out["name"] = out["name"] or block.get("name") or block.get("fullName") or block.get("playerName")
+                    if isinstance(block.get("logo"), str) and block.get("logo") and not out["photo"]:
+                        out["photo"] = block.get("logo")
+                    # perCompetition
+                    comps = block.get("perCompetition") or block.get("statistics") or []
+                    if isinstance(comps, list):
+                        for c in comps[:8]:
+                            if not isinstance(c, dict):
+                                continue
+                            stats_row = _pick_stats_row(c)
+                            # nested
+                            for nest in ("statistics", "stats", "games"):
+                                if isinstance(c.get(nest), dict):
+                                    stats_row.update(_pick_stats_row(c[nest]))
+                            league_name = (
+                                c.get("competition") or c.get("league") or c.get("name")
+                                or (c.get("league") or {}).get("name") if isinstance(c.get("league"), dict) else None
+                            )
+                            out["league_stats"].append({
+                                "team": c.get("team") or c.get("club"),
+                                "league": league_name,
+                                "season": c.get("season"),
+                                "stats": stats_row,
+                            })
+                            if not out["stats"] and stats_row:
+                                out["stats"] = stats_row
+                            if not out["season"] and c.get("season"):
+                                out["season"] = c.get("season")
+                    # flat stats on block
+                    flat = _pick_stats_row(block)
+                    if flat and not out["stats"]:
+                        out["stats"] = flat
+                    if out["name"] or out["stats"] or out["photo"] or out["league_stats"]:
+                        out["available"] = True
+        except Exception as ex:
+            if not out["message"]:
+                out["message"] = f"highlightly: {str(ex)[:100]}"
+
     if not out["available"] and not out["message"]:
         out["message"] = "Nincs részletes játékosadat ehhez az ID-hoz."
     return out
