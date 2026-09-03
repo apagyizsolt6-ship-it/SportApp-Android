@@ -26,19 +26,19 @@ data class MatchEvent(
 )
 
 data class MatchResponse(
-    @SerializedName("id") val matchId: String,
+    @SerializedName("id") val matchId: String = "",
     @SerializedName("league_id") val leagueId: String = "",
     @SerializedName("league") val league: String?,
     @SerializedName("country") val country: String? = null,
     @SerializedName("country_code") val countryCode: String? = null,
     @SerializedName("league_logo_url") val leagueLogoUrl: String? = null,
-    @SerializedName("home_team") val homeTeam: String,
-    @SerializedName("away_team") val awayTeam: String,
+    @SerializedName("home_team") val homeTeam: String = "",
+    @SerializedName("away_team") val awayTeam: String = "",
     @SerializedName("home_logo_url") val homeLogoUrl: String? = null,
     @SerializedName("away_logo_url") val awayLogoUrl: String? = null,
     @SerializedName("home_score") val homeScore: Int?,
     @SerializedName("away_score") val awayScore: Int?,
-    @SerializedName("status") val status: String,
+    @SerializedName("status") val status: String = "",
     @SerializedName("minute") val minute: Int?,
     @SerializedName("highlight_url") val highlightUrl: String?,
     @SerializedName("highlight_match_id") val highlightMatchId: String? = null,
@@ -58,6 +58,11 @@ data class MatchResponse(
 ) {
     val id: String
         get() = matchId
+
+    /** Null-safe megjelenítendő nevek (Gson null-t is adhat non-null mezőre). */
+    val homeTeamSafe: String get() = homeTeam ?: ""
+    val awayTeamSafe: String get() = awayTeam ?: ""
+    val statusSafe: String get() = status ?: ""
 }
 
 data class LineupPlayer(
