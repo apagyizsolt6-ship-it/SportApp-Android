@@ -360,7 +360,6 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
     var onlyPinnedLeagues by remember { mutableStateOf(false) }
     var onlyFavorites by remember { mutableStateOf(false) }
     var onlyFollowed by remember { mutableStateOf(false) }
-    var showSettings by remember { mutableStateOf(false) }
     var onlyTopLeagues by remember { mutableStateOf(false) }
     var onlyNext60 by remember { mutableStateOf(false) }
 
@@ -809,13 +808,6 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                     ) {
 
                         Text(
-                        text = "⚙️",
-                        fontSize = 16.sp,
-                        modifier = Modifier
-                            .clickable { showSettings = true }
-                            .padding(horizontal = 6.dp)
-                    )
-                    Text(
                             text = if (isDarkMode) "☀️" else "🌙",
                             fontSize = 16.sp
                         )
@@ -2790,7 +2782,4 @@ onFavoriteToggle = { toggleFavorite(match.id) },
         )
     }
 
-    if (showSettings) {
-        SettingsDialog(isDarkMode = isDarkMode, onDismiss = { showSettings = false })
-    }
 }
