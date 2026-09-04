@@ -986,71 +986,23 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                 }
             }
 
-            // Eszközsáv – görgethető, kevesebb zaj
+            // Egy menü: értesítés / csendes órák (a szűrő chip-ek a tabokkal duplikálták)
             var showMoreTools by remember { mutableStateOf(false) }
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState())
-                    .padding(horizontal = 8.dp, vertical = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    .padding(horizontal = 8.dp, vertical = 2.dp),
+                horizontalArrangement = Arrangement.End,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                FilterChip(
-                    selected = onlyPinnedLeagues,
-                    onClick = { onlyPinnedLeagues = !onlyPinnedLeagues },
-                    label = { Text("Kiemelt", fontSize = 11.sp) }
-                )
-                FilterChip(
-                    selected = onlyFavorites,
-                    onClick = { onlyFavorites = !onlyFavorites },
-                    label = { Text("Kedvencek", fontSize = 11.sp) }
-                )
-                FilterChip(
-                    selected = onlyFollowed,
-                    onClick = { onlyFollowed = !onlyFollowed },
-                    label = { Text("Követett", fontSize = 11.sp) }
-                )
-                FilterChip(
-                    selected = onlyTopLeagues,
-                    onClick = { onlyTopLeagues = !onlyTopLeagues },
-                    label = { Text("TOP", fontSize = 11.sp) }
-                )
-                FilterChip(
-                    selected = onlyNext60,
-                    onClick = { onlyNext60 = !onlyNext60 },
-                    label = { Text("60 perc", fontSize = 11.sp) }
-                )
-                FilterChip(
-                    selected = sortMode != MatchSortMode.LEAGUE,
-                    onClick = {
-                        sortMode = when (sortMode) {
-                            MatchSortMode.LEAGUE -> MatchSortMode.LIVE_FIRST
-                            MatchSortMode.LIVE_FIRST -> MatchSortMode.TIME
-                            MatchSortMode.TIME -> MatchSortMode.LEAGUE
-                        }
-                    },
-                    label = {
-                        Text(
-                            when (sortMode) {
-                                MatchSortMode.LEAGUE -> "Liga"
-                                MatchSortMode.LIVE_FIRST -> "Élő"
-                                MatchSortMode.TIME -> "Idő"
-                            },
-                            fontSize = 11.sp
-                        )
-                    }
-                )
-                FilterChip(
-                    selected = compactMode,
-                    onClick = { compactMode = !compactMode },
-                    label = { Text(if (compactMode) "Kompakt" else "Normál", fontSize = 11.sp) }
-                )
                 Box {
-                    FilterChip(
-                        selected = false,
-                        onClick = { showMoreTools = true },
-                        label = { Text("⋯", fontSize = 14.sp) }
+                    Text(
+                        text = "⋯",
+                        color = subTextColor,
+                        fontSize = 20.sp,
+                        modifier = Modifier
+                            .clickable { showMoreTools = true }
+                            .padding(horizontal = 10.dp, vertical = 4.dp)
                     )
                     DropdownMenu(
                         expanded = showMoreTools,
