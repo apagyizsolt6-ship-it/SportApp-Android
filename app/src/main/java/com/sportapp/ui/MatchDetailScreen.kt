@@ -795,7 +795,7 @@ private fun MatchDetailScoreboard(
     LaunchedEffect(isLive) {
         if (!isLive) return@LaunchedEffect
         while (true) {
-            kotlinx.coroutines.delay(15_000L)
+            kotlinx.coroutines.delay(1_000L)
             detailPulse = System.currentTimeMillis()
         }
     }

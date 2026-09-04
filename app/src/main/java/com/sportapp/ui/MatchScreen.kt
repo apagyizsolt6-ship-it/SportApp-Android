@@ -84,7 +84,7 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
     var minutePulseMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(Unit) {
         while (true) {
-            kotlinx.coroutines.delay(15_000L)
+            kotlinx.coroutines.delay(1_000L)
             minutePulseMs = System.currentTimeMillis()
         }
     }

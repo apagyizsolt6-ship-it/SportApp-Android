@@ -74,20 +74,37 @@ fun rememberLiveMinute(
     // Nincs érvényes szerver perc → ne inventáljunk (marad 0, a UI "ÉLŐ"-t mutat)
     if (sm <= 0) return 0
 
+    // Bázis: szerver perc + mikor kaptuk
     var base by remember(matchId) { mutableIntStateOf(sm) }
     var baseAt by remember(matchId) { mutableLongStateOf(System.currentTimeMillis()) }
 
+    // Szerver perc változás: csak ha tényleg előrébb van (vagy nagy ugrás pl. 2. félidő)
     LaunchedEffect(matchId, sm) {
         if (sm <= 0) return@LaunchedEffect
-        // Szerver előrébb vagy nagy ugrás (félidő után) → igazítás
-        if (sm >= base || base - sm >= 2) {
+        if (sm > base) {
+            // szerver előrébb → igazítás, óra újraindítás
+            base = sm
+            baseAt = System.currentTimeMillis()
+        } else if (base - sm >= 5) {
+            // helyi óra elszaladt / félidő utáni reset
             base = sm
             baseAt = System.currentTimeMillis()
         }
+        // ha sm == base vagy sm csak 1-4-gyel lemarad: NE reseteljük a baseAt-et
     }
 
-    // pulseMs: szülő frissíti (pl. 15–30 mp) – újraszámol elapsed
-    val now = if (pulseMs > 0L) pulseMs else System.currentTimeMillis()
+    // Saját ticker: másodpercenként újraszámol (független a lista frissítéstől)
+    var tick by remember(matchId) { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(matchId, isLive) {
+        if (!isLive) return@LaunchedEffect
+        while (true) {
+            kotlinx.coroutines.delay(1_000L)
+            tick = System.currentTimeMillis()
+        }
+    }
+
+    // Külső pulse is triggerelhet (opcionális)
+    val now = maxOf(tick, pulseMs, System.currentTimeMillis())
     val add = ((now - baseAt).coerceAtLeast(0L) / 60_000L).toInt()
     return (base + add).coerceIn(1, 130)
 }
