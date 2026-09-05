@@ -47,6 +47,9 @@ data class PlayerSummaryResponse(
 
 interface ApiService {
 
+    @GET("api/status")
+    suspend fun getStatus(): Map<String, @JvmSuppressWildcards Any?>
+
     @GET("api/matches")
     suspend fun getMatches(): List<MatchResponse>
 
