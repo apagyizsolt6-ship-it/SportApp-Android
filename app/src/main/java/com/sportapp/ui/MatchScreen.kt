@@ -603,42 +603,11 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
             .sortedBy { matchKickoffMillis(it) ?: Long.MAX_VALUE }
             .take(12)
     }
-    val worthWatchMatches = remember(matches, favoriteLeagueNames) {
-        matches.filter { !isMatchFinished(it.status) }
-            .distinctBy { it.id }
-            .map { it to worthWatchScore(it, favoriteLeagueNames) }
-            .filter { it.second >= 30 }
-            .sortedByDescending { it.second }
-            .take(5)
-            .map { it.first }
-    }
     val derbyMatches = remember(filteredMatches) {
         filteredMatches.filter { DerbyPrefs.isDerby(it.homeTeam, it.awayTeam) }
             .distinctBy { it.id }
             .take(8)
     }
-    val tonightTips = remember(filteredMatches) {
-        filteredMatches.filter { m ->
-            val kt = m.kickoffTime ?: return@filter false
-            val hour = kt.take(2).toIntOrNull() ?: return@filter false
-            hour in 18..23 && !isMatchFinished(m.status)
-        }.distinctBy { it.id }
-            .sortedByDescending { worthWatchScore(it, favoriteLeagueNames) }.take(3)
-    }
-    val spotlightMatches = remember(filteredMatches, favoriteLeagueNames) {
-        filteredMatches
-            .filter {
-                favoriteLeagueNames.contains(it.league ?: "") ||
-                    topFiveRank(it.league, it.countryCode) != null
-            }
-            .distinctBy { it.id }
-            .sortedWith(
-                compareByDescending<MatchResponse> { isMatchLive(it.status, it.minute) }
-                    .thenBy { matchKickoffMillis(it) ?: Long.MAX_VALUE }
-            )
-            .take(3)
-    }
-
     val groupedMatchesList = remember(
         filteredMatches,
         favoriteLeagueNames,
@@ -1387,46 +1356,6 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                 LazyColumn(
                     modifier = Modifier.fillMaxSize()
                 ) {
-                    // Spotlight
-                                        if (worthWatchMatches.isNotEmpty() && selectedTab == 0 && searchQuery.isEmpty()) {
-                        item {
-                            Text(
-                                "🔥 Ma este érdemes nézni",
-                                color = Color(0xFFFF6E40),
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.Bold,
-                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
-                            )
-                        }
-                        items(worthWatchMatches, key = { "ww-${it.id}-${it.homeTeam}-${it.awayTeam}" }) { match ->
-                            PremiumMatchRow(
-                                match = match,
-                                isFavorite = favoriteMatchIds.contains(match.id),
-                                isReminderSet = reminderMatchIds.contains(match.id),
-                                cardBgColor = cardBgColor,
-                                textColor = textColor,
-                                subTextColor = subTextColor,
-                                primaryGreen = primaryGreen,
-                                compact = compactMode,
-                                scoreFlash = flashMatchIds.contains(match.id),
-                                minutePulseMs = minutePulseMs,
-                                onFavoriteToggle = { toggleFavorite(match.id) },
-                                onVideoClick = { m ->
-                                    selectedMatchForMedia = m
-                                    showHighlightPicker = true
-                                },
-                                onAiClick = { m ->
-                                    selectedMatchForAi = m
-                                    viewModel.fetchAiAnalysis(m.id)
-                                },
-                                onMatchClick = { selectedMatchForDetail = it },
-                                isOnTicket = ticketMatchIds.contains(match.id),
-                                    onTicketClick = { matchForTicket = match },
-                                onReminderClick = { },
-                                onShareClick = { shareMatch(match) }
-                            )
-                        }
-                    }
 if (derbyMatches.isNotEmpty() && selectedTab == 0 && searchQuery.isEmpty()) {
                         item {
                             Text(
@@ -1459,124 +1388,6 @@ if (derbyMatches.isNotEmpty() && selectedTab == 0 && searchQuery.isEmpty()) {
                                     onTicketClick = { matchForTicket = match },
                                 onReminderClick = { },
                                 onShareClick = { shareMatch(match) }
-                            )
-                        }
-                    }
-                    if (tonightTips.isNotEmpty() && selectedTab == 0 && searchQuery.isEmpty()) {
-                        item {
-                            Text(
-                                "🌙 Ma este 3 tipp",
-                                color = primaryGreen,
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.Bold,
-                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
-                            )
-                        }
-                        items(tonightTips, key = { "tip-${it.id}-${it.kickoffTime}" }) { match ->
-                            PremiumMatchRow(
-                                match = match,
-                                isFavorite = favoriteMatchIds.contains(match.id),
-                                cardBgColor = cardBgColor,
-                                textColor = textColor,
-                                subTextColor = subTextColor,
-                                primaryGreen = primaryGreen,
-                                compact = compactMode,
-                                scoreFlash = flashMatchIds.contains(match.id),
-                                minutePulseMs = minutePulseMs,
-                                onFavoriteToggle = { toggleFavorite(match.id) },
-                                onVideoClick = { },
-                                onAiClick = { m ->
-                                    selectedMatchForAi = m
-                                    viewModel.fetchAiAnalysis(m.id)
-                                },
-                                onMatchClick = { selectedMatchForDetail = it },
-                                isOnTicket = ticketMatchIds.contains(match.id),
-                                    onTicketClick = { matchForTicket = match },
-                                onReminderClick = { },
-                                onShareClick = { shareMatch(match) }
-                            )
-                        }
-                    }
-                    if (spotlightMatches.isNotEmpty() && selectedTab == 0 && searchQuery.isEmpty() && !onlyPinnedLeagues) {
-                        item {
-                            Text(
-                                "⭐ Mai spotlight",
-                                color = primaryGreen,
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.Bold,
-                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
-                            )
-                        }
-                        items(spotlightMatches, key = { "sp-${it.id}-${it.status}" }) { match ->
-                            PremiumMatchRow(
-                                match = match,
-                                isFavorite = favoriteMatchIds.contains(match.id),
-                                isReminderSet = reminderMatchIds.contains(match.id),
-                                cardBgColor = cardBgColor,
-                                textColor = textColor,
-                                subTextColor = subTextColor,
-                                primaryGreen = primaryGreen,
-                                compact = compactMode,
-                                scoreFlash = flashMatchIds.contains(match.id),
-                                minutePulseMs = minutePulseMs,
-                                onFavoriteToggle = { toggleFavorite(match.id) },
-                                onVideoClick = { m ->
-                                    selectedMatchForMedia = m
-                                    highlightVideos = emptyList()
-                                    highlightError = null
-                                    showHighlightPicker = true
-                                    val highlightMatchId = m.highlightMatchId?.trim().orEmpty()
-                                    if (highlightMatchId.isNotBlank()) {
-                                        coroutineScope.launch {
-                                            isHighlightLoading = true
-                                            try {
-                                                val videos = RetrofitInstance.api.getMatchHighlights(highlightMatchId)
-                                                highlightVideos = videos.filter {
-                                                    !it.embedUrl.isNullOrBlank() || !it.url.isNullOrBlank()
-                                                }
-                                            } catch (e: Exception) {
-                                                highlightError = e.message
-                                            } finally {
-                                                isHighlightLoading = false
-                                            }
-                                        }
-                                    }
-                                },
-                                onAiClick = { m ->
-                                    selectedMatchForAi = m
-                                    viewModel.fetchAiAnalysis(m.id)
-                                },
-                                onMatchClick = { m ->
-                                    selectedMatchForDetail = m
-                                },
-                                onReminderClick = { m ->
-                                    val ok = scheduleMatchReminder(context, m)
-                                    if (ok) {
-                                        val next = reminderMatchIds + m.id
-                                        reminderMatchIds = next
-                                        reminderPrefs.edit().putStringSet("ids", next).apply()
-                                        Toast.makeText(
-                                            context,
-                                            "Emlékeztető beállítva (15 perccel kezdés előtt)",
-                                            Toast.LENGTH_SHORT
-                                        ).show()
-                                    } else {
-                                        Toast.makeText(
-                                            context,
-                                            "Nem sikerült (nincs kezdési idő vagy már elmúlt)",
-                                            Toast.LENGTH_SHORT
-                                        ).show()
-                                    }
-                                },
-                                onShareClick = {
-                                    val score = "${match.homeScore ?: 0}–${match.awayScore ?: 0}"
-                                    val body = "${match.homeTeam} $score ${match.awayTeam}\n${match.league.orEmpty()}"
-                                    val intent = Intent(Intent.ACTION_SEND).apply {
-                                        type = "text/plain"
-                                        putExtra(Intent.EXTRA_TEXT, body)
-                                    }
-                                    context.startActivity(Intent.createChooser(intent, "Megosztás"))
-                                }
                             )
                         }
                     }
