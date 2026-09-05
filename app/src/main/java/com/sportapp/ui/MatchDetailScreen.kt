@@ -80,7 +80,7 @@ fun MatchDetailDialog(
     detailVm: MatchDetailViewModel = viewModel()
 ) {
     // Kék üveg paletta – egyezik a MatchScreen-nel
-    val bg = if (isDarkMode) Color(0xFF0B1426) else Color(0xFFE8F1FF)
+    val bg = if (isDarkMode) Color(0xFF14081F) else Color(0xFFE8F1FF)
     val card = if (isDarkMode) Color(0xCC152238) else Color(0xB3FFFFFF)
     val text = if (isDarkMode) Color(0xFFF0F6FF) else Color(0xFF0D1B2A)
     val sub = if (isDarkMode) Color(0xFF9BB0C9) else Color(0xFF5A6F8A)
@@ -1466,7 +1466,7 @@ private fun OddsRow(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(6.dp))
-                    .background(Color(0xFF152238))
+                    .background(Color(0xFF1A0B2E))
                     .clickable {
                         expandedCategory = if (isExpanded) null else catTitle
                     }

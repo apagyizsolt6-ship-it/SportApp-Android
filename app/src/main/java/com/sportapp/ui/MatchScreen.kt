@@ -416,42 +416,42 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
 
     val coroutineScope = rememberCoroutineScope()
 
-    // --- Kék üveg (glassmorphism) paletta ---
+    // --- Sötét lila üveg (glassmorphism) paletta ---
     val bgColor by animateColorAsState(
-        if (isDarkMode) Color(0xFF0B1426) else Color(0xFFE8F1FF),
+        if (isDarkMode) Color(0xFF14081F) else Color(0xFFF3E8FF),
         label = "bg"
     )
 
     // Kártya: áttetsző „üveg”
     val cardBgColor by animateColorAsState(
-        if (isDarkMode) Color(0xCC152238) else Color(0xB3FFFFFF),
+        if (isDarkMode) Color(0xB31A0B2E) else Color(0xB3FFFFFF),
         label = "card"
     )
 
     val headerBgColor by animateColorAsState(
-        if (isDarkMode) Color(0xD9111E33) else Color(0xCCF5F9FF),
+        if (isDarkMode) Color(0xCC1C0F33) else Color(0xCCF8F0FF),
         label = "header"
     )
 
     val leagueBgColor by animateColorAsState(
-        if (isDarkMode) Color(0x991A2D4D) else Color(0x99D6E6FF),
+        if (isDarkMode) Color(0x9924123F) else Color(0x99E8D5FF),
         label = "league"
     )
 
     val textColor by animateColorAsState(
-        if (isDarkMode) Color(0xFFF0F6FF) else Color(0xFF0D1B2A),
+        if (isDarkMode) Color(0xFFF5EEFF) else Color(0xFF1A0B2E),
         label = "text"
     )
 
     val subTextColor by animateColorAsState(
-        if (isDarkMode) Color(0xFF9BB0C9) else Color(0xFF5A6F8A),
+        if (isDarkMode) Color(0xFFB9A3D4) else Color(0xFF6B5A8A),
         label = "subtext"
     )
 
-    // Akcent: élénk aqua / zöld a sötét kéken
+    // Akcent: aqua a sötét lilán
     val primaryGreen = Color(0xFF00E5A8)
-    val glassBorder = if (isDarkMode) Color(0x33A0C4FF) else Color(0x55FFFFFF)
-    val accentBlue = Color(0xFF4DA3FF)
+    val glassBorder = if (isDarkMode) Color(0x44C084FC) else Color(0x55FFFFFF)
+    val accentBlue = Color(0xFFA78BFA)
 
     // ============================================================
     // ELŐRE KIEMELT LIGÁK
@@ -687,19 +687,19 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                     brush = if (isDarkMode) {
                         Brush.verticalGradient(
                             colors = listOf(
-                                Color(0xFF0A1628),
-                                Color(0xFF122445),
-                                Color(0xFF0D1B33),
-                                Color(0xFF0A1424)
+                                Color(0xFF0E0618),
+                                Color(0xFF1A0B2E),
+                                Color(0xFF24103F),
+                                Color(0xFF12081F)
                             )
                         )
                     } else {
                         Brush.verticalGradient(
                             colors = listOf(
-                                Color(0xFFD6E8FF),
-                                Color(0xFFEEF5FF),
-                                Color(0xFFE3EFFF),
-                                Color(0xFFD0E4FF)
+                                Color(0xFFE9D5FF),
+                                Color(0xFFF5EEFF),
+                                Color(0xFFEDE4FF),
+                                Color(0xFFE0D0FF)
                             )
                         )
                     }
@@ -713,7 +713,7 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                 .background(
                     brush = Brush.radialGradient(
                         colors = listOf(
-                            if (isDarkMode) Color(0x334DA3FF) else Color(0x664DA3FF),
+                            if (isDarkMode) Color(0x55A78BFA) else Color(0x66C084FC),
                             Color.Transparent
                         )
                     )
