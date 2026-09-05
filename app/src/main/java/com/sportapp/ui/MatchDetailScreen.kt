@@ -276,7 +276,7 @@ fun MatchDetailDialog(
                             )
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
-                                text = "Élő · automatikus frissítés 20 mp-enként",
+                                text = "Élő · automatikus frissítés 10 mp-enként",
                                 color = sub,
                                 fontSize = 11.sp
                             )

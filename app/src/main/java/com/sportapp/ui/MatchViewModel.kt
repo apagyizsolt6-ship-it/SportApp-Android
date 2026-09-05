@@ -40,8 +40,8 @@ class MatchViewModel(app: Application) : AndroidViewModel(app) {
     private val _isLoadingAi = MutableStateFlow(false)
     val isLoadingAi: StateFlow<Boolean> = _isLoadingAi
 
-    private val REFRESH_INTERVAL_MS = 18_000L
-    private val REFRESH_IDLE_MS = 40_000L
+    private val REFRESH_INTERVAL_MS = 20_000L
+    private val REFRESH_IDLE_MS = 45_000L
 
     private var dayOffset: Int = 0
     private var autoJob: Job? = null
@@ -53,6 +53,10 @@ class MatchViewModel(app: Application) : AndroidViewModel(app) {
             _matches.value = cached
             _fromCache.value = true
             _isLoading.value = false
+        }
+        // Render cold start enyhítése
+        viewModelScope.launch(Dispatchers.IO) {
+            try { RetrofitInstance.api.getStatus() } catch (_: Exception) { }
         }
         startAutoRefresh()
     }

@@ -69,6 +69,20 @@ class MatchDetailViewModel : ViewModel() {
         )
         pollJob?.cancel()
         statsPollJob?.cancel()
+        // Azonnal detail + events (lista light = üres events)
+        viewModelScope.launch {
+            try {
+                val d = RetrofitInstance.api.getMatchDetail(matchId)
+                _state.update {
+                    it.copy(
+                        detail = d,
+                        events = d.events.orEmpty().ifEmpty { it.events },
+                        lastRefreshedAt = System.currentTimeMillis()
+                    )
+                }
+            } catch (_: Exception) {
+            }
+        }
         pollJob = viewModelScope.launch { pollLoop() }
         viewModelScope.launch { loadOdds() }
         viewModelScope.launch { loadH2hAndForm() }
@@ -146,9 +160,12 @@ class MatchDetailViewModel : ViewModel() {
             } finally {
                 _state.update { it.copy(isRefreshing = false) }
             }
-            val st = (_state.value.detail?.status ?: "").uppercase()
-            if (st == "FT" || st == "INFO" || st == "ERROR") break
-            delay(30_000L)
+            val st = (_state.value.detail?.status ?: "").uppercase().replace(".", "")
+            if (st in setOf("FT", "AET", "PEN", "PENS", "INFO", "ERROR", "CANC", "PST")) break
+            // Élő: 10 mp; félidő / várakozás: 20 mp
+            val live = st in setOf("1H", "2H", "LIVE", "ET", "INPLAY") ||
+                ((_state.value.detail?.minute ?: 0) > 0 && st !in setOf("HT", "NS", "TBD"))
+            delay(if (live) 10_000L else if (st == "HT") 15_000L else 20_000L)
         }
     }
 
@@ -226,6 +243,28 @@ class MatchDetailViewModel : ViewModel() {
             val hlId = (m.highlightMatchId ?: seed?.highlightMatchId)?.trim().orEmpty()
             try {
                 when (index) {
+                    // Események: mindig friss detail (lista light = üres events)
+                    1 -> {
+                        try {
+                            val d = RetrofitInstance.api.getMatchDetail(m.id)
+                            _state.update {
+                                it.copy(
+                                    detail = d,
+                                    events = d.events.orEmpty().ifEmpty { it.events },
+                                    lastRefreshedAt = System.currentTimeMillis(),
+                                    errorMsg = if (d.events.isNullOrEmpty())
+                                        null // üres lista OK, a UI "Nincs esemény"
+                                    else null
+                                )
+                            }
+                        } catch (e: Exception) {
+                            if (_state.value.events.isEmpty()) {
+                                _state.update {
+                                    it.copy(errorMsg = "Események betöltése sikertelen")
+                                }
+                            }
+                        }
+                    }
                     2 -> {
                         if (_state.value.stats.isEmpty()) {
                             val r = try {
