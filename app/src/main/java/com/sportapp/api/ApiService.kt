@@ -50,6 +50,10 @@ interface ApiService {
     @GET("api/matches")
     suspend fun getMatches(): List<MatchResponse>
 
+    /** Gyors lista – events nélkül. */
+    @GET("api/matches/light")
+    suspend fun getMatchesLight(): List<MatchResponse>
+
     @GET("api/matches/{match_id}")
     suspend fun getMatchDetail(@Path("match_id") matchId: String): MatchResponse
 
