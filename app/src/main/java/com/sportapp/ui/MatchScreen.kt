@@ -99,6 +99,14 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
         isDarkMode = dark
         ThemePrefs.setDark(contextForTheme, dark)
     }
+    var glassTheme by remember {
+        mutableStateOf(ThemePrefs.glassTheme(contextForTheme))
+    }
+    fun setGlassTheme(theme: GlassTheme) {
+        glassTheme = theme
+        ThemePrefs.setGlassTheme(contextForTheme, theme)
+    }
+    var showThemePicker by remember { mutableStateOf(false) }
     var selectedTab by remember { mutableIntStateOf(0) }
     var matchForTicket by remember { mutableStateOf<MatchResponse?>(null) }
 
@@ -416,42 +424,34 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
 
     val coroutineScope = rememberCoroutineScope()
 
-    // --- Sötét lila üveg (glassmorphism) paletta ---
+    // --- Üveg téma (választható) ---
     val bgColor by animateColorAsState(
-        if (isDarkMode) Color(0xFF14081F) else Color(0xFFF3E8FF),
+        if (isDarkMode) Color(glassTheme.g1) else Color(glassTheme.lg1),
         label = "bg"
     )
-
-    // Kártya: áttetsző „üveg”
     val cardBgColor by animateColorAsState(
-        if (isDarkMode) Color(0xB31A0B2E) else Color(0xB3FFFFFF),
+        if (isDarkMode) Color(glassTheme.cardDark) else Color(glassTheme.cardLight),
         label = "card"
     )
-
     val headerBgColor by animateColorAsState(
-        if (isDarkMode) Color(0xCC1C0F33) else Color(0xCCF8F0FF),
+        if (isDarkMode) Color(glassTheme.headerDark) else Color(glassTheme.headerLight),
         label = "header"
     )
-
     val leagueBgColor by animateColorAsState(
-        if (isDarkMode) Color(0x9924123F) else Color(0x99E8D5FF),
+        if (isDarkMode) Color(glassTheme.leagueDark) else Color(glassTheme.leagueLight),
         label = "league"
     )
-
     val textColor by animateColorAsState(
-        if (isDarkMode) Color(0xFFF5EEFF) else Color(0xFF1A0B2E),
+        if (isDarkMode) Color(glassTheme.textDark) else Color(glassTheme.textLight),
         label = "text"
     )
-
     val subTextColor by animateColorAsState(
-        if (isDarkMode) Color(0xFFB9A3D4) else Color(0xFF6B5A8A),
+        if (isDarkMode) Color(glassTheme.subDark) else Color(glassTheme.subLight),
         label = "subtext"
     )
-
-    // Akcent: aqua a sötét lilán
-    val primaryGreen = Color(0xFF00E5A8)
-    val glassBorder = if (isDarkMode) Color(0x44C084FC) else Color(0x55FFFFFF)
-    val accentBlue = Color(0xFFA78BFA)
+    val primaryGreen = Color(glassTheme.primary)
+    val glassBorder = if (isDarkMode) Color(glassTheme.borderDark) else Color(glassTheme.borderLight)
+    val accentBlue = Color(glassTheme.accent)
 
     // ============================================================
     // ELŐRE KIEMELT LIGÁK
@@ -687,19 +687,19 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                     brush = if (isDarkMode) {
                         Brush.verticalGradient(
                             colors = listOf(
-                                Color(0xFF0E0618),
-                                Color(0xFF1A0B2E),
-                                Color(0xFF24103F),
-                                Color(0xFF12081F)
+                                Color(glassTheme.g1),
+                                Color(glassTheme.g2),
+                                Color(glassTheme.g3),
+                                Color(glassTheme.g4)
                             )
                         )
                     } else {
                         Brush.verticalGradient(
                             colors = listOf(
-                                Color(0xFFE9D5FF),
-                                Color(0xFFF5EEFF),
-                                Color(0xFFEDE4FF),
-                                Color(0xFFE0D0FF)
+                                Color(glassTheme.lg1),
+                                Color(glassTheme.lg2),
+                                Color(glassTheme.lg3),
+                                Color(glassTheme.lg1)
                             )
                         )
                     }
@@ -713,7 +713,7 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                 .background(
                     brush = Brush.radialGradient(
                         colors = listOf(
-                            if (isDarkMode) Color(0x55A78BFA) else Color(0x66C084FC),
+                            if (isDarkMode) Color(glassTheme.glow) else Color(glassTheme.accent).copy(alpha = 0.35f),
                             Color.Transparent
                         )
                     )
@@ -776,6 +776,13 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                             .size(36.dp)
                     ) {
 
+                        Text(
+                            text = "🎨",
+                            fontSize = 16.sp,
+                            modifier = Modifier
+                                .clickable { showThemePicker = true }
+                                .padding(horizontal = 6.dp)
+                        )
                         Text(
                             text = if (isDarkMode) "☀️" else "🌙",
                             fontSize = 16.sp
@@ -989,6 +996,13 @@ fun MatchScreen(viewModel: MatchViewModel = viewModel()) {
                             onClick = {
                                 showMoreTools = false
                                 showQuietHours = true
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("🎨 Téma & üveg") },
+                            onClick = {
+                                showMoreTools = false
+                                showThemePicker = true
                             }
                         )
                         DropdownMenuItem(
@@ -2545,4 +2559,13 @@ onFavoriteToggle = { toggleFavorite(match.id) },
         )
     }
 
+
+    if (showThemePicker) {
+        ThemePickerDialog(
+            current = glassTheme,
+            isDarkMode = isDarkMode,
+            onSelect = { setGlassTheme(it) },
+            onDismiss = { showThemePicker = false }
+        )
+    }
 }

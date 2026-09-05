@@ -79,14 +79,15 @@ fun MatchDetailDialog(
     onAddOddsToTicket: (market: String, pick: String, odds: Double?) -> Unit = { _, _, _ -> },
     detailVm: MatchDetailViewModel = viewModel()
 ) {
-    // Sötét lila üveg – egyezik a MatchScreen-nel
-    val bg = if (isDarkMode) Color(0xFF14081F) else Color(0xFFF3E8FF)
-    val card = if (isDarkMode) Color(0xB31A0B2E) else Color(0xB3FFFFFF)
-    val text = if (isDarkMode) Color(0xFFF5EEFF) else Color(0xFF1A0B2E)
-    val sub = if (isDarkMode) Color(0xFFB9A3D4) else Color(0xFF6B5A8A)
-    val green = Color(0xFF00E5A8)
-    val accent = Color(0xFFA78BFA)
-    val glassBorder = if (isDarkMode) Color(0x44C084FC) else Color(0x55FFFFFF)
+    // Üveg téma – ugyanaz a választás, mint a listán
+    val glassTheme = ThemePrefs.glassTheme(LocalContext.current)
+    val bg = if (isDarkMode) Color(glassTheme.g1) else Color(glassTheme.lg1)
+    val card = if (isDarkMode) Color(glassTheme.cardDark) else Color(glassTheme.cardLight)
+    val text = if (isDarkMode) Color(glassTheme.textDark) else Color(glassTheme.textLight)
+    val sub = if (isDarkMode) Color(glassTheme.subDark) else Color(glassTheme.subLight)
+    val green = Color(glassTheme.primary)
+    val accent = Color(glassTheme.accent)
+    val glassBorder = if (isDarkMode) Color(glassTheme.borderDark) else Color(glassTheme.borderLight)
 
     val ui by detailVm.state.collectAsState()
     LaunchedEffect(match.id) { detailVm.start(match) }
@@ -147,18 +148,18 @@ fun MatchDetailDialog(
                             brush = if (isDarkMode) {
                                 Brush.verticalGradient(
                                     listOf(
-                                        Color(0xFF0E0618),
-                                        Color(0xFF1A0B2E),
-                                        Color(0xFF24103F),
-                                        Color(0xFF12081F)
+                                        Color(glassTheme.g1),
+                                        Color(glassTheme.g2),
+                                        Color(glassTheme.g3),
+                                        Color(glassTheme.g4)
                                     )
                                 )
                             } else {
                                 Brush.verticalGradient(
                                     listOf(
-                                        Color(0xFFE9D5FF),
-                                        Color(0xFFF5EEFF),
-                                        Color(0xFFE0D0FF)
+                                        Color(glassTheme.lg1),
+                                        Color(glassTheme.lg2),
+                                        Color(glassTheme.lg3)
                                     )
                                 )
                             }
