@@ -79,14 +79,14 @@ fun MatchDetailDialog(
     onAddOddsToTicket: (market: String, pick: String, odds: Double?) -> Unit = { _, _, _ -> },
     detailVm: MatchDetailViewModel = viewModel()
 ) {
-    // Kék üveg paletta – egyezik a MatchScreen-nel
-    val bg = if (isDarkMode) Color(0xFF14081F) else Color(0xFFE8F1FF)
-    val card = if (isDarkMode) Color(0xCC152238) else Color(0xB3FFFFFF)
-    val text = if (isDarkMode) Color(0xFFF0F6FF) else Color(0xFF0D1B2A)
-    val sub = if (isDarkMode) Color(0xFF9BB0C9) else Color(0xFF5A6F8A)
+    // Sötét lila üveg – egyezik a MatchScreen-nel
+    val bg = if (isDarkMode) Color(0xFF14081F) else Color(0xFFF3E8FF)
+    val card = if (isDarkMode) Color(0xB31A0B2E) else Color(0xB3FFFFFF)
+    val text = if (isDarkMode) Color(0xFFF5EEFF) else Color(0xFF1A0B2E)
+    val sub = if (isDarkMode) Color(0xFFB9A3D4) else Color(0xFF6B5A8A)
     val green = Color(0xFF00E5A8)
-    val accent = Color(0xFF4DA3FF)
-    val glassBorder = if (isDarkMode) Color(0x33A0C4FF) else Color(0x55FFFFFF)
+    val accent = Color(0xFFA78BFA)
+    val glassBorder = if (isDarkMode) Color(0x44C084FC) else Color(0x55FFFFFF)
 
     val ui by detailVm.state.collectAsState()
     LaunchedEffect(match.id) { detailVm.start(match) }
@@ -147,17 +147,18 @@ fun MatchDetailDialog(
                             brush = if (isDarkMode) {
                                 Brush.verticalGradient(
                                     listOf(
-                                        Color(0xFF0A1628),
-                                        Color(0xFF122445),
-                                        Color(0xFF0D1B33)
+                                        Color(0xFF0E0618),
+                                        Color(0xFF1A0B2E),
+                                        Color(0xFF24103F),
+                                        Color(0xFF12081F)
                                     )
                                 )
                             } else {
                                 Brush.verticalGradient(
                                     listOf(
-                                        Color(0xFFD6E8FF),
-                                        Color(0xFFEEF5FF),
-                                        Color(0xFFD0E4FF)
+                                        Color(0xFFE9D5FF),
+                                        Color(0xFFF5EEFF),
+                                        Color(0xFFE0D0FF)
                                     )
                                 )
                             }
@@ -385,7 +386,7 @@ fun MatchDetailDialog(
                             modifier = Modifier
                                 .weight(1f)
                                 .clip(RoundedCornerShape(8.dp))
-                                .background(Color(0x221A2D4D))
+                                .background(Color(0x3324123F))
                                 .clickable {
                                     followedTeams = TeamFollowPrefs.toggle(ctxTeams, teamName)
                                     // ha bekapcsolva, kövesd ezt a meccset is
@@ -448,15 +449,6 @@ fun MatchDetailDialog(
                         }
                     )
                 }
-                WhoWinsVote(
-                    match = detail,
-                    ctx = ctx,
-                    card = card,
-                    text = text,
-                    sub = sub,
-                    green = green
-                )
-                Spacer(modifier = Modifier.height(6.dp))
                 if (loadingTab) {
                     Box(
                         modifier = Modifier
@@ -757,7 +749,7 @@ private fun DetailTeamLogo(
         modifier = Modifier
             .size(size)
             .clip(CircleShape)
-            .background(Color(0xFF252A31)),
+            .background(Color(0xFF24103F)),
         contentAlignment = Alignment.Center
     ) {
         if (!url.isNullOrBlank()) {
@@ -1533,7 +1525,7 @@ private fun OddsRow(
                                             modifier = Modifier
                                                 .weight(1f)
                                                 .clip(RoundedCornerShape(8.dp))
-                                                .background(Color(0xFF1A2D4D))
+                                                .background(Color(0xFF24123F))
                                                 .clickable {
                                                     onPick(marketTitle, lab, odd)
                                                 }
@@ -1574,7 +1566,7 @@ private fun OddsChip(label: String, value: Double?, text: Color, green: Color, m
     Column(
         modifier = modifier
             .clip(RoundedCornerShape(8.dp))
-            .background(Color(0xFF1A2D4D))
+            .background(Color(0xFF24123F))
             .padding(vertical = 8.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
@@ -2254,7 +2246,7 @@ private fun PitchLineupCard(
                                 modifier = Modifier
                                     .weight(1f)
                                     .clip(RoundedCornerShape(8.dp))
-                                    .background(Color(0x221A2D4D))
+                                    .background(Color(0x3324123F))
                                     .clickable { onPlayerClick(p) }
                                     .padding(horizontal = 8.dp, vertical = 6.dp)
                             ) {
