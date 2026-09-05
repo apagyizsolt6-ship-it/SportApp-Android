@@ -117,9 +117,13 @@ class MatchViewModel(app: Application) : AndroidViewModel(app) {
                 val list = withContext(Dispatchers.IO) {
                     if (offset == 0) {
                         val main = try {
-                            RetrofitInstance.api.getMatches()
+                            RetrofitInstance.api.getMatchesLight()
                         } catch (_: Exception) {
-                            emptyList()
+                            try {
+                                RetrofitInstance.api.getMatches()
+                            } catch (_: Exception) {
+                                emptyList()
+                            }
                         }
                         if (main.isNotEmpty()) main
                         else try {
