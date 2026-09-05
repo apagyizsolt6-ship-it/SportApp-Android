@@ -3260,30 +3260,70 @@ def get_match_detail(match_id: str):
     if cached and (now - cached["ts"]) < DETAIL_CACHE_TTL:
         return cached["data"]
 
-    # Először a már felépített lista válaszból keresünk (highlight_id is megvan)
+    # Lista cache-ből alapadatok (highlight_id), events mindig StatPal raw-ból
     try:
-        all_matches = get_matches()
-        if isinstance(all_matches, list):
-            for item in all_matches:
+        # Teljes cache (nem light) – ha van
+        cached_full = _matches_list_cache.get("data")
+        base_item = None
+        if isinstance(cached_full, list):
+            for item in cached_full:
                 if str(item.get("id") or "") == str(match_id):
-                    # Élő meccs: ha nincs HL id, feloldás /matches?date=
-                    if not item.get("highlight_match_id"):
+                    base_item = dict(item)
+                    break
+        if base_item is None:
+            all_matches = get_matches()
+            if isinstance(all_matches, list):
+                for item in all_matches:
+                    if str(item.get("id") or "") == str(match_id):
+                        base_item = dict(item)
+                        break
+
+        if base_item is not None:
+            item = base_item
+            # Events: light lista üresen hagyja – töltsük StatPal raw-ból
+            evs = item.get("events")
+            if not isinstance(evs, list) or len(evs) == 0:
+                try:
+                    raw, _league = _find_statpal_raw_match(match_id)
+                    if raw:
+                        events_container = raw.get("events") or {}
+                        if not isinstance(events_container, dict):
+                            events_container = {}
+                        events = ensure_list(events_container.get("event"))
+                        item["events"] = _normalize_statpal_events(events)
+                        # score / status frissítés raw-ból ha van
+                        home_data = raw.get("home") or {}
+                        away_data = raw.get("away") or {}
                         try:
-                            hid = resolve_highlightly_match_id(
-                                item.get("home_team") or "",
-                                item.get("away_team") or "",
-                                item.get("kickoff_date"),
-                            )
-                            if hid:
-                                item = dict(item)
-                                item["highlight_match_id"] = hid
+                            item["home_score"] = int(home_data.get("goals", item.get("home_score") or 0) or 0)
                         except Exception:
                             pass
-                    item = enrich_odds_from_highlightly(dict(item) if isinstance(item, dict) else item)
-                    _detail_cache[cache_key] = {"data": item, "ts": now}
-                    return item
-    except Exception:
-        pass
+                        try:
+                            item["away_score"] = int(away_data.get("goals", item.get("away_score") or 0) or 0)
+                        except Exception:
+                            pass
+                        if raw.get("status"):
+                            item["status"] = adjust_time(raw.get("status"))
+                except Exception as ex:
+                    print("[detail] events fill:", ex)
+                    item["events"] = item.get("events") or []
+
+            if not item.get("highlight_match_id"):
+                try:
+                    hid = resolve_highlightly_match_id(
+                        item.get("home_team") or "",
+                        item.get("away_team") or "",
+                        item.get("kickoff_date"),
+                    )
+                    if hid:
+                        item["highlight_match_id"] = hid
+                except Exception:
+                    pass
+            item = enrich_odds_from_highlightly(item)
+            _detail_cache[cache_key] = {"data": item, "ts": now}
+            return item
+    except Exception as ex:
+        print("[detail] list lookup:", ex)
 
     raw, league = _find_statpal_raw_match(match_id)
     if not raw:
