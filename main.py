@@ -2317,8 +2317,53 @@ def get_player_image(player_id: str):
     )
 
 
+
+def _matches_light_payload(matches):
+    """Lista-nézet: nehéz mezők nélkül (events, hosszú URL-ek opcionálisan megmaradnak)."""
+    if not isinstance(matches, list):
+        return []
+    light = []
+    for m in matches:
+        if not isinstance(m, dict):
+            continue
+        item = {
+            "id": m.get("id"),
+            "league_id": m.get("league_id"),
+            "league": m.get("league"),
+            "country": m.get("country"),
+            "country_code": m.get("country_code"),
+            "league_logo_url": m.get("league_logo_url"),
+            "home_team": m.get("home_team"),
+            "away_team": m.get("away_team"),
+            "home_logo_url": m.get("home_logo_url"),
+            "away_logo_url": m.get("away_logo_url"),
+            "home_score": m.get("home_score"),
+            "away_score": m.get("away_score"),
+            "status": m.get("status"),
+            "minute": m.get("minute"),
+            "highlight_url": m.get("highlight_url"),
+            "highlight_match_id": m.get("highlight_match_id"),
+            "value_bet": m.get("value_bet"),
+            "odds_home": m.get("odds_home"),
+            "odds_draw": m.get("odds_draw"),
+            "odds_away": m.get("odds_away"),
+            "kickoff_date": m.get("kickoff_date"),
+            "kickoff_time": m.get("kickoff_time"),
+            "events": [],
+        }
+        light.append(item)
+    return light
+
+
 def get_matches_force_refresh():
     return get_matches(force=1)
+
+
+@app.get("/api/matches/light")
+def get_matches_light(force: int = 0):
+    """Gyors lista – events nélkül, kisebb JSON."""
+    full = get_matches(force=force)
+    return _matches_light_payload(full)
 
 
 @app.get("/api/matches")
@@ -2347,7 +2392,7 @@ def get_matches(force: int = 0):
         and not (len(cached_list) == 1 and str(cached_list[0].get("id")) in ("err", "0"))
     )
     if cache_ok and cache_age < MATCHES_LIST_TTL:
-        return cached_list
+        return _matches_light_payload(cached_list)
     if force == 0 and cache_ok and cache_age < 180:
         def _bg_refresh_matches():
             try:
@@ -2359,7 +2404,7 @@ def get_matches(force: int = 0):
         if not _matches_list_cache.get("refreshing"):
             _matches_list_cache["refreshing"] = True
             threading.Thread(target=_bg_refresh_matches, daemon=True).start()
-        return cached_list
+        return _matches_light_payload(cached_list)
 
     try:
         matches_list = []
@@ -2828,9 +2873,8 @@ def get_matches(force: int = 0):
                         else False
                     ),
 
-                    "events": _normalize_statpal_events(
-                        events
-                    ),
+                    # Lista: events nélkül (gyorsabb JSON) – részlet endpoint adja
+                    "events": [],
                     "odds_home": _extract_odds(m)[0],
                     "odds_draw": _extract_odds(m)[1],
                     "odds_away": _extract_odds(m)[2],
@@ -2883,7 +2927,7 @@ def get_matches(force: int = 0):
 
         _matches_list_cache["data"] = matches_list
         _matches_list_cache["ts"] = time.time()
-        return matches_list
+        return _matches_light_payload(matches_list)
 
     except Exception as e:
         # Friss cache ha van (ne tűnjenek el a meccsek)
