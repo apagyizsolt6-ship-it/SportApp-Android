@@ -1,6 +1,7 @@
 package com.sportapp.ui
 
 import android.content.Context
+import android.os.SystemClock
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.background
@@ -52,6 +53,92 @@ fun parseMinuteFromStatus(status: String?): Int {
     return 0
 }
 
+
+/**
+ * Globális élő-perc tracker – túléli a LazyColumn dispose-t és a listafrissítést.
+ * SystemClock.elapsedRealtime() alapján számol (nem falióra).
+ */
+object LiveMinuteTracker {
+    private data class Slot(
+        var serverMinute: Int,
+        var baseElapsedMs: Long,
+        var frozen: Boolean = false
+    )
+
+    private val map = mutableMapOf<String, Slot>()
+
+    @Synchronized
+    fun note(matchId: String, serverMinute: Int, status: String?) {
+        if (matchId.isBlank()) return
+        val st = (status ?: "").trim().uppercase().replace(".", "").replace(" ", "")
+        val sm = serverMinute.coerceIn(0, 130)
+        val now = SystemClock.elapsedRealtime()
+
+        // Félidő: megáll
+        if (st == "HT") {
+            val freezeAt = when {
+                sm in 45..49 -> sm
+                sm > 0 -> sm
+                else -> 45
+            }
+            map[matchId] = Slot(freezeAt, now, frozen = true)
+            return
+        }
+
+        // Vége / nem élő
+        if (st in setOf("FT", "AET", "PEN", "PENS", "NS", "TBD", "PST", "CANC", "FINISHED", "INFO", "ERROR")) {
+            map.remove(matchId)
+            return
+        }
+
+        if (sm <= 0) return
+
+        val cur = map[matchId]
+        if (cur == null) {
+            map[matchId] = Slot(sm, now, frozen = false)
+            return
+        }
+
+        // Kiolvasztás HT után
+        if (cur.frozen) {
+            if (st in setOf("2H", "ET", "LIVE", "INPLAY") || sm >= 46) {
+                map[matchId] = Slot(sm.coerceAtLeast(46), now, frozen = false)
+            }
+            return
+        }
+
+        val localNow = cur.serverMinute + ((now - cur.baseElapsedMs).coerceAtLeast(0L) / 60_000L).toInt()
+
+        when {
+            // Szerver előrébb → igazodunk
+            sm > localNow -> {
+                map[matchId] = Slot(sm, now, frozen = false)
+            }
+            // Szerver ugyanott vagy 1-2-vel lemarad: hagyjuk a helyi órát (ne ragadjon vissza)
+            sm >= localNow - 2 -> {
+                // semmi – a helyi számláló megy tovább
+            }
+            // Nagy ugrás vissza (pl. 2. félidő eleje / új adat)
+            localNow - sm >= 5 -> {
+                map[matchId] = Slot(sm, now, frozen = false)
+            }
+        }
+    }
+
+    @Synchronized
+    fun current(matchId: String, fallbackServer: Int, status: String?): Int {
+        val st = (status ?: "").trim().uppercase().replace(".", "").replace(" ", "")
+        if (st == "HT") {
+            val sm = fallbackServer.coerceIn(0, 130)
+            return if (sm > 0) sm else 45
+        }
+        val slot = map[matchId] ?: return fallbackServer.coerceIn(0, 130)
+        if (slot.frozen) return slot.serverMinute.coerceIn(1, 130)
+        val add = ((SystemClock.elapsedRealtime() - slot.baseElapsedMs).coerceAtLeast(0L) / 60_000L).toInt()
+        return (slot.serverMinute + add).coerceIn(1, 130)
+    }
+}
+
 @Composable
 fun rememberLiveMinute(
     matchId: String,
@@ -60,54 +147,39 @@ fun rememberLiveMinute(
     isLive: Boolean,
     pulseMs: Long = 0L
 ): Int {
-    val statusU = (status ?: "").trim().uppercase().replace(".", "")
-    val isHt = statusU == "HT"
     val fromStatus = parseMinuteFromStatus(status)
     val sm = maxOf(serverMinute ?: 0, fromStatus).coerceIn(0, 130)
+    val id = matchId.ifBlank { "unknown" }
 
-    if (!isLive) return sm
-    if (isHt) return when {
-        sm > 0 -> sm
-        else -> 45
+    // Hookok MINDIG fussonak (Compose szabály)
+    SideEffect {
+        if (isLive) LiveMinuteTracker.note(id, sm, status)
     }
 
-    // Nincs érvényes szerver perc → ne inventáljunk (marad 0, a UI "ÉLŐ"-t mutat)
-    if (sm <= 0) return 0
-
-    // Bázis: szerver perc + mikor kaptuk
-    var base by remember(matchId) { mutableIntStateOf(sm) }
-    var baseAt by remember(matchId) { mutableLongStateOf(System.currentTimeMillis()) }
-
-    // Szerver perc változás: csak ha tényleg előrébb van (vagy nagy ugrás pl. 2. félidő)
-    LaunchedEffect(matchId, sm) {
-        if (sm <= 0) return@LaunchedEffect
-        if (sm > base) {
-            // szerver előrébb → igazítás, óra újraindítás
-            base = sm
-            baseAt = System.currentTimeMillis()
-        } else if (base - sm >= 5) {
-            // helyi óra elszaladt / félidő utáni reset
-            base = sm
-            baseAt = System.currentTimeMillis()
-        }
-        // ha sm == base vagy sm csak 1-4-gyel lemarad: NE reseteljük a baseAt-et
-    }
-
-    // Saját ticker: másodpercenként újraszámol (független a lista frissítéstől)
-    var tick by remember(matchId) { mutableLongStateOf(System.currentTimeMillis()) }
-    LaunchedEffect(matchId, isLive) {
+    var tick by remember(id) { mutableIntStateOf(0) }
+    LaunchedEffect(id, isLive) {
         if (!isLive) return@LaunchedEffect
         while (true) {
             kotlinx.coroutines.delay(1_000L)
-            tick = System.currentTimeMillis()
+            tick++
         }
     }
 
-    // Külső pulse is triggerelhet (opcionális)
-    val now = maxOf(tick, pulseMs, System.currentTimeMillis())
-    val add = ((now - baseAt).coerceAtLeast(0L) / 60_000L).toInt()
-    return (base + add).coerceIn(1, 130)
+    // Recomposition trigger
+    val _tick = tick
+    val _pulse = pulseMs
+
+    if (!isLive) return sm
+
+    val shown = LiveMinuteTracker.current(id, sm, status)
+    // _tick/_pulse olvasva → másodpercenként újraszámol
+    return (if (shown > 0) shown else sm).also {
+        // prevent unused warnings in some toolchains
+        @Suppress("UNUSED_EXPRESSION")
+        _tick + _pulse
+    }
 }
+
 
 object DerbyPrefs {
     /** Klasszikus rivális párok – részleges név egyezés */

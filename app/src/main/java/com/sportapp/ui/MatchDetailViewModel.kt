@@ -73,6 +73,7 @@ class MatchDetailViewModel : ViewModel() {
         viewModelScope.launch {
             try {
                 val d = RetrofitInstance.api.getMatchDetail(matchId)
+                LiveMinuteTracker.note(matchId, d.minute ?: 0, d.status)
                 _state.update {
                     it.copy(
                         detail = d,
@@ -147,6 +148,7 @@ class MatchDetailViewModel : ViewModel() {
             try {
                 _state.update { it.copy(isRefreshing = true) }
                 val d = RetrofitInstance.api.getMatchDetail(matchId)
+                LiveMinuteTracker.note(matchId, d.minute ?: 0, d.status)
                 _state.update { s ->
                     s.copy(
                         detail = d,

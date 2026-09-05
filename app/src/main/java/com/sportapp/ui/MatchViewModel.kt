@@ -140,6 +140,10 @@ class MatchViewModel(app: Application) : AndroidViewModel(app) {
                     }
                 }
                 if (list.isNotEmpty()) {
+                    list.forEach { m ->
+                        val mid = m.id ?: m.matchId ?: return@forEach
+                        LiveMinuteTracker.note(mid, m.minute ?: 0, m.status)
+                    }
                     _matches.value = list
                     _loadError.value = null
                     _fromCache.value = false
