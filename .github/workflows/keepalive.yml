@@ -1,0 +1,31 @@
+# Render free tier ébrentartása – 8 percenként ping
+name: Keepalive Render
+
+on:
+  schedule:
+    # UTC – kb. 8 percenként (GitHub minimum 5 perc, de schedule nem pontos)
+    - cron: "*/8 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping /api/status
+        run: |
+          set -e
+          URL="${{ secrets.BACKEND_URL }}"
+          if [ -z "$URL" ]; then
+            URL="https://sportapp-android.onrender.com"
+          fi
+          URL="${URL%/}"
+          echo "Pinging $URL/api/status ..."
+          code=$(curl -sS -o /tmp/status.json -w "%{http_code}" --max-time 45 "$URL/api/status" || true)
+          echo "HTTP $code"
+          head -c 400 /tmp/status.json || true
+          echo
+          # 200/503 is "ébren" – csak ha 000 (timeout/DNS) jelez hibát softan
+          if [ "$code" = "000" ]; then
+            echo "Backend unreachable"
+            exit 1
+          fi
