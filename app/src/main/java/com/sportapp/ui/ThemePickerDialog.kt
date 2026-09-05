@@ -81,7 +81,7 @@ fun ThemePickerDialog(
                             .background(Color(theme.accent))
                             .border(1.dp, Color.White.copy(alpha = 0.4f), CircleShape)
                     )
-                    Spacer(Modifier.width(12.dp))
+                    Spacer(modifier = Modifier.width(12.dp))
                     Column(Modifier = Modifier.weight(1f)) {
                         Text(
                             "${theme.emoji} ${theme.label}",
@@ -101,7 +101,7 @@ fun ThemePickerDialog(
                 }
             }
 
-            Spacer(Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(12.dp))
             TextButton(onClick = onDismiss, modifier = Modifier.align(Alignment.End)) {
                 Text("Bezárás", color = green)
             }
