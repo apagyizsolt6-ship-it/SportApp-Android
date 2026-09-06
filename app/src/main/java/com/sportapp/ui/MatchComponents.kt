@@ -624,7 +624,7 @@ fun PremiumMatchRow(
                     )
 
                     Text(
-                        text = if (shownMinute > 0) "${shownMinute}'" else "ÉLŐ",
+                        text = if (shownMinute > 0) formatLiveMinute(shownMinute, match.status) else "ÉLŐ",
                         color = primaryGreen,
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Bold

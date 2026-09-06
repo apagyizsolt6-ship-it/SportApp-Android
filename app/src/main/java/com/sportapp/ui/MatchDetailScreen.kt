@@ -276,7 +276,7 @@ fun MatchDetailDialog(
                             )
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
-                                text = "Élő · automatikus frissítés 10 mp-enként",
+                                text = "Élő · automatikus frissítés 7 mp-enként",
                                 color = sub,
                                 fontSize = 11.sp
                             )
@@ -843,7 +843,7 @@ private fun MatchDetailScoreboard(
                         )
                         Spacer(modifier = Modifier.width(4.dp))
                         Text(
-                            text = if (liveMinute > 0) "${liveMinute}'" else "ÉLŐ",
+                            text = if (liveMinute > 0) formatLiveMinute(liveMinute, match.status) else "ÉLŐ",
                             color = green,
                             fontSize = 13.sp,
                             fontWeight = FontWeight.Bold

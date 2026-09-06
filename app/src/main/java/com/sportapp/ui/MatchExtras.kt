@@ -39,7 +39,19 @@ import org.json.JSONObject
  * Élő perc: szerver az igazság; helyi +1 csak ha van érvényes bázis.
  * Nem talál ki percet 0-ról.
  */
+/** 96 → "90+6" jellegű megjelenés 45/90 felett, ha nincs jobb display. */
+fun formatLiveMinute(minute: Int, status: String? = null): String {
+    if (minute <= 0) return "ÉLŐ"
+    val st = (status ?: "").uppercase().replace(".", "")
+    return when {
+        minute > 90 -> "90+${minute - 90}"
+        minute > 45 && st in setOf("1H", "HT") -> "45+${minute - 45}"
+        else -> "${minute}'"
+    }
+}
+
 fun parseMinuteFromStatus(status: String?): Int {
+
     val s = (status ?: "").trim().replace("'", "").replace("’", "")
     if (s.isEmpty() || ":" in s) return 0
     s.toIntOrNull()?.let { if (it in 1..130) return it }
