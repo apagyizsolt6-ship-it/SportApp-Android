@@ -14,7 +14,7 @@ STATPAL_KEY = os.getenv("STATPAL_KEY")
 HIGHLIGHTLY_KEY = os.getenv("HIGHLIGHTLY_KEY")
 GEMINI_KEY = os.getenv("GEMINI_KEY") or os.getenv("GOOGLE_API_KEY")
 
-STATPAL_CACHE_TTL = 40
+STATPAL_CACHE_TTL = 12
 HIGHLIGHTLY_CACHE_TTL = 90
 TEAM_IMAGE_CACHE_TTL = 21600
 IMAGE_PROXY_BASE_URL = os.getenv(
@@ -193,12 +193,12 @@ _lineups_cache = {}
 _stats_cache = {}
 _hl_date_cache = {}
 _matches_list_cache = {"data": None, "ts": 0}
-MATCHES_LIST_TTL = 45
+MATCHES_LIST_TTL = 12
 _hl_h2h_cache = {}
 _hl_form_cache = {}
 _odds_cache_hits = 0
 _odds_cache_misses = 0
-DETAIL_CACHE_TTL = 20
+DETAIL_CACHE_TTL = 8
 LINEUPS_CACHE_TTL = 120
 STATS_CACHE_TTL = 30
 
@@ -308,7 +308,7 @@ def _extract_odds(raw: dict):
 
 
 def _normalize_statpal_events(events):
-    """StatPal event list -> egységes, mobilbarát formátum."""
+    """StatPal event list -> egységes formátum; extra_min → 90+6 megjelenés."""
     result = []
     for ev in events or []:
         if not isinstance(ev, dict):
@@ -316,22 +316,37 @@ def _normalize_statpal_events(events):
         raw_type = str(ev.get("type") or "").strip().lower()
         team = str(ev.get("team") or "").strip().lower()
         if team not in ("home", "away"):
-            # néha "1"/"2" vagy csapatnév jön
             if team in ("1", "h"):
                 team = "home"
             elif team in ("2", "a"):
                 team = "away"
+
         minute = ev.get("minute")
-        try:
-            minute_int = int(str(minute).replace("'", "").split("+")[0]) if minute is not None else None
-        except Exception:
+        extra = ev.get("extra_min") or ev.get("inj_minute") or ""
+        extra_s = str(extra).strip() if extra is not None else ""
+        if extra_s in ("0", "None", "null"):
+            extra_s = ""
+
+        minute_int = _parse_minute_value(minute, extra_s if extra_s else None)
+        if minute_int <= 0:
             minute_int = None
-        minute_display = str(minute).strip() if minute is not None else ""
+
+        # Megjelenés: "90+6" ha van extra
+        if minute is not None and extra_s:
+            try:
+                base = int(str(minute).replace("'", "").split("+")[0])
+                minute_display = f"{base}+{extra_s}"
+            except Exception:
+                minute_display = f"{minute}+{extra_s}"
+        elif minute is not None:
+            minute_display = str(minute).strip().replace("'", "")
+        else:
+            minute_display = ""
+
         player = ev.get("player") or ev.get("player_name") or ""
         assist = ev.get("assist_player") or ev.get("assist") or ""
         result_score = ev.get("result") or ""
 
-        # típus normalizálás
         if "goal" in raw_type and "own" in raw_type:
             norm_type = "own_goal"
         elif "goal" in raw_type:
@@ -356,6 +371,7 @@ def _normalize_statpal_events(events):
             "team": team if team in ("home", "away") else "",
             "minute": minute_int,
             "minute_display": minute_display,
+            "extra_min": int(extra_s) if extra_s.isdigit() else None,
             "player": str(player).strip() if player else None,
             "assist": str(assist).strip() if assist else None,
             "result": str(result_score).strip() if result_score else None,
@@ -1535,61 +1551,98 @@ def format_league_title(raw_country, raw_league):
 
 
 
-def _extract_match_minute(m: dict, events=None) -> int:
-    """Pontos meccsperc StatPal / Highlightly mezőkből."""
+def _parse_minute_value(v, extra=None) -> int:
+    """Egy perc-érték + opcionális extra_min (hosszabbítás) → int 1..130."""
     import re
-    candidates = []
-
-    def push(v):
-        if v is None:
-            return
-        try:
-            if isinstance(v, bool):
-                return
-            if isinstance(v, (int, float)):
-                n = int(v)
-                if 0 < n <= 130:
-                    candidates.append(n)
-                return
+    if v is None and extra is None:
+        return 0
+    try:
+        base = 0
+        if isinstance(v, bool):
+            return 0
+        if isinstance(v, (int, float)):
+            base = int(v)
+        else:
             s = str(v).strip().replace("'", "").replace("’", "")
-            if not s or ":" in s:  # 20:45 kickoff – nem perc
-                return
-            if re.fullmatch(r"\d{1,3}", s):
-                n = int(s)
-                if 0 < n <= 130:
-                    candidates.append(n)
-                return
-            # 45+2 / 90+3
+            if not s or ":" in s:
+                return 0
             mplus = re.fullmatch(r"(\d{1,3})\s*\+\s*(\d{1,2})", s)
             if mplus:
-                n = int(mplus.group(1)) + int(mplus.group(2))
-                if 0 < n <= 130:
-                    candidates.append(n)
-        except Exception:
-            return
+                base = int(mplus.group(1)) + int(mplus.group(2))
+                if 0 < base <= 130:
+                    return base
+            elif re.fullmatch(r"\d{1,3}", s):
+                base = int(s)
+            else:
+                return 0
+        extra_n = 0
+        if extra is not None and str(extra).strip() not in ("", "0", "None"):
+            try:
+                extra_n = int(str(extra).strip().replace("+", ""))
+            except Exception:
+                extra_n = 0
+        n = base + extra_n if extra_n > 0 else base
+        if 0 < n <= 130:
+            return n
+    except Exception:
+        return 0
+    return 0
+
+
+def _extract_match_minute(m: dict, events=None) -> int:
+    """Pontos meccsperc: minute, inj_minute, status, utolsó event + extra_min."""
+    candidates = []
+
+    def push(v, extra=None):
+        n = _parse_minute_value(v, extra)
+        if n > 0:
+            candidates.append(n)
 
     if not isinstance(m, dict):
         return 0
+
+    inj_root = m.get("inj_minute") or m.get("inj_time") or m.get("extra_min")
+
     for key in (
         "minute", "timer", "clock", "elapsed", "match_minute", "time_min",
         "tm", "min", "game_minute", "current_minute",
     ):
-        push(m.get(key))
-    # nested
+        push(m.get(key), inj_root)
+
+    if inj_root is not None and str(inj_root).strip() not in ("", "0"):
+        main_m = m.get("minute")
+        if main_m is not None:
+            push(main_m, inj_root)
+        else:
+            st = str(m.get("status") or "")
+            if st.isdigit():
+                push(st, inj_root)
+            else:
+                push(90, inj_root)
+
     for nest in ("timer", "status_object", "meta", "info"):
         obj = m.get(nest)
         if isinstance(obj, dict):
             for key in ("minute", "clock", "elapsed", "tm"):
-                push(obj.get(key))
+                push(obj.get(key), obj.get("inj_minute") or obj.get("extra_min") or inj_root)
+
     push(m.get("status"))
+
     if events:
         try:
-            last = events[-1] if events else None
-            if isinstance(last, dict):
-                push(last.get("minute"))
-                push(last.get("time"))
+            for ev in reversed(list(events)):
+                if not isinstance(ev, dict):
+                    continue
+                n = _parse_minute_value(
+                    ev.get("minute"),
+                    ev.get("extra_min") or ev.get("inj_minute"),
+                )
+                if n > 0:
+                    candidates.append(n)
+                    break
         except Exception:
             pass
+
     return max(candidates) if candidates else 0
 
 
@@ -1929,7 +1982,7 @@ def _team_image_url(team_id):
 
 
 def fetch_statpal_matches():
-    """StatPal today/live – stale cache ha a hálózat timeoutol."""
+    """StatPal live ELŐSZÖR (élő állás), majd today – rövid cache."""
     now = time.time()
 
     if (
@@ -1940,24 +1993,66 @@ def fetch_statpal_matches():
 
     headers = {"Accept": "application/json"}
     last_err = None
+    live_data = None
+    today_data = None
 
-    for path in ("matches/today", "matches/live"):
+    # Élő végpont előbb – frissebb score/perc
+    for path in ("matches/live", "matches/today"):
         try:
             url = f"https://statpal.io/api/v2/soccer/{path}?access_key={STATPAL_KEY}"
-            response = requests.get(url, headers=headers, timeout=8)
+            response = requests.get(url, headers=headers, timeout=6)
             if response.status_code != 200:
                 last_err = f"HTTP {response.status_code}"
                 continue
             data = response.json()
-            _statpal_cache["data"] = data
-            _statpal_cache["ts"] = now
-            return data
+            if path.endswith("live"):
+                live_data = data
+            else:
+                today_data = data
         except Exception as e:
             last_err = e
             continue
 
-    # Stale cache (akár 10 percig) – jobb mint üres / hiba kártya
-    if _statpal_cache["data"] is not None and (now - _statpal_cache["ts"]) < 600:
+    # live + today összefésülése: live score felülírja a today-t azonos id-nál
+    data = today_data or live_data
+    if live_data and today_data:
+        try:
+            def _league_list(blob):
+                if not isinstance(blob, dict):
+                    return []
+                lm = blob.get("live_matches") or blob.get("matches") or blob
+                if isinstance(lm, dict):
+                    return ensure_list(lm.get("league"))
+                return []
+            # Index live matches by main_id
+            live_by_id = {}
+            for lg in _league_list(live_data):
+                if not isinstance(lg, dict):
+                    continue
+                for m in ensure_list(lg.get("match")):
+                    if isinstance(m, dict) and m.get("main_id") is not None:
+                        live_by_id[str(m.get("main_id"))] = m
+            if live_by_id:
+                for lg in _league_list(today_data):
+                    if not isinstance(lg, dict):
+                        continue
+                    for m in ensure_list(lg.get("match")):
+                        if not isinstance(m, dict):
+                            continue
+                        mid = str(m.get("main_id") or "")
+                        if mid in live_by_id:
+                            m.update(live_by_id[mid])
+                data = today_data
+        except Exception as ex:
+            print("[statpal] merge live/today:", ex)
+            data = live_data or today_data
+
+    if data is not None:
+        _statpal_cache["data"] = data
+        _statpal_cache["ts"] = now
+        return data
+
+    if _statpal_cache["data"] is not None and (now - _statpal_cache["ts"]) < 120:
         return _statpal_cache["data"]
 
     raise RuntimeError(f"StatPal unreachable: {last_err}")
@@ -2393,7 +2488,7 @@ def get_matches(force: int = 0):
     )
     if cache_ok and cache_age < MATCHES_LIST_TTL:
         return _matches_light_payload(cached_list)
-    if force == 0 and cache_ok and cache_age < 180:
+    if force == 0 and cache_ok and cache_age < 45:
         def _bg_refresh_matches():
             try:
                 get_matches(force=1)
@@ -3337,11 +3432,14 @@ def get_match_detail(match_id: str):
     events = ensure_list(events_container.get("event"))
     events_norm = _normalize_statpal_events(events)
 
-    minute_val = 0
+    minute_val = _extract_match_minute(raw, events)
     if events_norm:
         last = events_norm[-1]
         if last.get("minute") is not None:
-            minute_val = last["minute"]
+            try:
+                minute_val = max(minute_val, int(last["minute"]))
+            except Exception:
+                pass
 
     try:
         home_score = int(home_data.get("goals", 0) or 0)
